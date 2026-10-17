@@ -29,15 +29,20 @@ class TheGrammar(unittest.TestCase):
                       "git -C . push origin main", "git --config-env user.name=HOME push origin +claude/7",
                       "git --shallow-file x push origin main", "env --uns FOO git push origin main",
                       "env --def git push origin main", "nice --adj 5 git push origin +claude/7",
-                      "timeout --sig KILL 60 git push origin HEAD:board",
+                      "timeout --sig KILL 60 git push origin HEAD:board", "env 1x=2 git push origin main",
+                      "env -- - A.B=1 git push origin +claude/7", "nice env x-y=1 git push origin HEAD:board",
+                      "env -S 'git push origin main'", "env - --sp=x git push origin main",
+                      "env -S '${NOPE} git push origin main'", "env -S '${NOPE} -u ${HOME} git push origin main'",
                       "git commit -F - <<'EOF'\nDon't stop\nEOF\ngit push origin main\ncat <<'EOF'\nIt's done\nEOF"):
             with self.subTest(shape=shape):
                 self.assertIn(shape, texts)
         self.assertEqual(len(set(texts)), len(texts))
         self.assertEqual(len(g.argument_lists()), 1398, "a prefix changes what the guard reads, never git's words")
-        self.assertEqual(len(texts), 51260, "since F25's fix a sixth wrapper, the session's here-documents")
-        self.assertFalse(any(c.prefix in g.ABBREVIATED and (c.wrapper != "{}" or c.argv.startswith("-"))
+        self.assertEqual(len(texts), 52891, "since F28's fix and its reviews env's assignments and its -S, 1,631 more")
+        self.assertFalse(any(c.prefix in g.ABBREVIATED + g.ENV_ASSIGNED and (c.wrapper != "{}" or c.argv.startswith("-"))
                              for c in g.commands()), "an abbreviated wrapper is taken with the command alone")
+        self.assertFalse(any(c.wrapper in (g.SPLIT, g.SPLIT_UNSET, g.SPLIT_MIXED) and (c.prefix or c.argv.startswith("-")) for c in g.commands()),
+                         "env -S is taken with the command alone")
 
 
 class GitsAnswers(unittest.TestCase):
@@ -91,7 +96,7 @@ class TheGuardJudged(unittest.TestCase):
         self.assertLess(time.perf_counter() - began, BUDGET_SECONDS)
         self.assertEqual(judgement.missing, ())
         self.assertEqual(judgement.failures, {}, g.report(judgement))
-        self.assertEqual(judgement.commands, 51260)
+        self.assertEqual(judgement.commands, 52891)
         let_through = {d.why for d in judgement.classes if d.kind == "let through"}
         self.assertTrue(let_through)
         self.assertTrue(all("G11b" in why for why in let_through), let_through)
@@ -154,6 +159,39 @@ class TheGuardJudged(unittest.TestCase):
         self.assertEqual(let_through, {"env --uns FOO ": 157, "env --def ": 0, "nice --adj 5 ": 157,
                                        "timeout --sig KILL 60 ": 157})
 
+
+    def test_the_lane_bites_on_a_guard_that_reads_env_s_words_as_the_shell_reads_them(self):
+        """F28: read as the shell reads a word, 1x=2, A.B=1 and x-y=1 are
+        the command env runs, and so is the lone - after env's --, and
+        with no string split env -S hides the command in one word, so
+        every forbidden push behind each passes, as on the guard before
+        the fix; and, from its review, --sp=x after a lone -, read past it
+        as an option, splits into the command, and ${NOPE}, read only as
+        written, is the command too."""
+        from unittest import mock
+
+        from sdlc_protocol import guard
+
+        rows = [(prefix, "{}") for prefix in g.ENV_ASSIGNED] + [("", g.SPLIT), ("", g.SPLIT_UNSET)]
+        let_through = {}
+        for row in rows:
+            commands = [c for c in g.commands() if (c.prefix, c.wrapper) == row]
+            self.assertEqual(g.judge(commands=commands).failures, {}, row)
+            with mock.patch.object(guard, "env_assigns", lambda word: bool(guard.ASSIGNMENT.match(word))), \
+                    mock.patch.object(guard, "split_string", lambda text, unset=False: None):
+                let_through[row] = sum(g.judge(commands=commands).failures.values())
+        self.assertEqual(let_through, {row: 157 for row in rows})
+        dashed = [c for c in g.commands() if c.prefix == "env -- - A.B=1 "]
+        with mock.patch.object(guard, "past_lone_dash", lambda rest, read: None):
+            self.assertEqual(sum(g.judge(commands=dashed).failures.values()), 157)
+        ended = [c for c in g.commands() if c.prefix == "env - --sp=x "]
+        with mock.patch.object(guard, "ends_options", lambda word: False):
+            self.assertEqual(sum(g.judge(commands=ended).failures.values()), 157,
+                             "F28's review: read past the lone -, --sp=x splits into the command")
+        unset = [c for c in g.commands() if c.wrapper == g.SPLIT_UNSET]
+        with mock.patch.object(guard, "readings_of", lambda argv: [guard.launch(argv)]):
+            self.assertEqual(sum(g.judge(commands=unset).failures.values()), 157,
+                             "F28's review: ${NOPE} read only as written is the command")
 
     def test_the_lane_bites_on_a_guard_that_reads_a_command_whole_or_not_at_all(self):
         """F25: read whole and strictly, with no body told, the session's
