@@ -1,0 +1,26 @@
+{
+  "finding": "F24",
+  "title": "the push guard reads the quoting inside a command substitution as the quoting around it",
+  "status": "fixed after 0.5.0: the guard reads the text of every substitution bash runs apart, as the commands of a subshell, in double quotes too (DESIGN.md, 13)",
+  "breaks": ["G1", "G11a"],
+  "world": "memory; the git world runs it over real git (build step 6)",
+  "issues": {"1": ["todo"]},
+  "workers": ["a", "b"],
+  "careless": true,
+  "steps": [
+    {"verb": "claim", "actor": "a", "args": [1], "expect": {"holders": {"1": "a"}}},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "substituted"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "b fetches claude/1 in its own clone, makes a claim commit naming itself there, and runs out=\"$(git push --force-with-lease origin claude/1 2>&1)\": bash runs the substitution's text, the push, which git takes; the guard as built until F24's fix read the double-quoted substitution as one word and passed it, so the lease was taken and G11a and G1 were red here; under the mutant that reads no substitution apart they are red here again"},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "process"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "the same lease in cat <(git push ...): bash runs a process substitution's text; the guard read <( as a redirection that took git as its target, and the words after it as cat's; under the mutant that reads a <( or >( as a redirection, the lease is taken and G11a and G1 are red here"},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "nested-substitutions"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "the lease in echo \"$(echo \"$(echo \"$(git push ...)\")\")\": read whole, the quotes pair so the innermost substitution is a quoted word; under the mutant that reads only the substitutions of the command itself and none nested in them, the lease is taken and G11a and G1 are red here"},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "backquote-in-substitution"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "the lease in a backquoted span inside a double-quoted $( ), echo \"$(echo `git push ...`)\": bash runs the span's text; F25's fifth review left such a span to its substitution's text, where it may stand in single quotes or a quoted body; under the mutant that reads a backquoted span as text, the lease is taken and G11a and G1 are red here"},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "arithmetic-substitution"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "the lease in (( \"$(git push ...)\" )): bash expands the substitutions inside arithmetic before it reads the expression; under the mutant that jumps arithmetic whole, as the scan of here-documents does, the lease is taken and G11a and G1 are red here"},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "ansi-c-in-substitution"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "the lease after a $'...' that holds an escaped apostrophe, echo \"$(echo $'it\\'s') $(git push ...)\": bash reads the escaped apostrophe as part of the $'...', while a scan that reads it as an ordinary quoted span closes the span there and opens a quote at the next apostrophe that hides the second substitution, as the fix's fuzz found; under the mutant that reads a $'...' as an ordinary quoted span, the lease is taken and G11a and G1 are red here"},
+    {"verb": "board", "expect": {"claims": {"claude/1": "a"}}}
+  ]
+}
