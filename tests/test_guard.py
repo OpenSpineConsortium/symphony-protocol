@@ -1486,16 +1486,70 @@ class EnvSecondReviewTest(unittest.TestCase):
                 self.assertEqual(refused(command), MAIN)
                 self.assertEqual(template_hook(command), MAIN)
         self.assertIsNone(refused("env -S '${A} ${B} -C ${C} git push origin claude/7'"))
-        many = "env -S '${A}${B}${C}${D} git push origin claude/7'"
+        many = "env -S '${A}${B}${C}${D}${E}${F}${G} git push origin claude/7'"
         self.assertEqual(refused(many), guard.SPLIT_TOO_MANY_NAMES)
         self.assertEqual(template_hook(many), guard.SPLIT_TOO_MANY_NAMES)
-        self.assertEqual(guard.readings_of(["env", "-S", "${A}${B}${C}${D} ls"])[0].argv,
-                         ["env", "${A}${B}${C}${D}", "ls"], "no push: read as written alone")
+        self.assertEqual([reading.argv for reading in guard.readings_of(["env", "-S", "${A}${B}${C}${D}${E}${F}${G} ls"])],
+                         [["env", "${A}${B}${C}${D}${E}${F}${G}", "ls"]], "no push: read as written alone")
         self.assertEqual(len(guard.unset_subsets(["${A}", "${B}", "${C}"])), 8)
         with mock.patch.object(guard, "unset_subsets",
                                lambda names: [frozenset(), frozenset(name[2:-1] for name in names)]):
             self.assertIsNone(refused("env -S '${NOPE} -C ${HOME} git push origin main'"),
                               "all set or all unset alone: -C takes git, or ${NOPE} runs")
+
+    def test_a_push_env_spells_is_refused_unread_where_the_guard_cannot_read_it(self):
+        """F28's third review: the refusals unread looked for push in the
+        words as written, so pu""sh and pu${NOPE}sh, which env's -S makes
+        push, passed both; a string nested too deep is refused unread
+        whatever its words, and past the names the guard reads each mix of,
+        a command is refused where its words may spell push once quotes,
+        backslashes and ${NAME}s are out (holds_push)."""
+        for command in ("env -S '${A}${B}${C}${D} git pu\"\"sh origin main'; echo push",
+                        "env '" + "-S" * 17 + "git pu\"\"sh origin main'; echo push",
+                        "env -S '${A}${B}${C} git pu${NOPE}sh origin main'; echo push",
+                        "env -S '${A}${B}${C}${D}${E}${F}${G} git pu\"\"sh origin main'; echo push",
+                        "env -S '${A}${B}${C}${D}${E}${F}${G} -S\"git pu'\"''\"'sh origin main\"'; echo push"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+                self.assertIsNotNone(template_hook(command))
+        self.assertEqual(guard.run({"tool_input": {"command": 'env -S \'git pu""sh origin main\''}, "cwd": "/"})[0],
+                         guard.REFUSE, "the library's own hook asks of a text that spells push")
+        self.assertEqual(guard.run({"tool_input": {"command": 'git pu""sh origin main'}, "cwd": "/"})[0], guard.REFUSE)
+        self.assertTrue(guard.holds_push(["pu\\${A}s\"\"h"]))
+        self.assertFalse(guard.holds_push(["pu\\_sh", "pu sh", "pul"]))
+        self.assertIsNotNone(refused("env " + "-S" * 17 + "ls; git push origin claude/7"),
+                             "nested too deep: the words env runs are not read")
+        with mock.patch.object(guard, "holds_push", lambda argv: any("push" in word for word in argv)):
+            self.assertIsNone(refused("env -S '${A}${B}${C}${D}${E}${F}${G} git pu\"\"sh origin main'; echo push"))
+
+    def test_every_mix_is_read_up_to_the_bound(self):
+        """F28's third review: past three names the guard refused every
+        command that held push as written, though env runs no push in
+        these, or only the owner's own; up to MOST_NAMES every mix is read,
+        since a push one mix alone runs is found by no other, as here where
+        B alone is set, and the readings spend the budget at most once."""
+        for command in ("env -S 'echo ${A} ${B} ${C} ${D} push'", "env -S 'printf %s ${A}${B}${C}${D}' push",
+                        "env -S 'git commit -m \"push ${A} ${B} ${C} ${D}\"'",
+                        "env -S '${A} ${B} ${C} ${D}' git push -u origin claude/7",
+                        "env -S '${A} ${B} ${C} ${D} ${E} ${F}' git push -u origin claude/7"):
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+                self.assertIsNone(template_hook(command))
+        mix = "env -S '${A}-u ${B} ${C}-u ${D}' x git push origin main"
+        self.assertEqual(refused(mix), MAIN)
+        self.assertEqual(template_hook(mix), MAIN)
+        if gnu_coreutils("env"):
+            done = subprocess.run(["env", "-u", "A", "-u", "C", "-u", "D", "B=1", "env", "-S", "${A}-u ${B} ${C}-u ${D}",
+                                   "x", "printf", "%s", "ran"], capture_output=True, text=True)
+            self.assertEqual(done.stdout, "ran", "B alone set: -u 1 -u x, then the command")
+        with mock.patch.object(guard, "unset_subsets",
+                               lambda names: [frozenset(), frozenset(name[2:-1] for name in names)]):
+            self.assertIsNone(refused(mix), "all kept: ${A}-u runs; all unset: -u -u, then x runs")
+        wide = "env -S '${A}${B}${C}${D}${E}${F} " + "-i " * 30000 + "git push origin claude/7'"
+        started = time.monotonic()
+        self.assertEqual(refused(wide), guard.SPLIT_TOO_MANY_NAMES)
+        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertIsNone(refused("env -S '${A}${B}${C}${D}${E}${F} " + "-i " * 30000 + "ls'"))
 
     def test_nested_strings_and_flat_chains_are_read_in_time(self):
         """A string nested in quoted -S strings is split once a level, so a

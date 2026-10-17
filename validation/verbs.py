@@ -155,7 +155,8 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "env-split": "env -S 'git -C ../{clone} {push}'",
              "env-alone": "env GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
              "time-path": "/usr/bin/time GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
-             "time-quoted": '"time" GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}'}
+             "time-quoted": '"time" GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}',
+             "env-names": "env -S '${{A}}${{B}}${{C}}${{D}}${{E}}${{F}}${{G}} git -C ../{clone} pu\"\"sh{rest}'"}
 # The ways whose push runs in the worker's own clone (leasing_clone).
 FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
                   "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",
@@ -773,7 +774,7 @@ def leasing_command(worker, how, ref, root=CLONES):
     clone (ELSEWHERE), naming the second clone, the absent one, the
     worker's own and root, the directory that holds them."""
     return ELSEWHERE[how].format(clone=other_clone(worker), absent=absent_clone(worker), own=worker, root=root,
-                                 push=f"push --force-with-lease origin {ref}")
+                                 push=f"push --force-with-lease origin {ref}", rest=f" --force-with-lease origin {ref}")
 
 
 def claim_commit(model, number):

@@ -262,7 +262,10 @@ BUDGET_SECONDS = 10
 # matched by its program's name, or a time the guard cannot tell is read
 # as the keyword alone; and, from its second review, at its seventh guard
 # step, step 12, env -S with ${NOPE} -u ${HOME} before the push, which
-# passes once the string's names are read all set or all unset.
+# passes once the string's names are read all set or all unset; and,
+# from its third review, at b's lease inside an -S string of seven names
+# with push spelled pu""sh, step 13, taken once push is looked for only as
+# written.
 UNDONE = {
     "F1": [("the comment before the labels", 5, "G3L")],
     "F2": [("a piece of work named by the number it is shown by", 4, "G7"),
@@ -366,7 +369,8 @@ UNDONE = {
             ("an -S string's variables read only as written", 9, "G11a"),
             ("time matched by its program's name", 10, "G11a"),
             ("a time the guard cannot tell read as the keyword alone", 11, "G11a"),
-            ("every ${NAME} read all set or all unset", 12, "G11a")],
+            ("every ${NAME} read all set or all unset", 12, "G11a"),
+            ("a push env's -S spells read only as written", 13, "G11a")],
 }
 # The findings with a trace, every one settled since F25's fix: F1, F3,
 # F5, F6, F10 and F11 fixed in 0.4.1; F2, F4, F7, F8, F9, F12, F13, F14,

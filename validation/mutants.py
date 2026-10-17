@@ -1627,6 +1627,11 @@ MUTANTS = {
         "G11a", "env drops each ${NAME} that is not set and keeps each that is, so the push after env -S "
                 "'${NOPE} -u ${HOME} git push ...', where NOPE alone is not set, is judged and refused (F28's "
                 "second review)"),
+    "a push env's -S spells read only as written": Mutant(
+        guard, "holds_push", lambda argv: any("push" in word for word in argv),
+        "G11a", "env's -S takes quotes and unset ${NAME}s out of a word, so a lease by git -C from another clone, "
+                "spelled pu\"\"sh in an -S string with more names than the guard reads each mix of, onto a claim "
+                "another worker holds, is refused unread (F28's third review)"),
     "a quote that never closes hiding the command": Mutant(
         guard, "plain_text", lambda command, lenient=False, spans_run=True: ORIGINAL_PLAIN_TEXT(command),
         "G11a", "a quote that never closes is read as a character of its word, so a lease bash runs before the "

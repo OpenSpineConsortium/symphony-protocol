@@ -33,6 +33,8 @@
      "note": "the same lease after \"time\" GIT_DIR=<the clones>/b/.git, which bash runs as the program, setting nothing; the guard cannot tell the quotes, so it judges the push in b-other as well as in b's own clone; under the mutant that reads it as the keyword alone, the lease is taken (F28's review)"},
     {"verb": "guard", "actor": "a", "args": ["env -S '${NOPE} -u ${HOME} git push origin main'"], "expect": {"refused": true},
      "note": "where NOPE is not set and HOME is, env drops ${NOPE}, unsets the variable ${HOME} names and runs git push origin main; with both kept as written ${NOPE} is the command, and with both dropped -u takes git as its name and env runs push; under the mutant that reads the names all set or all unset, the push passes (F28's second review)"},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "env-names"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "the same lease by git -C ../b-other, inside an -S string with seven ${NAME}s, more than the guard reads each mix of, and push spelled pu\"\"sh, which env splits into push; the guard refuses it unread, since its words may spell push; under the mutant that looks for push only as written, the lease is read as the command ${A}...${G} alone and taken (F28's third review)"},
     {"verb": "board", "expect": {"claims": {"claude/1": "a"}}}
   ]
 }
