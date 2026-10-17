@@ -111,6 +111,7 @@ ORIGINAL_ISSUE_ROWS = board.issue_rows
 ORIGINAL_COMMENTS_DUE = board.comments_due
 ORIGINAL_OVERLAPS_DUE = coordinator.overlap_comments_due
 ORIGINAL_REFUSAL = guard.refusal
+ORIGINAL_PLAIN_TEXT = guard.plain_text
 ORIGINAL_TOLD = coordinator.told_numbers
 ORIGINAL_CLAIMS_MADE = coordinator.claims_made
 ORIGINAL_PUT_BACK = github.put_back
@@ -408,6 +409,71 @@ def lease_onto_any_claim(name, source, expected, claim_file_at, remote="origin")
     """guard.other_holder judging nothing: the guard as it was before F7's
     fix, passing a lease onto any claude/ branch, whoever claimed it."""
     return None
+
+
+def every_double_parenthesis_arithmetic(command, i, memo=None):
+    """guard.arithmetic_end as the scan read (( and $(( until F25's
+    review: as arithmetic always, to the ) that closes both parentheses,
+    so the here-documents of ((cd x); cat <<EOF ...), which bash reads as
+    a subshell in a subshell, are not told."""
+    depth = 2
+    while i < len(command) and depth:
+        depth += {"(": 1, ")": -1}.get(command[i], 0)
+        i += 1
+    return i
+
+
+def parentheses_counted_inside_quotes(command, open_at, memo):
+    """guard.matching_parenthesis as the scan counted the parentheses of a
+    (( until F25's second review: every one, quoted or not, so the
+    here-documents of ((echo "))"); cat <<EOF ...), which bash reads as a
+    subshell in a subshell, are not told."""
+    depth = 0
+    for i in range(open_at, len(command)):
+        depth += {"(": 1, ")": -1}.get(command[i], 0)
+        if not depth:
+            return i
+    return None
+
+
+# guard.expansion_step as built, which the mutants below call for every
+# expansion but the one each reads as text.
+EXPANSION_STEP = guard.expansion_step
+
+
+def expansions_without(kind):
+    """guard.expansion_step as the scan read expansions until F25's third
+    review, with kind read as text: "${", so a ) inside ${y:-)} then
+    closes the substitution around it and the << after it is read as text
+    inside double quotes; "$[", the same with $[ ) ] (its fourth review);
+    or "$$", so $${ opens a parameter expansion bash never opens (the
+    same)."""
+    def expansion_step(command, i, contexts, memo):
+        if command.startswith(kind, i):
+            return None
+        return EXPANSION_STEP(command, i, contexts, memo)
+    return expansion_step
+
+
+def substitutions_kept_whole(command, start, end, depth=0):
+    """guard.substitutions_in as it kept an expanded body's substitutions
+    until F25's second review: each whole, the bodies of its own
+    here-documents with it, whose quotes then pair with one after the
+    push."""
+    text, found, memo, i = command[start:end], [], {}, 0
+    while i < len(text):
+        arithmetic = guard.arithmetic_end(text, i + 3, memo) if text.startswith("$((", i) else None
+        if text[i] == "\\":
+            i += 2
+        elif arithmetic:
+            i = arithmetic
+        elif text.startswith("$(", i):
+            close = guard.scan(text, i + 2, guard.Context("$("), depth + 1)[1]
+            found.append(text[i:close])
+            i = close
+        else:
+            i += 1
+    return tuple(found)
 
 
 def long_option_named_in_full(word, wrapper):
@@ -1496,6 +1562,85 @@ MUTANTS = {
         guard, "long_value_is_next", optional_value_from_the_next_word,
         "G11a", "a value a wrapper's long option may take is taken only attached, so the push after env "
                 "--default-signal is judged and refused (F26)"),
+    "a quote that never closes hiding the command": Mutant(
+        guard, "plain_text", lambda command, lenient=False, spans_run=True: ORIGINAL_PLAIN_TEXT(command),
+        "G11a", "a quote that never closes is read as a character of its word, so a lease bash runs before the "
+                "line it cannot read, onto a claim another worker holds, is read and refused (F25)"),
+    "no here-document's body told": Mutant(
+        guard, "here_document_bodies", lambda command: [],
+        "G11a", "a command is read with its here-documents' bodies cut out too, since bash reads their quotes as "
+                "text, so a lease between two bodies whose apostrophes pair around it, onto a claim another worker "
+                "holds, is read and refused (F25)"),
+    "a here-document in a quoted substitution read as text": Mutant(
+        guard, "takes_here_document", lambda contexts: contexts is None or '"' not in contexts,
+        "G11a", "a << in a substitution inside double quotes opens a here-document, as in a commit message given "
+                "by \"$(cat <<'EOF' ... )\", so a lease between two such bodies, onto a claim another worker "
+                "holds, is read and refused (F25)"),
+    "an expanded body's substitutions cut out with it": Mutant(
+        guard, "substitutions_in", lambda command, start, end, depth=0: (),
+        "G11a", "the command substitutions of a body the shell expands are read as commands, since the shell runs "
+                "them, so a lease in one, between two apostrophes of the body's text, onto a claim another worker "
+                "holds, is refused (F25)"),
+    "a body in a substitution ended only by its delimiter's own line": Mutant(
+        guard, "closes_substitution", lambda line, delimiter: False,
+        "G11a", "a body inside a substitution ends at a line that starts with its delimiter and holds a ), as "
+                "bash 5.2 ends it, so a lease after a body a line EOF)\" ends, onto a claim another worker holds, "
+                "is read and refused (F25)"),
+    "an expanded body's backslash-newline kept": Mutant(
+        guard, "continues", lambda text: False,
+        "G11a", "a line of a body the shell expands that ends in a backslash goes on into the next before it is "
+                "compared with the delimiter, as bash reads it, so a lease after a body a line E and a backslash, "
+                "then one OF, ends, onto a claim another worker holds, is read and refused (F25)"),
+    "every double parenthesis read as arithmetic": Mutant(
+        guard, "arithmetic_end", every_double_parenthesis_arithmetic,
+        "G11a", "a (( whose second ( closes with no ) at once after it is a subshell in a subshell, as bash reads "
+                "it, so a lease between two such subshells' here-documents, onto a claim another worker holds, "
+                "is read and refused (F25)"),
+    "a body that waits for a newline in the substitution that closed": Mutant(
+        guard, "leave", lambda pending, before, after: None,
+        "G11a", "a here-document whose substitution closes on its operator's own line, as x=$(cat <<'EOF') does, "
+                "has its body read from the next line outside it, as bash reads it, so a lease between two such "
+                "bodies, onto a claim another worker holds, is read and refused (F25)"),
+    "an expanded body's substitution kept with its own bodies": Mutant(
+        guard, "substitutions_in", substitutions_kept_whole,
+        "G11a", "what the shell runs of a body it expands is read with its own here-documents' bodies cut out, "
+                "since their quotes are text too, so a lease after a body whose substitution holds one, onto a "
+                "claim another worker holds, is read and refused (F25)"),
+    "a case pattern's parenthesis closing its substitution": Mutant(
+        guard, "case_step", lambda *step: None,
+        "G11a", "a case pattern's ) inside a substitution closes nothing, as bash reads it, so a lease between "
+                "two double-quoted substitutions whose case patterns hold here-documents, onto a claim another "
+                "worker holds, is read and refused (F25)"),
+    "arithmetic's parentheses counted inside quotes": Mutant(
+        guard, "matching_parenthesis", parentheses_counted_inside_quotes,
+        "G11a", "the parentheses of a (( are counted past quotes, as bash counts them, so a lease between the "
+                "here-documents of ((echo \"))\"); ...), a subshell in a subshell, and a later one, onto a claim "
+                "another worker holds, is read and refused (F25)"),
+    "a parameter expansion read as text": Mutant(
+        guard, "expansion_step", expansions_without("${"),
+        "G11a", "a parameter expansion is read whole, a ) inside ${y:-)} closing nothing, as bash reads it, so a "
+                "lease between two double-quoted substitutions that hold one before a here-document, onto a claim "
+                "another worker holds, is read and refused (F25)"),
+    "a backquoted span read as text": Mutant(
+        guard, "backquoted", lambda command, i, depth: None,
+        "G11a", "a backquoted span is read whole, a case pattern's ) inside it closing nothing, as bash reads it, "
+                "so a lease between two double-quoted substitutions that hold one before a here-document, onto a "
+                "claim another worker holds, is read and refused (F25)"),
+    "$$ read as a $ before what follows": Mutant(
+        guard, "expansion_step", expansions_without("$$"),
+        "G11a", "$$, the shell's process id, is read whole, so the { after it opens no parameter expansion, as "
+                "bash reads it, and a lease after echo $${ and a here-document whose body holds an apostrophe, "
+                "onto a claim another worker holds, is read and refused (F25)"),
+    "old-style arithmetic read as text": Mutant(
+        guard, "expansion_step", expansions_without("$["),
+        "G11a", "old-style arithmetic, $[ ], is read whole, a ) inside it closing nothing, as bash reads it, so a "
+                "lease between two double-quoted substitutions that hold one before a here-document, onto a claim "
+                "another worker holds, is read and refused (F25)"),
+    "a backquoted span's quotes read as the quoting around it": Mutant(
+        guard, "backquoted_span", lambda command, i: None,
+        "G11a", "a backquoted span is read as one part of a word in the lenient reading, its quotes pairing with "
+                "nothing outside it, as bash reads it, so a lease after x=`echo \"` and before a comment with a "
+                "double quote, onto a claim another worker holds, is read and refused (F25)"),
     "dealing without its taken set": Mutant(
         team, "deal", deal_without_the_taken_set,
         "G14", "the workers of one run are dealt distinct issues"),
