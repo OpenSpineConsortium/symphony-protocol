@@ -125,6 +125,22 @@ TRACES = {
     "a long option read only in full": "the regression traces",
     "env's abbreviated --chdir not read": "the regression traces",
     "an optional value taken from the next word": "the regression traces",
+    "a quote that never closes hiding the command": "the regression traces",
+    "no here-document's body told": "the regression traces",
+    "a here-document in a quoted substitution read as text": "the regression traces",
+    "an expanded body's substitutions cut out with it": "the regression traces",
+    "a body in a substitution ended only by its delimiter's own line": "the regression traces",
+    "an expanded body's backslash-newline kept": "the regression traces",
+    "every double parenthesis read as arithmetic": "the regression traces",
+    "a body that waits for a newline in the substitution that closed": "the regression traces",
+    "an expanded body's substitution kept with its own bodies": "the regression traces",
+    "a case pattern's parenthesis closing its substitution": "the regression traces",
+    "arithmetic's parentheses counted inside quotes": "the regression traces",
+    "a parameter expansion read as text": "the regression traces",
+    "a backquoted span read as text": "the regression traces",
+    "$$ read as a $ before what follows": "the regression traces",
+    "old-style arithmetic read as text": "the regression traces",
+    "a backquoted span's quotes read as the quoting around it": "the regression traces",
     "dealing without its taken set": "dealing at every look",
     "each leg dealt from its own look": "the regression traces",
     "given to workers needing the label todo": "the regression traces",
@@ -350,29 +366,42 @@ class TheLane(unittest.TestCase):
         client's waits, so the bound is widened to 150, 134 within it;
         F26's fix three, a long option read only in full, env's
         abbreviated --chdir not read and an optional value taken from the
-        next word, 137; and F22's fix seven, a reopened issue left as it
-        is, todo put on last, a ready pull request's in-review taken off, a
+        next word, 137; and F22's fix seven, a reopened issue left as it is,
+        todo put on last, a ready pull request's in-review taken off, a
         claim branch and a released branch not read for a reopened issue,
         in-review left on where a branch stands, and the releases due read
-        before the freeing, 144 within that bound, its review one, a
-        release before the issue's last close read as an undo, 145, its
-        second review one, claimed put back after the close read as the ended
+        before the freeing, 144 within that bound, its review one, a release
+        before the issue's last close read as an undo, 145, its second
+        review one, claimed put back after the close read as the ended
         claim's, 146, its third review one, a claim made since the close
         read as an undo, 147, and that review's review one, an undo after an
         ended claim read as the claim's, 148; and F23's fix three, a late
         comment's labels put back, no answer taken for a refusal, and a
         refusal taken for a late comment, 151, its review one, a rate
         limit's refusal taken for one that wrote nothing, 152, and its
-        second review one, a refusal after a rate limit read by its last
-        try alone, 153. That passes 150, so the bound is widened to 200:
-        the lane grows by a few mutants for each finding it fixes, and
-        0.5.1 carries several findings, F22, F23 and F26 among them, with
-        F24, F25 and F27 still to come. F27's fix adds two, a label taken
-        off and lost stays off and a label refused its removal put back,
-        155, and its review one, a 404 after a rate limit read as never on,
-        156."""
+        second review one, a refusal after a rate limit read by its last try
+        alone, 153; and F25's fix seven, one for each rule of its reading: a
+        quote that never closes hiding the command, no here-document's body
+        told, a here-document in a quoted substitution read as text, an
+        expanded body's substitutions cut out with it, a body in a
+        substitution ended only by its delimiter's own line, an expanded
+        body's backslash-newline kept and every double parenthesis read as
+        arithmetic, 160; and its second review four: a body that waits for a
+        newline in the substitution that closed, an expanded body's
+        substitution kept with its own bodies, a case pattern's parenthesis
+        closing its substitution and arithmetic's parentheses counted inside
+        quotes, 164; and its third review two: a parameter expansion read as
+        text and a backquoted span read as text, 166; and its fourth review
+        three: $$ read as a $ before what follows, old-style arithmetic read
+        as text and a backquoted span's quotes read as the quoting around
+        it, 169; and F27's fix two, a label taken off and lost stays off
+        and a label refused its removal put back, 171, and its review one, a
+        404 after a rate limit read as never on, 172. That passes 150, so the bound is widened to 200: the lane
+        grows by a few mutants for each finding it fixes, and 0.5.1 carries
+        several findings, F22, F23, F25, F26 and F27 among them, with F24
+        still to come."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 156)
+        self.assertEqual(len(mutants.MUTANTS), 172)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
