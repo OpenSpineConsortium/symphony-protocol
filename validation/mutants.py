@@ -1428,7 +1428,7 @@ MUTANTS = {
         "G11a", "a value a wrapper's long option may take is taken only attached, so the push after env "
                 "--default-signal is judged and refused (F26)"),
     "a quote that never closes hiding the command": Mutant(
-        guard, "plain_text", lambda command, lenient=False: ORIGINAL_PLAIN_TEXT(command),
+        guard, "plain_text", lambda command, lenient=False, spans_run=True: ORIGINAL_PLAIN_TEXT(command),
         "G11a", "a quote that never closes is read as a character of its word, so a lease bash runs before the "
                 "line it cannot read, onto a claim another worker holds, is read and refused (F25)"),
     "no here-document's body told": Mutant(

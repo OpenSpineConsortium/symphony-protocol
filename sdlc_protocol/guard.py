@@ -405,9 +405,9 @@ TOO_DEEP = (f"a command whose here-documents nest in command substitutions more 
 # which a command can name thousands (its fourth review: 11,000 pushes,
 # each by git -C into a clone of its own, took 42 seconds).
 DEADLINE_SECONDS = 10
-TOO_SLOW = (f"a command the guard cannot read and judge in {DEADLINE_SECONDS} seconds is refused: a hook that runs "
-            "out of time lets the command run; write the text to a file first, or push in a command of its own "
-            "(.claude/rules/board.md)")
+TOO_SLOW = (f"a command the guard cannot read and judge in {DEADLINE_SECONDS} seconds, or for which git did not "
+            "answer in time, is refused: a hook that runs out of time lets the command run; write the text to a file "
+            "first, or push in a command of its own (.claude/rules/board.md)")
 
 # The hook's exit codes: 0 lets the tool call run, 2 stops it and sends
 # stderr back into the session.
@@ -436,7 +436,7 @@ def as_quoted(span):
     return BACKSLASH_PAIR.sub(lambda pair: "" if pair.group(1) == "\n" else pair.group(0), span)
 
 
-def plain_text(command, lenient=False):
+def plain_text(command, lenient=False, spans_run=True):
     """The command with each unquoted newline made a ; so that shlex, which
     reads a newline as whitespace, ends a command there as the shell does.
     A comment ends at its newline, which then separates; a backslash-newline
@@ -447,7 +447,9 @@ def plain_text(command, lenient=False):
     its word, as if a backslash escaped it, and the text after the quote is
     read as text no quote opened, so the commands on either side of it are
     read (F25: bash runs each complete command before the line it cannot
-    read, and that line's own as it reads them)."""
+    read, and that line's own as it reads them). A lenient reading reads a
+    backquoted span as one part of its word (backquoted_word) and, where
+    spans_run, its text after the rest as the commands of a subshell."""
     out, spans, word_start, i = [], [], True, 0
     while i < len(command):
         ch = command[i]
@@ -457,7 +459,7 @@ def plain_text(command, lenient=False):
                 out.append(as_quoted(command[i:]))
                 break
             out.append("\\" + ch if end is None else as_quoted(command[i:end]))
-            if lenient and end and ch == '"':
+            if lenient and spans_run and end and ch == '"':
                 spans += [plain_text(inner, lenient=True) for inner in backquoted_in(command[i + 1:end - 1])
                           if inner.strip()]
             i, word_start = end or i + 1, False
@@ -470,7 +472,7 @@ def plain_text(command, lenient=False):
             i = len(command) if end == -1 else end
         elif lenient and (span := backquoted_span(command, i)):
             out.append(backquoted_word(span.group(0)))
-            if span.group(0)[1:-1].strip():
+            if spans_run and span.group(0)[1:-1].strip():
                 spans.append(plain_text(span.group(0)[1:-1], lenient=True))
             i, word_start = span.end(), False
         else:
@@ -487,11 +489,23 @@ def backquoted_span(command, i):
 
 def backquoted_in(text):
     """The text of each backquoted span in text, a double-quoted span's
-    inside, past backslash pairs: bash runs each when it expands the
-    double quotes, so a lenient reading reads each as commands too
-    (plain_text)."""
-    found, i = [], 0
+    inside, past backslash pairs and past each $( ) whole: bash runs each
+    such span when it expands the double quotes, so a lenient reading reads
+    each as commands too (plain_text), but what stands in a $( ) is that
+    substitution's own text, where a backquote may sit in single quotes or
+    in a quoted here-document's body, which bash never runs (F25's fifth
+    review: "$(cat <<'EOF' ... `git push --force` ... EOF)", a commit
+    message naming a command, was refused), so the substitution is read as
+    0.5.0 reads it, one part of its word. Single quotes inside double
+    quotes are text, so a span between them is found and runs."""
+    found, memo, i = [], {}, 0
     while i < len(text):
+        if text.startswith("$(", i):
+            close = matching_parenthesis(text, i + 1, memo)
+            if close is None:
+                break
+            i = close + 1
+            continue
         span = BACKQUOTED.match(text, i) if text[i] == "`" else None
         if span:
             found.append(span.group(0)[1:-1])
@@ -709,6 +723,7 @@ def matching_parenthesis(command, open_at, memo):
     if open_at in memo:
         return memo[open_at]
     opened, i, after_dollar = [("(", open_at)], open_at + 1, False
+    others, seen, floor = 0, [], None
     while i < len(command) and opened:
         ch, dollar, after_dollar = command[i], after_dollar, False
         inside = opened[-1][0]
@@ -720,25 +735,54 @@ def matching_parenthesis(command, open_at, memo):
             i = backquote_end(command, i)
         elif kind := opener(ch, dollar, inside):
             key = i if kind == "(" else (kind, i)
+            if kind != "(" and not others:
+                drop = memo.get(("drop", i))
+                if drop is not None and len(opened) > drop:
+                    floor = len(opened) - drop
+                    break
+                seen.append((i, len(opened)))
             if key not in memo:
                 opened.append((kind, i))
+                others += kind != "("
                 i += 1
             elif memo[key] is None:
+                floor = len(opened)
                 break
             else:
                 i = memo[key] + 1
         elif ch == CLOSERS[inside]:
             kind, at = opened.pop()
+            others -= kind != "("
             memo[at if kind == "(" else (kind, at)] = i
+            if not others:
+                seen.append((None, len(opened)))
             i += 1
         else:
             # $$, the shell's process id, is a parameter whole, so the {, [
             # or ( after it opens nothing (F25's fourth review).
             after_dollar = ch == "$" and not dollar
             i += 1
-    for kind, at in opened:
-        memo[at if kind == "(" else (kind, at)] = None
+    if opened:
+        never_closed(memo, opened, seen, len(opened) if floor is None else floor)
     return memo[open_at]
+
+
+def never_closed(memo, opened, seen, floor):
+    """Keeps what a count that ran out of text learned: each opener below
+    floor in the stack it left never closes, and from each ${ or $[ it met
+    with only parentheses open the count fell no further than to floor or
+    to the lowest depth it came back to after it, so a later count that
+    meets that opener holding more parentheses than that fall stops there,
+    its own ( never closing (F25's fifth review: a text of }<<'X'${y:-((
+    units, whose (( stand inside a ${ for the count from each of them,
+    took each count to the end)."""
+    for kind, at in opened[:floor]:
+        memo[at if kind == "(" else (kind, at)] = None
+    lowest = floor
+    for at, depth in reversed(seen):
+        lowest = min(lowest, depth)
+        if at is not None:
+            memo.setdefault(("drop", at), depth - lowest)
 
 
 def arithmetic_end(command, i, memo=None):
@@ -1188,9 +1232,14 @@ def readings(command):
     the shell runs of them, since a body's quotes are none the shell reads.
     Every push either finds is judged, so a body misread hides no command
     the whole reading shows. TooDeep where the bodies nest deeper than this
-    module reads."""
-    texts = [plain_text(command, lenient=True)]
+    module reads. The whole reading runs the text of a backquoted span as
+    commands only where the command holds no body: where it does, a span
+    in a body, as a commit message's `git push --force` in Markdown, is
+    text bash never runs, while the reading with the bodies cut out runs
+    every span bash runs, those of an expanded body among them (F25's
+    fifth review)."""
     bodies = here_document_bodies(command)
+    texts = [plain_text(command, lenient=True, spans_run=not bodies)]
     if bodies:
         texts.append(plain_text(cut_out(command, bodies), lenient=True))
     return texts

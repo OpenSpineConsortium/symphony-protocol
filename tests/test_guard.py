@@ -32,9 +32,9 @@ TOO_DEEP = ("a command whose here-documents nest in command substitutions more t
             "(.claude/rules/board.md)")
 TOO_LONG = ("a command of more than 262144 characters is refused unread: the guard would take longer to read it "
             "than a hook may run; write the text to a file first (.claude/rules/board.md)")
-TOO_SLOW = ("a command the guard cannot read and judge in 10 seconds is refused: a hook that runs out of time lets "
-            "the command run; write the text to a file first, or push in a command of its own "
-            "(.claude/rules/board.md)")
+TOO_SLOW = ("a command the guard cannot read and judge in 10 seconds, or for which git did not answer in time, is "
+            "refused: a hook that runs out of time lets the command run; write the text to a file first, or push in a "
+            "command of its own (.claude/rules/board.md)")
 BOARD = "a push to board is refused: only the board workflow writes that branch (.claude/rules/board.md)"
 
 
@@ -493,7 +493,7 @@ class ReadingTest(unittest.TestCase):
         """The hook as built until F25's fix: the command read whole or not
         at all, and no body told."""
         strict = guard.plain_text
-        with mock.patch.object(guard, "plain_text", lambda command, lenient=False: strict(command)), \
+        with mock.patch.object(guard, "plain_text", lambda command, **options: strict(command)), \
                 mock.patch.object(guard, "here_document_bodies", lambda command: []):
             return self.run_guard(command)
 
@@ -800,6 +800,42 @@ class ReadingTest(unittest.TestCase):
         with mock.patch.object(guard, "backquoted_span", lambda command, i: None):
             self.assertEqual(self.run_guard('x=`echo "`; git push origin main # "'), (0, ""), "as built until the fix")
 
+    def test_a_backquote_in_a_substitution_in_double_quotes_is_left_to_it(self):
+        """A backquoted span in double quotes runs, but one in a $( ) in
+        double quotes is that substitution's text, in single quotes or in a
+        quoted here-document's body there, which bash never runs: until the
+        fix of F25's fifth review a commit message or a pull request's body
+        that names a command in Markdown was refused. Single quotes in
+        double quotes are text, so a span between them still runs."""
+        tick = "`"
+        named = "$(cat <<'EOF'\nSee the " + tick + "git push --force" + tick + " refusal.\nEOF\n)"
+        for command in ('git commit -m "' + named + '" && git push origin claude/7',
+                        'gh pr create --title T --body "' + named + '" && git push origin claude/7',
+                        'git commit -m "$(echo \'see ' + tick + 'git push --force' + tick + '\')" && git push origin claude/7'):
+            with self.subTest(command=command):
+                self.assertEqual(self.run_guard(command), (0, ""))
+        self.assertEqual(self.run_guard('echo "\'' + tick + 'git push origin main' + tick + '\'"'), (2, MAIN))
+
+    def test_the_repository_s_own_texts_as_messages_are_not_refused(self):
+        """Every paragraph and every file the guard reads whole of this
+        repository's own prose and code, written as a commit message in a quoted here-document in a
+        substitution, the shape a session commits in, holds no push bash
+        would run, so the guard refuses none of them (F25's fifth review
+        found such messages refused that 0.5.0 passes)."""
+        texts = []
+        for pattern in ("*.md", "spec/**/*.md", "validation/**/*.md", "scripts/*.py", "sdlc_protocol/*.py"):
+            for path in sorted(ROOT.glob(pattern)):
+                text = path.read_text(encoding="utf-8")
+                texts += [text, *text.split("\n\n")]
+        def message(text):
+            return "git commit -m \"$(cat <<'EOF'\n" + text + "\nEOF\n)\" && git push origin claude/7"
+        commands = [message(text) for text in texts if "\nEOF\n" not in "\n" + text + "\n" and text.strip()
+                    and len(message(text)) <= guard.MAX_COMMAND]
+        self.assertGreater(len(commands), 500)
+        refused = [command[:80] for command in commands if guard.refused_push(
+            command, "/w", lambda place: ("claude/7", "main"), lambda place: None, lambda place: True)]
+        self.assertEqual(refused, [])
+
     def test_a_comment_in_arithmetic_counts_its_parentheses_as_bash_does(self):
         """bash's parse_matched_pair counts the parentheses after a # as it
         tells arithmetic from a subshell: it reads ((echo a #(, a newline
@@ -829,6 +865,19 @@ class ReadingTest(unittest.TestCase):
                 started = time.monotonic()
                 self.assertEqual(self.run_guard(command + push)[0], 2)
                 self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_a_count_in_a_text_of_open_substitutions_takes_time_in_proportion(self):
+        """The count from each (( of }<<'X'${y:-(( units, whose (( stand in
+        a ${ for the count from any of them, ran to the end of the text
+        (F25's fifth review: 32 KB took 4.1 seconds and 64 KB ran out of
+        time); a count now stops at the first ${ or $[ from which an earlier
+        count fell no lower than its own parentheses reach."""
+        for unit in ("}<<'X'${y:-((", "}<<'X'$[y(((", "${y:-(( } ((", "$[ (( ] (("):
+            with self.subTest(unit=unit):
+                command = self.at_full_size("", unit, "")
+                started = time.monotonic()
+                self.assertEqual(self.run_guard(command + "\ngit push origin main")[0], 2)
+                self.assertLess(time.monotonic() - started, 3.0)
 
     @staticmethod
     def at_full_size(head, unit, tail):
@@ -1921,7 +1970,7 @@ class OtherCloneTest(unittest.TestCase):
                 self.assertEqual(code, guard.REFUSE)
                 self.assertIn("claude/7 on origin is a's claim", reason)
                 strict = guard.plain_text
-                with mock.patch.object(guard, "plain_text", lambda command, lenient=False: strict(command)), \
+                with mock.patch.object(guard, "plain_text", lambda command, **options: strict(command)), \
                         mock.patch.object(guard, "here_document_bodies", lambda command: []):
                     self.assertEqual(self.hook(command, self.other), (guard.PASS, ""), "as built until F25's fix")
 

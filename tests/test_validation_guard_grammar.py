@@ -169,7 +169,7 @@ class TheGuardJudged(unittest.TestCase):
         bare = {(c.prefix, c.argv): g.guard_refuses(c.text) for c in g.commands() if c.wrapper == "{}"}
         self.assertTrue(all(g.guard_refuses(c.text) == bare[c.prefix, c.argv] for c in commands[::7]))
         strict = guard.plain_text
-        with mock.patch.object(guard, "plain_text", lambda command, lenient=False: strict(command)), \
+        with mock.patch.object(guard, "plain_text", lambda command, **options: strict(command)), \
                 mock.patch.object(guard, "here_document_bodies", lambda command: []):
             self.assertEqual(sum(g.judge(commands=commands).failures.values()), 5670)
 
