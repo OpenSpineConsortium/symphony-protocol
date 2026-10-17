@@ -773,11 +773,13 @@ def put_back_unasked(calls, actual):
     """A failed release puts back only a label it took off or one whose
     removal GitHub may have made, its answer a server error, a rate
     limit's refusal or no answer at all (may_have_written); a label GitHub
-    refused to take off with any other 4xx, a 404 for one not there among
-    them, is as it was, and putting it on is a write the release does not
-    owe, which puts on a label the issue never carried after a 404, and
-    whose own failure would say a label still on may be off (SPEC["put
-    back"]; F27) (G3L)."""
+    refused to take off with any other 4xx on a try that followed no rate
+    limit's refusal, a 404 for one not there among them, is as it was, and
+    putting it on is a write the release does not owe, which puts on a
+    label the issue never carried after such a 404, and whose own failure
+    would say a label still on may be off; a 404 after a rate limit's
+    refusal may follow a removal GitHub made (SPEC["put back"]; F27)
+    (G3L)."""
     may_be_off = labels_may_be_off(calls)
     problems = []
     for effect in actual:
