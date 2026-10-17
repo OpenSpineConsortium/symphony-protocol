@@ -30,12 +30,14 @@ class TheGrammar(unittest.TestCase):
                       "git --shallow-file x push origin main", "env --uns FOO git push origin main",
                       "env --def git push origin main", "nice --adj 5 git push origin +claude/7",
                       "timeout --sig KILL 60 git push origin HEAD:board",
-                      "git commit -F - <<'EOF'\nDon't stop\nEOF\ngit push origin main\ncat <<'EOF'\nIt's done\nEOF"):
+                      "git commit -F - <<'EOF'\nDon't stop\nEOF\ngit push origin main\ncat <<'EOF'\nIt's done\nEOF",
+                      'x="$(git push origin main)"', "cat <(git push origin +claude/7)"):
             with self.subTest(shape=shape):
                 self.assertIn(shape, texts)
         self.assertEqual(len(set(texts)), len(texts))
         self.assertEqual(len(g.argument_lists()), 1398, "a prefix changes what the guard reads, never git's words")
-        self.assertEqual(len(texts), 51260, "since F25's fix a sixth wrapper, the session's here-documents")
+        self.assertEqual(len(texts), 68036, "since F25's fix a sixth wrapper, the session's here-documents, and "
+                                            "since F24's a seventh and an eighth, a quoted and a process substitution")
         self.assertFalse(any(c.prefix in g.ABBREVIATED and (c.wrapper != "{}" or c.argv.startswith("-"))
                              for c in g.commands()), "an abbreviated wrapper is taken with the command alone")
 
@@ -91,7 +93,7 @@ class TheGuardJudged(unittest.TestCase):
         self.assertLess(time.perf_counter() - began, BUDGET_SECONDS)
         self.assertEqual(judgement.missing, ())
         self.assertEqual(judgement.failures, {}, g.report(judgement))
-        self.assertEqual(judgement.commands, 51260)
+        self.assertEqual(judgement.commands, 68036)
         let_through = {d.why for d in judgement.classes if d.kind == "let through"}
         self.assertTrue(let_through)
         self.assertTrue(all("G11b" in why for why in let_through), let_through)
@@ -172,6 +174,25 @@ class TheGuardJudged(unittest.TestCase):
         with mock.patch.object(guard, "plain_text", lambda command, **options: strict(command)), \
                 mock.patch.object(guard, "here_document_bodies", lambda command: []):
             self.assertEqual(sum(g.judge(commands=commands).failures.values()), 5670)
+
+    def test_the_lane_bites_on_a_guard_that_reads_no_substitution_apart(self):
+        """F24: with no substitution read apart, a push in a double-quoted
+        $( ) is part of a word and one in a <( ) a redirection's target,
+        so every forbidden push in those two wrappers passes, as on the
+        guard before the fix; with the fix each is judged as the bare
+        command."""
+        from unittest import mock
+
+        from sdlc_protocol import guard
+
+        bare = {(c.prefix, c.argv): g.guard_refuses(c.text) for c in g.commands() if c.wrapper == "{}"}
+        for wrapper in (g.QUOTED_SUBSTITUTION, g.PROCESS_SUBSTITUTION):
+            commands = [c for c in g.commands() if c.wrapper == wrapper]
+            with self.subTest(wrapper=wrapper):
+                self.assertEqual(g.judge(commands=commands).failures, {})
+                self.assertTrue(all(g.guard_refuses(c.text) == bare[c.prefix, c.argv] for c in commands[::7]))
+                with mock.patch.object(guard, "substituted", lambda command: ""):
+                    self.assertEqual(sum(g.judge(commands=commands).failures.values()), 5670)
 
 
 if __name__ == "__main__":

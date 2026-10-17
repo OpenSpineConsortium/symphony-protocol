@@ -468,6 +468,13 @@ def body_texts(command):
     return [command[body.start:body.end] for body in guard.here_document_bodies(command)]
 
 
+def unsubstituted():
+    """The guard with no substitution read apart (guard.substituted), as
+    it read a command until F24's fix, for a test that plays a guard built
+    before it."""
+    return mock.patch.object(guard, "substituted", lambda command: "")
+
+
 # Pieces of shell to make commands of at random: quotes, backslashes,
 # newlines, comments, substitutions, arithmetic and here-documents.
 PIECES = ("'", '"', "\\", "\n", "#", " ", "$(", ")", "((", "))", "<<", "<<-", "<<<", "EOF", "\t", "x", ";", "|",
@@ -494,7 +501,7 @@ class ReadingTest(unittest.TestCase):
         at all, and no body told."""
         strict = guard.plain_text
         with mock.patch.object(guard, "plain_text", lambda command, **options: strict(command)), \
-                mock.patch.object(guard, "here_document_bodies", lambda command: []):
+                mock.patch.object(guard, "here_document_bodies", lambda command: []), unsubstituted():
             return self.run_guard(command)
 
     def test_a_push_beside_a_quote_that_never_closes_is_read(self):
@@ -577,7 +584,7 @@ class ReadingTest(unittest.TestCase):
         self.assertEqual(runs, [("$(git push origin main)", "$(echo \"a\" ')')")])
         self.assertEqual([body.runs for body in guard.here_document_bodies("cat <<'EOF'\n$(git push)\nEOF")], [()])
         self.assertEqual(guard.readings("cat <<EOF\nIt's $(git push origin main) done\nEOF\nls")[1],
-                         "cat <<EOF ; $(git push origin main) ; ls")
+                         "cat <<EOF ; $(git push origin main) ; ls ; ( git push origin main ) ")
 
     def test_an_expanded_body_joins_a_line_that_ends_in_a_backslash(self):
         """bash takes a backslash-newline out of a body it expands before it
@@ -654,7 +661,7 @@ class ReadingTest(unittest.TestCase):
             [("$(cat <<'X'\n)", "$(cat <<X\n$(git push origin main)\n)")])
         command = "cat <<EOF\n$(cat <<'X'\nDon't\nX\n)\nEOF\ngit push origin main\ncat <<'EOF'\nIt's\nEOF"
         self.assertEqual(guard.readings(command)[1],
-                         "cat <<EOF ; $(cat <<'X' ; ) ; git push origin main ; cat <<'EOF' ; ")
+                         "cat <<EOF ; $(cat <<'X' ; ) ; git push origin main ; cat <<'EOF' ;  ; ( cat <<'X' ;  ) ")
         self.assertEqual(self.run_guard(command), (2, MAIN))
 
     def test_bodies_nested_deeper_than_the_guard_reads_are_refused_unread(self):
@@ -734,9 +741,9 @@ class ReadingTest(unittest.TestCase):
         def braces_as_text(command, i, *rest):
             return None if command.startswith("${", i) else step(command, i, *rest)
 
-        with mock.patch.object(guard, "expansion_step", braces_as_text):
+        with mock.patch.object(guard, "expansion_step", braces_as_text), unsubstituted():
             self.assertEqual(self.run_guard(command), (0, ""), "as built until the fix")
-        with mock.patch.object(guard, "backquoted", lambda command, i, depth: None):
+        with mock.patch.object(guard, "backquoted", lambda command, i, depth: None), unsubstituted():
             self.assertEqual(self.run_guard(command.replace("${y:-)}", "`case a in a) :;; esac`")), (0, ""),
                              "as built until the fix")
 
@@ -829,9 +836,17 @@ class ReadingTest(unittest.TestCase):
                 texts += [text, *text.split("\n\n")]
         def message(text):
             return "git commit -m \"$(cat <<'EOF'\n" + text + "\nEOF\n)\" && git push origin claude/7"
-        commands = [message(text) for text in texts if "\nEOF\n" not in "\n" + text + "\n" and text.strip()
-                    and len(message(text)) <= guard.MAX_COMMAND]
-        self.assertGreater(len(commands), 500)
+
+        def body(text):
+            return ("gh pr create --title T --body \"$(cat <<'EOF'\n" + text + "\nEOF\n)\" && "
+                    "git push origin claude/7")
+
+        def printed(text):
+            return "git commit -m \"$(printf '%s\\n' '" + text.replace("'", "'\\''") + "')\" && git push origin claude/7"
+
+        commands = [form(text) for text in texts for form in (message, body, printed)
+                    if "\nEOF\n" not in "\n" + text + "\n" and text.strip() and len(form(text)) <= guard.MAX_COMMAND]
+        self.assertGreater(len(commands), 1500)
         refused = [command[:80] for command in commands if guard.refused_push(
             command, "/w", lambda place: ("claude/7", "main"), lambda place: None, lambda place: True)]
         self.assertEqual(refused, [])
@@ -850,7 +865,9 @@ class ReadingTest(unittest.TestCase):
         command may take the reading long: until the fix of F25's second
         review an unmatched (( or $(( was counted to the end of the text
         once for each, 55 seconds for the first of these; each now takes
-        well under the bound, generous for a slow runner."""
+        well under the bound, generous for a slow runner: two seconds, and
+        three for a command at the longest the guard reads, which since
+        F24's fix it reads once more for its substitutions."""
         push = "\ngit push origin main"
         for command in ("cat <<A\nA\n" + "(( " * 16000, "cat <<EOF\n" + "$((" * 8000,
                         "cat <<A\nA\necho \"" + "$((" * 16000, "cat <<A\nA\n" + "\"$( " * 16000,
@@ -864,7 +881,8 @@ class ReadingTest(unittest.TestCase):
             with self.subTest(command=command[:40]):
                 started = time.monotonic()
                 self.assertEqual(self.run_guard(command + push)[0], 2)
-                self.assertLess(time.monotonic() - started, 2.0)
+                bound = 3.0 if len(command + push) > guard.MAX_COMMAND - 64 else 2.0
+                self.assertLess(time.monotonic() - started, bound)
 
     def test_a_count_in_a_text_of_open_substitutions_takes_time_in_proportion(self):
         """The count from each (( of }<<'X'${y:-(( units, whose (( stand in
@@ -1000,6 +1018,100 @@ class ReadingTest(unittest.TestCase):
                 self.assertIn(len(texts), (1, 2))
                 for text in texts:
                     lexed(text)
+
+
+# A push in each place bash runs a substitution's text from, which the
+# guard read as part of a word or as a redirection's target until F24's
+# fix: in double quotes, in a parameter expansion, in arithmetic, nested in
+# another, and in a process substitution.
+SUBSTITUTED_PUSHES = (
+    'out="$(git push --force origin main 2>&1)"', "cat <(git push --force origin main)",
+    "tee >(git push --force origin main) </dev/null", 'echo "$(git push origin main)"',
+    'echo "$(echo `git push origin main`)"', 'x="${y:-$(git push origin main)}"',
+    'echo "$(( $(git push origin main) ))"', '(( "$(git push origin main)" ))', 'echo "$[ $(git push origin main) ]"',
+    '`echo "$(git push origin main)"`', 'echo "$(case a in a) git push origin main;; esac)"',
+    "diff <(echo a) <(git push origin main)", 'echo "$(echo ")"; git push origin main)"',
+    'echo "$(echo "$(echo "$(git push origin main)")")"', 'echo "${y:-$(echo `git push origin main`)}"',
+    'echo "`git push origin \\"main\\"`"', 'echo "$(echo $\'it\\\'s\') $(git push origin main)" # it\'s',
+)
+# Commands that name a push in a substitution's place where bash runs none:
+# in single quotes, after a backslash, in a comment, in a quoted
+# here-document's body, as the text of a commit message or a pull
+# request's body, and a <( ) in double quotes, which is text there.
+SUBSTITUTED_TEXTS = (
+    "echo '$(git push origin main)'", 'echo "\\$(git push origin main)"', "echo a # $(git push origin main)",
+    'echo "<(git push origin main)"', 'echo "$(echo \\`git push origin main\\`)"',
+    "git commit -m \"$(cat <<'EOF'\nRun $(git push --force origin main) and `git push origin main`.\nEOF\n)\"",
+    "gh pr create --title T --body \"$(cat <<'EOF'\nSee <(git push origin main) and $(git push origin main)\nEOF\n)\"",
+    "git commit -m \"$(printf '%s\\n' 'Run git push --force origin main' '$(git push origin main)')\"",
+    "gh pr create --body \"$(printf '%s' \"$(echo '$(git push origin main)')\")\"",
+    'x="$(cat <<\'EOF\'\n$(git push origin main)\nEOF\n)"',
+)
+
+
+class SubstitutionTest(unittest.TestCase):
+    """What the shell runs of a command's substitutions (F24): bash runs
+    the text of a $( ), a backquoted span, a <( ) and a >( ) as commands
+    wherever it expands one, in double quotes too, so the guard reads each
+    apart as the commands of a subshell (guard.substituted), where until
+    the fix a substitution in double quotes was one word and a <( ) a
+    redirection. bash 5.2 ran each push these tests say it runs."""
+
+    def run_guard(self, command):
+        payload = {"tool_input": {"command": command}, "cwd": str(ROOT)}
+        with mock.patch.object(guard, "branches", return_value=("claude/7", "main")):
+            return guard.run(payload, str(ROOT))
+
+    def test_a_push_in_a_substitution_is_refused_wherever_bash_runs_it(self):
+        for command in SUBSTITUTED_PUSHES:
+            with self.subTest(command=command):
+                self.assertEqual(self.run_guard(command)[0], 2)
+                with unsubstituted():
+                    self.assertEqual(self.run_guard(command), (0, ""), "with no substitution read apart")
+        self.assertEqual(self.run_guard('out="$(git push -u origin claude/7 2>&1)"'), (0, ""))
+
+    def test_a_push_named_where_bash_runs_no_substitution_passes(self):
+        """The quoted bodies of a commit message or a pull request's body
+        stay text, as F25's fix made them, however their pushes are
+        written; so do single quotes, a backslash and a comment."""
+        for command in SUBSTITUTED_TEXTS:
+            with self.subTest(command=command):
+                self.assertEqual(self.run_guard(command + " && git push origin claude/7"), (0, ""))
+
+    def test_each_substitution_is_read_apart_after_the_command(self):
+        self.assertEqual(guard.substituted('a "$(b "$(c)" `d`)" <(e) x'),
+                         " ; ( b \"$x\" $x ; ( c )  ; ( d )  )  ; ( e ) ")
+        self.assertEqual(guard.substituted("echo a 'b' \"c\""), "")
+        self.assertEqual(guard.substituted('"$($(git push))"'), " ; ( git push ) ", "nothing of its own")
+        self.assertEqual(guard.substituted("`echo \\`git push\\``"), " ; ( echo $x ; ( git push )  ) ",
+                         "a backslash nests a backquoted span in another")
+        self.assertEqual(guard.readings('echo "$(git push origin main)"'),
+                         ['echo "$(git push origin main)" ; ( git push origin main ) '])
+
+    def test_a_push_in_a_substitution_is_judged_where_its_shell_stands(self):
+        """A substitution runs in a subshell of the shell around it, so a cd
+        before it holds for it and a cd inside it holds for what follows
+        inside it alone."""
+        self.assertEqual(push_places('cd /a && x="$(cd /b; git push origin HEAD)" && echo "$(git push origin HEAD)"'),
+                         ["/b", "/a"])
+        self.assertEqual(push_places('x="$(git -C /c push origin HEAD)"'), ["/c"])
+
+    def test_the_reading_of_substitutions_takes_time_in_proportion_to_the_command(self):
+        """Substitutions nested deep or many in a row, each in double
+        quotes, a parameter expansion, arithmetic or a backquoted span, at
+        the longest command the guard reads: each well under the bound."""
+        full = ReadingTest.at_full_size
+        for command in (full("", '"$(', ""), full("", "$(", ""), full("", "<(", ""), full("", ">( ", ""),
+                        full("", '"$(x)" ', ""), full('echo "', "`x`", '"'), full('echo "', "$((", ""),
+                        full("", "(( ", ""), full("", "$(echo ", ""), full("", "`\\`", ""), full("", '"$(a; ', ""),
+                        full("", "$(()", ""), full("", 'x="$(echo `a` <(b) ${c:-$(d)}) " ; ', ""),
+                        full("git commit -m \"$(cat <<'EOF'\n", "it's $(x) `y` \"z\n", "EOF\n)\""),
+                        full("cat <<EOF\n", "it's $(x \"$(y)\") `z`\n", "EOF"),
+                        full("", "$(echo $'\\'' ", ""), full('echo "$(', "$'a\\'b' ", "")):
+            with self.subTest(command=command[:40]):
+                started = time.monotonic()
+                self.assertEqual(self.run_guard(command + "\ngit push origin main")[0], 2)
+                self.assertLess(time.monotonic() - started, 3.0)
 
 
 # Each GNU coreutils wrapper's words before a command, as a person may
@@ -1971,7 +2083,7 @@ class OtherCloneTest(unittest.TestCase):
                 self.assertIn("claude/7 on origin is a's claim", reason)
                 strict = guard.plain_text
                 with mock.patch.object(guard, "plain_text", lambda command, **options: strict(command)), \
-                        mock.patch.object(guard, "here_document_bodies", lambda command: []):
+                        mock.patch.object(guard, "here_document_bodies", lambda command: []), unsubstituted():
                     self.assertEqual(self.hook(command, self.other), (guard.PASS, ""), "as built until F25's fix")
 
     def test_a_relative_minus_c_after_a_cd_the_hook_misreads_is_judged_where_the_command_starts_too(self):

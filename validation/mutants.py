@@ -455,6 +455,32 @@ def expansions_without(kind):
     return expansion_step
 
 
+# guard.substitutions and guard.substitution_opens as built, which the
+# mutants of F24's fix wrap.
+SUBSTITUTIONS = guard.substitutions
+SUBSTITUTION_OPENS = guard.substitution_opens
+
+
+def substitutions_one_deep(command):
+    """guard.substitutions with each substitution's own nested ones left
+    unread, as if the reading went one level into the command and no
+    deeper: a push in a $( ) in a $( ), or in a backquoted span in one,
+    stays part of a word."""
+    whole = SUBSTITUTIONS(command)
+    for nested in whole.nested:
+        nested.nested = []
+    return whole
+
+
+def no_arithmetic_opens(command, i, contexts, memo):
+    """guard.substitution_opens with arithmetic, (( )), read as text the
+    scan jumps over whole, as the scan of here-documents reads it, so a
+    $( ) inside it is never read."""
+    if command.startswith("((", i):
+        return None
+    return SUBSTITUTION_OPENS(command, i, contexts, memo)
+
+
 def substitutions_kept_whole(command, start, end, depth=0):
     """guard.substitutions_in as it kept an expanded body's substitutions
     until F25's second review: each whole, the bodies of its own
@@ -1641,6 +1667,30 @@ MUTANTS = {
         "G11a", "a backquoted span is read as one part of a word in the lenient reading, its quotes pairing with "
                 "nothing outside it, as bash reads it, so a lease after x=`echo \"` and before a comment with a "
                 "double quote, onto a claim another worker holds, is read and refused (F25)"),
+    "a substitution in double quotes read as part of its word": Mutant(
+        guard, "substituted", lambda command: "",
+        "G11a", "the text of every command substitution bash runs is read as commands, in double quotes too, so "
+                "a lease in out=\"$(git push ...)\", onto a claim another worker holds, is read and refused (F24)"),
+    "a process substitution read as a redirection": Mutant(
+        guard, "reads_commands", lambda contexts: False,
+        "G11a", "a <( ) or >( ) outside double quotes is a process substitution whose text bash runs, so a lease "
+                "in cat <(git push ...), onto a claim another worker holds, is read and refused (F24)"),
+    "a nested substitution left unread": Mutant(
+        guard, "substitutions", substitutions_one_deep,
+        "G11a", "a substitution nested in another is read apart in turn, so a lease in a $( ) three deep in "
+                "double quotes, onto a claim another worker holds, is read and refused (F24)"),
+    "a backquoted span in a substitution read as text": Mutant(
+        guard, "backquoted_substitution", lambda command, i, quoted=False: None,
+        "G11a", "a backquoted span inside a $( ) in double quotes is a substitution bash runs, so a lease in "
+                "echo \"$(echo `git push ...`)\", onto a claim another worker holds, is read and refused (F24)"),
+    "arithmetic read as no substitution": Mutant(
+        guard, "substitution_opens", no_arithmetic_opens,
+        "G11a", "the substitutions inside arithmetic run, so a lease in (( \"$(git push ...)\" )), onto a claim "
+                "another worker holds, is read and refused (F24)"),
+    "a $'...' read as a quoted span": Mutant(
+        guard, "ansi_c_end", lambda command, i: i - 1,
+        "G11a", "a backslash escapes an apostrophe in bash's $'...', so a lease after echo $'it\\'s' in a "
+                "substitution, onto a claim another worker holds, is read and refused (F24)"),
     "dealing without its taken set": Mutant(
         team, "deal", deal_without_the_taken_set,
         "G14", "the workers of one run are dealt distinct issues"),

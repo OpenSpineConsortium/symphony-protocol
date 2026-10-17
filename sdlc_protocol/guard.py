@@ -127,7 +127,9 @@ newline into the separator the shell reads it as, ends a comment at its
 newline, and removes a backslash-newline, the shell's line continuation.
 It tracks single quotes, double quotes and the backslash, and nothing else
 of the shell: the quoting inside a command substitution is read as the
-quoting around it, and bash's $'...' as a $ and a quoted span. bash runs
+quoting around it, and bash's $'...' as a $ and a quoted span; so since
+F24's fix each substitution's text is read apart as well (substituted,
+below). bash runs
 a command text one complete command at a time, so a quote that never
 closes stops the line it opens on and what follows, and the commands
 before it run; and it reads a here-document's body as text, whose quotes
@@ -189,14 +191,36 @@ text inside quotes that close, as a commit message given by -m "...",
 which it would refuse wherever a line starts with a push; what hides a
 push inside quotes that close is the quoting of a command substitution or
 $'...', which want readings of their own. A backquoted span is read
-whole in the lenient readings, as one part of its word, and its text as
-the commands of a subshell (backquoted_word), so a push inside one, or
-after one that holds a quote, is judged (F25's fourth review); one inside
-a backquoted span that a backslash nests in another still passes. So a
-push inside $'...' or a substitution in double quotes still passes, as
-does one after a $'...' that holds a backslash before an apostrophe,
-which this module reads as a quote closed early, and branch protection
-stands behind it.
+whole in the lenient readings, as one part of its word (backquoted_word),
+so a quote inside one pairs with nothing outside it (F25's fourth
+review). And bash runs the text of every command substitution, $( ) or a
+backquoted span, wherever it expands one, in double quotes, a parameter
+expansion and arithmetic too, with quoting of its own, and the text of a
+process substitution, <( ) or >( ), outside double quotes, where shlex
+reads <( as a redirection that takes the next word: until F24's fix
+out="$(git push ... 2>&1)" and cat <(git push ...)
+passed. So the text of each substitution bash runs is read apart, as the
+commands of a subshell after the reading, those nested in it inside the
+same subshell after its own text, a backquoted span's with the
+backslashes bash takes off taken off (substitutions, substituted), from
+the command with its here-documents' bodies cut out, so a quoted body in
+a substitution, a commit message's, stays text, as F25's fix made it. A
+substitution is judged where the shell stands after the whole reading,
+and, after a move, where the command starts, as any push after a move
+is, so a cd after it in the command may judge it in a clone it does not
+run in, which refuses too much at worst. The scan steps over a $'...'
+whole with its escapes where bash reads commands (ansi_c_end), so one in
+a substitution hides nothing after it. What this leaves: a push inside
+$'...', or after one that holds a backslash before an apostrophe and
+stands in no substitution, which this module reads as a quote closed
+early, still passes; the whole
+reading still reads each body as commands with an ordinary line's
+quoting, so a body line that holds a double quote before a substitution
+naming a push may be refused, as before the fix; a substitution's own
+text is made plain as any text is, so a push named inside a $'...' that
+holds an escaped apostrophe, in a substitution, may be refused; and a
+substitution in a here-document's delimiter word, which bash reads as
+text, is read as commands, refusing too much. Branch protection stands behind each.
 """
 
 import contextvars
@@ -1223,6 +1247,218 @@ def cut_out(command, bodies, start=0, end=None):
     return "".join(kept) + command[at:len(command) if end is None else end]
 
 
+# --- substitutions ---------------------------------------------------------------
+
+# What a substitution stands as in the text of the one around it, once its
+# own text is read apart (substitutions): a word the shell expands, so a
+# path or a branch it gives is one this module cannot tell, as it was
+# before F24's fix.
+SUBSTITUTED = "$x"
+# What may open a substitution, so a command that holds none of them is
+# not scanned for one.
+SUBSTITUTION_MARKS = ("$(", "`", "<(", ">(", "((")
+# The characters a substitution other than a backquoted span opens at
+# (substitution_opens), so the scan asks only there.
+OPENERS = set("$<>(")
+# A run of characters no step of the scan reads but as part of a word,
+# inside a word: the scan of substitutions steps over it at once, since a
+# step there only moves on (scan_step), and most of a long command is such
+# runs.
+PLAIN_RUN = re.compile(r"[^\s$`'\"\\#(){}\[\]<>;&|]+")
+# How many steps the scan of substitutions takes between two looks at the
+# deadline (in_time): a look costs about as much as a step, and a step
+# takes a few microseconds, so the deadline is still kept to well under a
+# millisecond.
+CHECKS_EVERY = 64
+# A backslash pair inside a backquoted span that bash takes the backslash
+# off before it runs the span's text: before $, ` and a backslash, and,
+# where the span stands in double quotes, before a double quote too (bash
+# 5.2 runs git push origin main for "`git push origin \"main\"`").
+BACKQUOTE_ESCAPE = re.compile(r"\\([$`\\])")
+DOUBLE_QUOTED_BACKQUOTE_ESCAPE = re.compile(r'\\([$`\\"])')
+
+
+class Substitution:
+    """A substitution's own text as it is read apart (substitutions): the
+    pieces of it read so far, each nested substitution standing as
+    SUBSTITUTED; where in the scanned text the next piece starts, None
+    while a substitution nested in it is open, which holds the rest of the
+    text where it never closes, so no text is read in two of them; the
+    substitutions nested in it, in order; and the context the scan opened
+    for it, whose closing ends it (None for a backquoted span or the text
+    itself, read whole)."""
+
+    __slots__ = ("pieces", "at", "nested", "context")
+
+    def __init__(self, at=0, context=None):
+        self.pieces, self.at, self.nested, self.context = [], at, [], context
+
+
+def reads_commands(contexts):
+    """Whether the scan of substitutions stands where bash reads commands
+    in contexts: outside double quotes, a parameter expansion and
+    old-style arithmetic, at the top or in a substitution or a subshell,
+    where a <( or >( opens a process substitution and a (( arithmetic; in
+    double quotes each is text."""
+    return contexts is None or contexts.kind not in TEXT_ONLY
+
+
+def substitution_opens(command, i, contexts, memo):
+    """Where the own text of the substitution that opens at command[i]
+    starts, or None where none opens there: a $( anywhere the scan reads,
+    in double quotes, a parameter expansion and arithmetic too, and $(( ))
+    among them, since bash runs the substitutions inside arithmetic; and,
+    where bash reads commands (reads_commands), a <( or >( and arithmetic,
+    (( )), whose text is read as a substitution's so the substitutions
+    inside it are found, which bash runs. Arithmetic's own text, read as
+    commands, runs nothing but a word with no push in it."""
+    if command.startswith("$(", i):
+        return i + 2
+    if not reads_commands(contexts):
+        return None
+    if command.startswith("<(", i) or command.startswith(">(", i):
+        return i + 2
+    if command.startswith("((", i) and arithmetic_end(command, i + 2, memo):
+        return i + 1
+    return None
+
+
+def in_double_quotes(contexts):
+    """Whether the scan stands directly in double quotes at contexts."""
+    return contexts is not None and contexts.kind == '"'
+
+
+def closed_by(contexts, substitution):
+    """Whether the contexts a step of the scan left it in are outside the
+    one opened for substitution, so the step read the ) that closes it: a
+    step closes one context, or a case pattern's ) the case and the
+    substitution that holds it (case_step), so the contexts are the
+    substitution's own outer one."""
+    opened = substitution.context
+    return opened is not None and contexts is opened.outer
+
+
+def backquoted_substitution(command, i, quoted=False):
+    """The backquoted span that opens at command[i] read apart, as bash
+    runs its text, a backslash before $, ` or a backslash taken off, and
+    before a double quote where the span stands in double quotes (quoted),
+    its own substitutions read inside it in turn (substitutions), and
+    where the scan goes on past it; None where no span opens there. The
+    span runs to the end of the text where no ` closes it. bash nests a
+    backquoted span in another only by backslashes, which double at each
+    level, so the depth stays below the logarithm of the length."""
+    if command[i] != "`":
+        return None
+    end = backquote_end(command, i)
+    inner = command[i + 1:end - 1] if BACKQUOTED.match(command, i) else command[i + 1:]
+    escape = DOUBLE_QUOTED_BACKQUOTE_ESCAPE if quoted else BACKQUOTE_ESCAPE
+    return substitutions(escape.sub(r"\1", inner)), end
+
+
+def ansi_c_end(command, i):
+    """Where bash's $'...' that opened before command[i] ends: after the
+    apostrophe no backslash escapes, since in it a backslash escapes the
+    character after it, an apostrophe too, or at the end of the command
+    where none closes it. Read as an ordinary quoted span, $'it\\'s' closed
+    at its escaped apostrophe, and the apostrophe after it opened a quote
+    that hid every substitution up to the next one (F24's fuzz)."""
+    while i < len(command):
+        if command[i] == "\\":
+            i += 2
+        elif command[i] == "'":
+            return i + 1
+        else:
+            i += 1
+    return len(command)
+
+
+def substitutions(command):
+    """The command as a Substitution read whole, its own text the command
+    with each substitution in it standing as SUBSTITUTED and each read
+    apart, nested in it as the shell nests them (F24): a $( ), a backquoted
+    span, a <( ) or >( ) and arithmetic, as substitution_opens tells them,
+    in double quotes and a parameter expansion too, but never in single
+    quotes, a comment or a backslash pair, which the scan steps over as the
+    shell reads them (scan_step), nor in a $'...' where the shell reads
+    commands, stepped over whole with its escapes (ansi_c_end), each running to the ) that closes it as
+    the scan of here-documents reads one (closed_by). The command is read
+    with its here-documents' bodies cut out (readings), so a quoted body,
+    as a commit message's, is text here too. The scan is one pass, each
+    step in the same time however deep it stands, so the reading takes a
+    time in proportion to the text, and a text that holds no
+    SUBSTITUTION_MARKS is its own text whole, unscanned."""
+    whole = Substitution()
+    if not any(mark in command for mark in SUBSTITUTION_MARKS):
+        whole.pieces.append(command)
+        return whole
+    open_ones, contexts, word_start, command_start, memo, i, steps = [whole], None, True, True, {}, 0, 0
+    while i < len(command):
+        steps += 1
+        if not steps % CHECKS_EVERY:
+            in_time()
+        plain = None if word_start else PLAIN_RUN.match(command, i)
+        if plain:
+            i, command_start = plain.end(), False
+            continue
+        current, ch = open_ones[-1], command[i]
+        start = substitution_opens(command, i, contexts, memo) if ch in OPENERS else None
+        if start is not None:
+            current.pieces += [command[current.at:i], SUBSTITUTED]
+            current.at = None
+            contexts = Context("$(", contexts)
+            nested = Substitution(start, contexts)
+            current.nested.append(nested)
+            open_ones.append(nested)
+            i, word_start, command_start = start, True, True
+        elif ch == "`" and (span := backquoted_substitution(command, i, in_double_quotes(contexts))) is not None:
+            nested, end = span
+            current.pieces += [command[current.at:i], SUBSTITUTED]
+            current.nested.append(nested)
+            current.at, i, word_start, command_start = end, end, False, False
+        elif ch == "$" and command.startswith("$'", i) and reads_commands(contexts):
+            i, word_start, command_start = ansi_c_end(command, i + 2), False, False
+        else:
+            i, contexts, word_start, command_start = scan_step(command, i, contexts, word_start, command_start, memo)
+            while closed_by(contexts, open_ones[-1]):
+                closed = open_ones.pop()
+                closed.pieces.append(command[closed.at:i - 1])
+                open_ones[-1].at = i
+    for still_open in open_ones:
+        if still_open.at is not None:
+            still_open.pieces.append(command[still_open.at:])
+    return whole
+
+
+def substituted(command):
+    """What the shell runs of the substitutions in a command, as text to
+    read after it: each substitution's own text, made plain leniently
+    (plain_text), as the commands of a subshell, with those nested in it
+    after its own text inside the same subshell, so a cd before them in it
+    holds for them, as it does in bash (substitutions); one whose own text
+    is nothing but the substitutions nested in it runs no command and
+    moves no shell, so those are read in its place, which keeps a run of
+    nested ones short. Empty where the command holds none. Until F24's fix
+    a substitution in double quotes was read as part of its word, so
+    echo "$(git push ...)" and out="$(git push ...)" passed, and a <( ) or
+    >( ) as a redirection that took the word after it, so
+    cat <(git push ...) passed too."""
+    if not any(mark in command for mark in SUBSTITUTION_MARKS):
+        return ""
+    out, pending = [], [(nested, False) for nested in reversed(substitutions(command).nested)]
+    while pending:
+        in_time()
+        item, done = pending.pop()
+        if done:
+            out.append(" ) ")
+            continue
+        own = "".join(item.pieces)
+        if own.replace(SUBSTITUTED, "").strip():
+            out += [" ; ( ", plain_text(own, lenient=True, spans_run=False)]
+            pending.append((item, True))
+        pending += [(nested, False) for nested in reversed(item.nested)]
+    return "".join(out)
+
+
 def readings(command):
     """The texts this module reads a shell command as, each made plain with
     a quote that never closes read leniently (plain_text): the command
@@ -1232,17 +1468,21 @@ def readings(command):
     the shell runs of them, since a body's quotes are none the shell reads.
     Every push either finds is judged, so a body misread hides no command
     the whole reading shows. TooDeep where the bodies nest deeper than this
-    module reads. The whole reading runs the text of a backquoted span as
-    commands only where the command holds no body: where it does, a span
-    in a body, as a commit message's `git push --force` in Markdown, is
-    text bash never runs, while the reading with the bodies cut out runs
-    every span bash runs, those of an expanded body among them (F25's
-    fifth review)."""
+    module reads. What the shell runs of the command's substitutions, a
+    backquoted span's text among them, is read apart after the reading
+    (substituted; F24), and the whole reading reads it only where the
+    command holds no body: where it does, a substitution in a body, as a
+    commit message's `git push --force` in Markdown, is text bash never
+    runs, while the reading with the bodies cut out reads every
+    substitution bash runs, those of an expanded body among them (F25's
+    fifth review read backquoted spans so; F24's fix reads every
+    substitution so, and plain_text runs no span of its own here)."""
     bodies = here_document_bodies(command)
-    texts = [plain_text(command, lenient=True, spans_run=not bodies)]
-    if bodies:
-        texts.append(plain_text(cut_out(command, bodies), lenient=True))
-    return texts
+    if not bodies:
+        return [plain_text(command, lenient=True, spans_run=False) + substituted(command)]
+    cut = cut_out(command, bodies)
+    return [plain_text(command, lenient=True, spans_run=False),
+            plain_text(cut, lenient=True, spans_run=False) + substituted(cut)]
 
 
 def shell_parts(command):

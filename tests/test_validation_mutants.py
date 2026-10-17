@@ -141,6 +141,12 @@ TRACES = {
     "$$ read as a $ before what follows": "the regression traces",
     "old-style arithmetic read as text": "the regression traces",
     "a backquoted span's quotes read as the quoting around it": "the regression traces",
+    "a substitution in double quotes read as part of its word": "the regression traces",
+    "a process substitution read as a redirection": "the regression traces",
+    "a nested substitution left unread": "the regression traces",
+    "a backquoted span in a substitution read as text": "the regression traces",
+    "arithmetic read as no substitution": "the regression traces",
+    "a $'...' read as a quoted span": "the regression traces",
     "dealing without its taken set": "dealing at every look",
     "each leg dealt from its own look": "the regression traces",
     "given to workers needing the label todo": "the regression traces",
@@ -394,9 +400,13 @@ class TheLane(unittest.TestCase):
         it, 169. That passes 150, so the bound is widened to 200: the lane
         grows by a few mutants for each finding it fixes, and 0.5.1 carries
         several findings, F22, F23, F25 and F26 among them, with F24 and F27
-        still to come."""
+        still to come; and F24's fix six, one for each rule of its reading:
+        a substitution in double quotes read as part of its word, a process
+        substitution read as a redirection, a nested substitution left
+        unread, a backquoted span in a substitution read as text, arithmetic
+        read as no substitution and a $'...' read as a quoted span, 175."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 169)
+        self.assertEqual(len(mutants.MUTANTS), 175)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
