@@ -132,13 +132,17 @@ class GitHubError(team.ClientError):
     status (None when there was no answer), detail GitHub's own message
     from the answer's body, "" when it gave none, and headers the
     answer's headers, None when there was no answer, for the wait a rate
-    limit asks (rate_wait)."""
+    limit asks (rate_wait); after_rate_limit says the client made the
+    call again after GitHub refused an earlier try of it for a rate limit
+    (GitHub.request), so the refusal is the last of several answers and
+    may follow a try GitHub acted on (wrote_nothing)."""
 
     def __init__(self, message, status=None, detail="", headers=None):
         super().__init__(message)
         self.status = status
         self.detail = detail
         self.headers = headers
+        self.after_rate_limit = False
 
 
 def next_link(headers):
@@ -332,7 +336,13 @@ class GitHub:
         on an assumption: that GitHub refuses a rate limit's call before it
         acts on it, which its documentation does not say, and which the
         validation harness's fake assumes until a canary check settles it
-        (validation/DESIGN.md, 3.2 and section 11, C4)."""
+        (validation/DESIGN.md, 3.2 and section 11, C4). The labels a
+        release puts back after its comment failed do not rest on it
+        (wrote_nothing), so the refusal raised says whether an earlier try
+        was refused for a rate limit (GitHubError.after_rate_limit), since
+        only the last try's answer is raised, and a 422 after a rate
+        limit's refusal says nothing of what that earlier try did (F23's
+        second review)."""
         tries = 0
         while True:
             try:
@@ -340,6 +350,7 @@ class GitHub:
             except GitHubError as problem:
                 wait = self.wait_before_again(problem, tries)
                 if wait is None:
+                    problem.after_rate_limit = tries > 0
                     raise
             self.waited.append(wait)
             self.sleep(wait)
@@ -668,7 +679,8 @@ def recent_merged(api):
 
 def claim_issues(api, branches, open_issues):
     """The issue behind each claim branch, by its key: the state and the
-    label names. An open issue comes from the list already read; any other
+    label names, and GitHub's state_reason for one reopened, which
+    may_be_due reads. An open issue comes from the list already read; any other
     takes one call, so the board can say that a branch outlived its issue.
     A branch whose key is no number (claims.number_in) has none and costs
     no call: a key such as a superscript would put a path in the URL that
@@ -681,7 +693,8 @@ def claim_issues(api, branches, open_issues):
             continue
         issue = by_number.get(key) or issue_or_none(api, key)
         if issue is not None:
-            found[key] = {"state": issue.get("state", ""), "labels": labels.label_names(issue)}
+            found[key] = {"state": issue.get("state", ""), "labels": labels.label_names(issue)} \
+                | ({"state_reason": board.REOPENED} if issue.get("state_reason") == board.REOPENED else {})
     return found
 
 
@@ -697,6 +710,154 @@ def issue_or_none(api, number):
         if problem.status == GONE:
             return None
         raise
+
+
+def kept_names(listed):
+    """The branches a release left standing, released/<issue>-<short sha>,
+    by name, from the branch list as the API gives it."""
+    return [name for name in (board.branch_name(b) for b in listed) if name.startswith(claims.RELEASED_PREFIX)]
+
+
+def ended_releases(api, issues, branches, kept, asked):
+    """The reopened issues, by key, whose released branches a release of a
+    claim before the issue's last close left: an open issue GitHub says
+    was reopened that carries claimed or in-review, with no claim branch
+    and a branch released/<issue>-<short sha> standing, whose events
+    record a close, with no label claimed put on after it but by a claim
+    made since (claimed_by_a_claim), and whose comments hold no release
+    comment after it. Such a branch is no
+    release being undone, so the coordinator frees the issue wholly
+    (coordinator.claim_stands; F22).
+
+    The label claimed put on after the last close is a person undoing the
+    release, as the release's note on the issue asks (board.released_text),
+    unless the newest entry the repository's activity lists for the claim
+    branch claude/<issue>, of any kind, came at or after that close and no
+    earlier than the label: a claim made since puts its own claimed on
+    after its branch's making, and the branch, gone now, was deleted or
+    pushed after that, while an undo puts claimed back with no push to the
+    branch after it, whether no claim came between or one came and ended
+    before the person put claimed back (claimed_by_a_claim; F22's third
+    review and its review). An entry in the label's own second reads as
+    the claim's. A claim the activity does not list, one GitHub no longer
+    keeps the entries of or one whose entries a rename took, reads as an
+    undo: an empty list is what the ordinary undo, with no claim between,
+    shows, so reading it as a claim's would take every such person's
+    claimed off, while reading the unlisted claim as an undo only leaves
+    claimed on, with in-review off, for a person to take off. Claimed that
+    came through the close is the ended claim's (F22's second review).
+    Where GitHub refuses the activity, keeps none of the repository (a
+    404), or writes no time for the label or the entry, the issue is left
+    out this run. A release comment after the close counts unless GitHub
+    says its author may not write (may_open, from asked, the run's answers
+    to who may write), so a refused permission read leaves the issue out
+    this run, as a refused read of the events or the comments does, rather
+    than taking a writer's release for a stranger's and the labels off on
+    a guess. One left out keeps its released branch as a release being
+    undone, and the freeing takes in-review off alone, as before this was
+    read, until a later run reads it.
+
+    Only such an issue costs calls: every page of its events; one read of
+    the claim branch's newest entry in the activity where claimed went on
+    after the close; and every page of its comments where the events and the
+    activity leave the question open, with a permission asked, once a
+    run, for each author of a release comment after the close that
+    GitHub's word does not vouch for. A freed issue carries neither label
+    and costs nothing again; one whose release is being undone costs its
+    events and the activity read in every board run until a person
+    renames the branch back, as the note says, which nothing bounds
+    without a record kept from run to run (validation/DESIGN.md, F22)."""
+    found = []
+    for issue in issues:
+        key = str(issue.get("number", ""))
+        if not reopened_with_released_branch(issue, key, branches, kept):
+            continue
+        try:
+            events = api.get_all(f"/repos/{api.repo}/issues/{key}/events")
+            closed = latest_close(events)
+            if not closed or (claimed_since_close(events)
+                              and not claimed_by_a_claim(api, key, closed, last_claimed(events))):
+                continue
+            comments = api.get_all(f"/repos/{api.repo}/issues/{key}/comments")
+        except GitHubError:
+            continue
+        if not released_after(comments, closed, may_open(asked)):
+            found.append(key)
+    return found
+
+
+def reopened_with_released_branch(issue, key, branches, kept):
+    """Whether an issue is one ended_releases reads: GitHub says it was
+    reopened, it carries claimed or in-review, no claim branch stands for
+    it and a branch released/<issue>-<short sha> does."""
+    names = set(labels.label_names(issue))
+    return (issue.get("state_reason") == board.REOPENED and bool({labels.CLAIMED, labels.IN_REVIEW} & names)
+            and claims.branch_of(key) not in branches
+            and any(name.startswith(claims.released_branch(key, "")) for name in kept))
+
+
+def latest_close(events):
+    """When an issue was last closed, as GitHub wrote the time of its
+    latest event closed, or "" where its events record none."""
+    times = [entry_time({"timestamp": e.get("created_at")}) for e in events
+             if isinstance(e, dict) and e.get("event") == "closed"]
+    return max((at for at in times if at), key=claims.parse_time, default="")
+
+
+def claimed_since_close(events):
+    """Whether the label claimed was put on after the issue's last close,
+    by the order GitHub lists its events in, oldest first, so a close and
+    a label in the same second still read in the order they came."""
+    last_close = last_claimed = -1
+    for at, event in enumerate(e for e in events if isinstance(e, dict)):
+        if event.get("event") == "closed":
+            last_close = at
+        elif event.get("event") == "labeled" and (event.get("label") or {}).get("name") == labels.CLAIMED:
+            last_claimed = at
+    return last_claimed > last_close >= 0
+
+
+def last_claimed(events):
+    """When the label claimed was last put on the issue, as GitHub wrote
+    the time of the latest such event, by the order GitHub lists them in;
+    "" where none is listed or its time reads as none."""
+    put_on = [e for e in events if isinstance(e, dict) and e.get("event") == "labeled"
+              and (e.get("label") or {}).get("name") == labels.CLAIMED]
+    return entry_time({"timestamp": put_on[-1].get("created_at")}) if put_on else ""
+
+
+def claimed_by_a_claim(api, key, closed, claimed_at):
+    """Whether the label claimed, last put on at claimed_at, after the
+    time closed, is a claim's own rather than a person's undo: the newest
+    entry the repository's activity lists for claude/<issue>, of any kind
+    (newest_entry: its making, a push or its delete), came at or after
+    the close and no earlier than the label, one read (ended_releases;
+    F22's third review). False where the activity lists no entry for the
+    branch, which an undo shows, an unlisted claim reading so too. None
+    where GitHub keeps no activity of the repository (a 404) or no time is
+    written for the label or the entry, which says neither, so the issue
+    is left out this run and no label comes off on a guess; any other
+    refusal raises, which leaves it out too."""
+    if not claimed_at:
+        return None
+    entry = newest_entry(api, claims.branch_of(key))
+    if entry is None:
+        return None
+    if not entry:
+        return False
+    at = entry_time(entry)
+    if not at:
+        return None
+    when = claims.parse_time(at)
+    return when >= claims.parse_time(closed) and when >= claims.parse_time(claimed_at)
+
+
+def released_after(comments, closed, trusted):
+    """Whether a release comment among an issue's comments came after the
+    time closed, its author counted by trusted (claims.is_release_comment)."""
+    after = [c for c in comments if isinstance(c, dict) and (at := entry_time({"timestamp": c.get("created_at")}))
+             and claims.parse_time(at) > claims.parse_time(closed)]
+    return bool(claims.latest_release(after, trusted))
 
 
 def claim_heads(listed):
@@ -716,9 +877,13 @@ def may_be_due(issue):
     """Whether a release can be due on a claim on this issue, or can have
     happened: the issue is open and not labelled in-review, which a
     finished claim waiting for review is, whether or not the label claimed
-    is still on it."""
+    is still on it; or open and reopened, since the coordinator takes the
+    in-review an ended claim left off it before it releases, so its claim
+    branch, which stands, is released in the same run once it has gone a
+    day without a commit (coordinator.freeing; F22)."""
     names = (issue or {}).get("labels", [])
-    return issue is not None and issue.get("state") == "open" and labels.IN_REVIEW not in names
+    return issue is not None and issue.get("state") == "open" and (
+        labels.IN_REVIEW not in names or issue.get("state_reason") == board.REOPENED)
 
 
 def ready_branches(pulls):
@@ -1167,6 +1332,12 @@ def collect(api, sha, default_branch, now=None, started_by=""):
     }
     if undated:
         found["pushed_refused"] = undated
+    kept = kept_names(listed)
+    if kept:
+        found["kept_names"] = kept
+        ended = ended_releases(api, issues, branches, kept, asked)
+        if ended:
+            found["ended_releases"] = ended
     found["began"], refused = began_times(api, found)
     if refused:
         found["began_refused"] = refused
@@ -1332,16 +1503,98 @@ def post_comments(api, due):
 
 def coordinate(api, snapshot, now):
     """What the coordinator does in the board's run, before the board is
-    rendered: release every claim coordinator.releases_due names, then tell
-    each piece of open work about other work it meets that it has not been
-    told of. The snapshot is brought up to date with each release, so the
-    board this run renders shows it and the branch is renamed in the same
-    run. Nothing here raises: a call GitHub refuses is a line, and the next
-    claim is still released. The lines say what was done, one each, for the
-    workflow's log."""
+    rendered: free every reopened issue coordinator.reopened_due names,
+    release every claim coordinator.releases_due names, then tell each
+    piece of open work about other work it meets that it has not been told
+    of. The snapshot is brought up to date with each change, so the board
+    this run renders shows it and a released branch is renamed in the same
+    run, as a claim whose in-review a freeing took off is released once
+    due, its release read with the others' (may_be_due). Nothing here raises: a
+    call GitHub refuses is a line, and the next issue is still freed and
+    the next claim still released. The lines say what was done, one each,
+    for the workflow's log."""
     snap = board.as_snapshot(snapshot)
-    lines = [release_one(api, snap, key, now) for key in coordinator.releases_due(snap, now)]
+    lines = [free_reopened(api, snap, number) for number in coordinator.reopened_due(snap)]
+    lines += [release_one(api, snap, key, now) for key in coordinator.releases_due(snap, now)]
     return lines + tell_overlaps(api, snap)
+
+
+def free_reopened(api, snap, number):
+    """Free one reopened issue whose labels still speak of a claim that
+    ended (coordinator.freeing; F22): read it again first, since a merge
+    can close an issue after the board read it, and leave one that is
+    closed by then; where the board read no branch for it, read its claim
+    branch again too, and leave the issue to the next run once one
+    stands, since a worker that claimed it after the board read the
+    branches has just put claimed and its label on; and read its claim's
+    open pull request again, which the freeing reads in place of the
+    board's, so the issue is left as it is once that is marked ready,
+    since in-review is then the finished claim's own; then
+    put todo on where it goes and take the labels off in freeing's order,
+    claimed last, reading the claim branch once more just before claimed
+    comes off and leaving claimed on once one stands, so a worker that
+    claimed the issue while it was freed keeps the label its claim put
+    on, and a run that fails partway leaves the issue carrying claimed or
+    in-review for the next run to free. Nothing is put back: every
+    step brings the issue nearer to free. The snapshot takes what was
+    done, so the board this run renders shows it. Nothing here raises;
+    what was done, in a line."""
+    branch = claims.branch_of(str(number))
+    try:
+        issue = api.issue(number) or {}
+        if issue.get("state") != "open":
+            return f"#{number}: not freed, closed since the board read it"
+        pull = api.pull_detail(branch)
+        plan = coordinator.freeing(with_claims_pull(snap, number, pull), number, labels.label_names(issue))
+        if not plan.taken_off and marked_ready(pull):
+            return f"#{number}: not freed, its claim's pull request was marked ready since the board read it"
+        if plan.taken_off and not plan.branch_stands and branch_sha(api, branch):
+            return f"#{number}: not freed, claimed since the board read the branches"
+    except GitHubError as problem:
+        return f"#{number}: not freed, reading it again failed: {problem}{github_words(problem)}"
+    put_on, taken_off = [], []
+    try:
+        if plan.put_on:
+            api.post(f"/repos/{api.repo}/issues/{number}/labels", {"labels": list(plan.put_on)})
+            put_on += plan.put_on
+        for name in plan.taken_off:
+            if name == labels.CLAIMED and not plan.branch_stands and branch_sha(api, branch):
+                coordinator.after_labels(snap, str(number), taken_off, put_on)
+                return (f"#{number}: reopened, not wholly freed, claimed while it was freed, so claimed stays"
+                        + done_words(put_on, taken_off))
+            take_label_off(api, number, name)
+            taken_off.append(name)
+    except GitHubError as problem:
+        coordinator.after_labels(snap, str(number), taken_off, put_on)
+        return (f"#{number}: reopened, not wholly freed, the next run goes on: {problem}{github_words(problem)}"
+                + done_words(put_on, taken_off))
+    coordinator.after_labels(snap, str(number), taken_off, put_on)
+    if not taken_off:
+        return f"#{number}: reopened, nothing left to free"
+    if plan.branch_stands:
+        return f"#{number}: reopened with a branch standing for it" + done_words(put_on, taken_off)
+    return f"#{number}: reopened with its claim ended, freed" + done_words(put_on, taken_off)
+
+
+def with_claims_pull(snap, number, pull):
+    """The snapshot with the claim's own open pull request on this issue as
+    read again (pull_detail), or none where it reads none, in place of the
+    one the board read, so a pull request marked ready since then finishes
+    the claim for the freeing (coordinator.freeing)."""
+    others = [p for p in snap.pulls if not board.of_claim(p, str(number))]
+    return dataclasses.replace(snap, pulls=others + ([board.Pull.from_dict(pull)] if pull else []))
+
+
+def marked_ready(pull):
+    """Whether the claim's own open pull request, as pull_detail gives it,
+    is marked ready; None, no such pull request, is not."""
+    return pull is not None and not pull.get("draft")
+
+
+def done_words(put_on, taken_off):
+    """What a freeing did, as the end of its line."""
+    said = f"; {', '.join(put_on)} put on" if put_on else ""
+    return said + (f"; {', '.join(taken_off)} taken off" if taken_off else "")
 
 
 def holding(api, default_branch, sha):
@@ -1365,26 +1618,38 @@ def release_one(api, snap, key, now):
     and todo on where the issue carries none of todo, epic and blocker
     (coordinator.labels_put_on), then the comment, in the protocol's
     order, and the board counts a release only once both are done. A run
-    that fails between them puts back the labels it took off and takes off
-    the todo it put on, so the issue is as the run found it and the next
-    run starts the release over, unless the comment turns out to be there
-    after all, one GitHub wrote and lost its answer to, which makes the
-    release whole. A run that cannot read the issue's comments to see
-    whether it is there leaves the labels as the release left them and
-    counts no release of its own (unsettled; F20), since labels put back
-    beside a comment that stands would hold the claim for good: the
-    comment tells every later coordinator the claim is released, and the
-    label claimed tells the board it is held; the next run, reading the
-    comments, settles it as it settles any claim whose labels are off,
-    finding the release whole or releasing the claim again unless its
-    holder pushed or a person put the label claimed back in the meantime,
-    while on a head a release already kept, where a release comment that
-    counts stands, whenever it came (board.release_counts), that earlier
-    release frees the claim in the same run once the labels are off.
-    Where GitHub refuses the putting back too, the labels are left off
-    with no comment, as an unsettled release leaves them where GitHub
-    wrote none, until a run releases the claim or a person puts them
-    back. What was done, in a line."""
+    that fails at the labels, taking one off or putting todo on, puts
+    back the labels it took off and takes off the todo it put on, even
+    one whose putting on GitHub answered with an error, since GitHub may
+    have written it (put_labels_on, put_back), so the issue is as the run
+    found it and the next run starts the release over. A run whose
+    comment fails reads the issue's comments, and the comment there after
+    all, one GitHub wrote and lost its answer to, makes the release
+    whole. Where they list none and GitHub refused the comment with a
+    4xx other than a rate limit's, which says it wrote nothing
+    (wrote_nothing), the run puts the labels back as a run that fails at
+    the labels does. Where they list none after any other answer, a rate
+    limit's refusal, a server error, a redirect, an answer that was not
+    JSON or no answer at all, none of which says GitHub wrote nothing,
+    and GitHub may list a comment it wrote only later (not_listed; F23
+    and its review), or where the run cannot read them, whatever GitHub
+    answered the comment with (unsettled; F20), the run cannot tell
+    whether a release comment stands, its own, an earlier run's or one
+    someone else wrote, so it leaves the labels as the release left them
+    and counts no release of its own, since labels put back beside a
+    comment that stands would hold the claim for good: the comment tells
+    every later coordinator the claim is released, and the label claimed
+    tells the board it is held; the next run, reading the comments,
+    settles it as it settles any claim whose labels are off, finding the
+    release whole or releasing the claim again unless its holder pushed
+    or a person put the label claimed back in the meantime, while on a
+    head a release already kept, where a release comment that counts
+    stands, whenever it came (board.release_counts), that earlier release
+    frees the claim in the same run once the labels are off. Where GitHub
+    refuses the putting back too, the labels are left off with no
+    comment, as an unsettled release leaves them where GitHub wrote none,
+    until a run releases the claim or a person puts them back. What was
+    done, in a line."""
     release = snap.releases[key]
     names, put_on = coordinator.labels_released(snap, key), coordinator.labels_put_on(snap, key)
     taken_off = []
@@ -1407,6 +1672,8 @@ def release_one(api, snap, key, now):
             released_at = landed_release(api, key, release)
         except GitHubError as unread:
             return unsettled(snap, key, names, put_on, problem, unread)
+        if not released_at and not wrote_nothing(problem):
+            return not_listed(snap, key, names, put_on, problem)
         if not released_at:
             return (f"#{key}: not released, the comment failed: {problem}{github_words(problem)}"
                     + put_back(api, key, taken_off, put_on))
@@ -1472,35 +1739,93 @@ def put_back(api, key, names, put_on=()):
 
 def unsettled(snap, key, names, put_on, problem, unread):
     """The line of a release whose comment failed and whose issue's
-    comments could not be read to see whether GitHub wrote it anyway: the
-    labels stay as the release left them, and the snapshot shows them so,
-    with no release of this run's, since the run cannot tell whether one
-    stands, so the page lists the claim as held and nothing is renamed
-    this run; the next run, reading the comments, finds the comment and
-    the release is whole, or finds none and releases the claim again,
-    unless its holder pushed since or a person put the label claimed back
-    beside the comment (F20; until its fix the labels went back beside a
-    comment that might stand, which held the claim for good). A head a
-    release already kept, where a release comment that counts stands, is
-    the exception: that comment counts whenever it came
+    comments could not be read to see whether a release comment stands:
+    the run's own, which GitHub may have written unless its refusal says
+    it wrote nothing (wrote_nothing), or, whatever GitHub answered, a
+    refusal among them, one an earlier run's post or someone else wrote;
+    so the labels stay as the release left them (labels_left; F20, until
+    whose fix the labels went back beside a comment that might stand,
+    which held the claim for good). Until F23's review the line asked
+    whether GitHub wrote the run's own comment, which after a refusal
+    that says it wrote nothing it surely did not."""
+    return labels_left(snap, key, names, put_on, problem,
+                       f"its issue's comments could not be read to see whether a release comment stands: "
+                       f"{unread}{github_words(unread)}")
+
+
+def not_listed(snap, key, names, put_on, problem):
+    """The line of a release whose comment GitHub answered with anything
+    but a refusal that says it wrote nothing (wrote_nothing), a rate
+    limit's refusal, a server error, a redirect, an answer that was not
+    JSON or no answer at all, and whose issue's comments, read after it,
+    list none: none of those says GitHub wrote nothing, and it may list a
+    comment it wrote only later, so the read does not tell whether the
+    comment stands, and the labels stay as the release left them
+    (labels_left; F23, until whose fix the labels went back, which held
+    the claim for good where GitHub had written the comment, and until
+    whose review they went back after a rate limit's refusal too). The
+    line says the same of a rate limit's refusal as of a server error,
+    since GitHub may have acted on the call before it refused it."""
+    return labels_left(snap, key, names, put_on, problem,
+                       "its issue's comments list none yet, though GitHub may have written it before that failure "
+                       "and list it only later")
+
+
+def labels_left(snap, key, names, put_on, problem, why):
+    """The line of a release the run cannot tell is whole, why being the
+    reason it cannot: the labels stay as the release left them, and the
+    snapshot shows them so, with no release of this run's, since the run
+    cannot tell whether one stands, so the page lists the claim as held
+    and nothing is renamed this run; the next run, reading the comments,
+    finds the comment and the release is whole, or finds none and
+    releases the claim again, unless its holder pushed since or a person
+    put the label claimed back beside the comment. A head a release
+    already kept, where a release comment that counts stands, is the
+    exception: that comment counts whenever it came
     (board.release_counts), so with the labels off the snapshot counts
     that earlier release, and the same run lists the claim as released
     and deletes the branch, whose work is kept, with no word of this
     release on the issue where GitHub wrote none (F20's review). So the
     line says what was done and nothing of what comes next."""
     coordinator.after_labels(snap, key, names, put_on)
-    return (f"#{key}: release unsettled, the comment failed: {problem}{github_words(problem)}; its issue's "
-            f"comments could not be read to see whether GitHub wrote it anyway: {unread}{github_words(unread)}; "
+    return (f"#{key}: release unsettled, the comment failed: {problem}{github_words(problem)}; {why}; "
             f"the labels stay as the release left them")
+
+
+def wrote_nothing(problem):
+    """Whether a write that failed surely changed nothing: GitHub refused
+    it with a 4xx, which it answers in place of making the write, where a
+    server error, a 502 among them, or no answer at all may come after
+    GitHub made it, and GitHub may list what it made only later, so a read
+    that finds nothing then tells nothing (F23); a redirect of the post, a
+    307 or a 308, which urllib does not follow for a POST, and an answer
+    that was not JSON, which has no status either, say nothing of whether
+    GitHub made it, so neither is a refusal (F23's review). Nor is a rate
+    limit's refusal, a 429 or a 403 that says it is one (rate_limited),
+    though it is a 4xx: GitHub's documentation says how long to wait and
+    when to stop asking, never that GitHub refuses such a call before it
+    acts on it, which the client's making a write again assumes
+    (GitHub.request) and canary C4 would settle and is not run, so the
+    labels a release puts back rest on no such assumption (F23's review;
+    validation/DESIGN.md, 3.2 and 11). Nor is any refusal of a call the
+    client made again after a rate limit's refusal of an earlier try
+    (GitHubError.after_rate_limit): the 4xx that ends the call answers its
+    last try alone, and GitHub may have acted on the try it refused for
+    the rate limit (F23's second review)."""
+    if problem.after_rate_limit or rate_limited(problem.status, problem.headers, problem.detail):
+        return False
+    return problem.status is not None and 400 <= problem.status < 500
 
 
 def landed_release(api, key, release):
     """When the comment that releases this claim was made, by the rule the
-    next run reads it with (claims.was_released), or "" when none stands:
-    a call that GitHub answered with an error, a 502 or a timeout, may
-    still have written the comment, and once it stands the release is done;
-    only a comment newer than the latest the run held is this run's
-    (newer). A read GitHub refuses raises GitHubError, since the run then
+    next run reads it with (claims.was_released), or "" when none is
+    listed: a call that GitHub answered with an error, a 502 or a timeout,
+    may still have written the comment, and once it stands the release is
+    done; only a comment newer than the latest the run held is this run's
+    (newer). "" says no more than that none is listed yet, since GitHub
+    may list a comment it wrote only later (release_one, wrote_nothing;
+    F23). A read GitHub refuses raises GitHubError, since the run then
     cannot tell whether the comment stands (release_one)."""
     comments = api.get_all(f"/repos/{api.repo}/issues/{key}/comments")
     released_at = claims.latest_release(comments, may_write(api))

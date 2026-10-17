@@ -39,6 +39,7 @@ search met first, often a comment the run owed or made as a result.
 """
 
 import contextlib
+import copy
 import dataclasses
 import sys
 import time
@@ -124,8 +125,10 @@ ORIGINAL_OPEN_WORK = board.open_work
 ORIGINAL_DEAL_MOVES = team.deal_moves
 ORIGINAL_CLAIM_RELEASED = github.claim_released
 ORIGINAL_RELEASE_ONE = github.release_one
+ORIGINAL_FREEING = coordinator.freeing
 ORIGINAL_RATE_LIMITED = github.rate_limited
 ORIGINAL_RATE_WAIT = github.rate_wait
+ORIGINAL_WROTE_NOTHING = github.wrote_nothing
 # The headers of the token's hour, which rate_wait reads for the hour's end.
 HOUR_HEADERS = ("x-ratelimit-remaining", "x-ratelimit-reset")
 
@@ -231,6 +234,8 @@ def comment_then_labels(api, snap, key, now):
             released_at = github.landed_release(api, key, release)
         except github.GitHubError as unread:
             return f"#{key}: release unsettled, the comment failed: {problem}; the comments unread: {unread}"
+        if not released_at and not github.wrote_nothing(problem):
+            return f"#{key}: release unsettled, the comment failed: {problem}; the comments list none yet"
         if not released_at:
             return f"#{key}: not released, the comment failed: {problem}"
     try:
@@ -290,7 +295,10 @@ def relabelled_before_the_comment(api, snap, key, now):
     relabelled as soon as the labels are off and todo is on, before the
     comment, and left so when the comment fails and the labels go back on,
     so the page of a run whose release GitHub refused shows the issue as
-    released while GitHub holds its labels again."""
+    released while GitHub holds its labels again. Since F23's fix the
+    labels go back only after a refusal that says GitHub wrote nothing, a
+    4xx other than a rate limit's since its review, so only such a
+    refusal tells this copy from the library."""
     release = snap.releases[key]
     names, put_on = coordinator.labels_released(snap, key), coordinator.labels_put_on(snap, key)
     taken_off = []
@@ -313,6 +321,8 @@ def relabelled_before_the_comment(api, snap, key, now):
             released_at = github.landed_release(api, key, release)
         except github.GitHubError as unread:
             return github.unsettled(snap, key, names, put_on, problem, unread)
+        if not released_at and not github.wrote_nothing(problem):
+            return github.not_listed(snap, key, names, put_on, problem)
         if not released_at:
             return f"#{key}: not released, the comment failed: {problem}" + github.put_back(api, key, taken_off, put_on)
     coordinator.after_release(snap, key, released_at or now.isoformat(), names, put_on)
@@ -972,10 +982,17 @@ def pushed_by_but_a_delete(entry, sha, now):
 def landed_release_finding_none_unread(api, key, release):
     """github.landed_release as every build before F20's fix had it: a
     read of the issue's comments GitHub refuses finds no comment, as a
-    read that listed none does, so release_one puts the labels back
-    beside a comment that may stand, which holds the claim for good, the
-    comment telling every later coordinator the claim is released and the
-    label claimed telling the board it is held (F20)."""
+    read that listed none does, so release_one puts the labels back beside
+    a comment that may stand, which holds the claim for good, the comment
+    telling every later coordinator the claim is released and the label
+    claimed telling the board it is held (F20). Since F23's fix
+    release_one leaves the labels off where a read that lists none
+    follows a server error, the answer both of F20's faults give the
+    post, so the mutant puts them back only where GitHub refused the
+    comment with a 4xx, other than a rate limit's since the review's
+    third finding, and then the read, where a release comment an earlier
+    run's post or someone else wrote may stand (comment-422-then-unread,
+    F23's review)."""
     try:
         comments = api.get_all(f"/repos/{api.repo}/issues/{key}/comments")
     except github.GitHubError:
@@ -986,11 +1003,45 @@ def landed_release_finding_none_unread(api, key, release):
     return released_at if board.release_counts(dataclasses.replace(release, released_at=released_at)) else ""
 
 
+def wrote_nothing_unless_answered(problem):
+    """github.wrote_nothing reading no answer at all as a refusal, as if a
+    call that never heard back had been turned away, where the connection
+    may have dropped after GitHub wrote the comment (F23). Every other
+    answer it reads by the library's own rule, so it changes that one rule
+    whatever the library's rule becomes, as F23's review changed it for a
+    rate limit's refusal."""
+    return problem.status is None or ORIGINAL_WROTE_NOTHING(problem)
+
+
+def wrote_nothing_after_a_rate_limit(problem):
+    """github.wrote_nothing as F23's fix had it until its review: every 4xx
+    a refusal that wrote nothing, a rate limit's among them, which rests
+    on GitHub refusing a rate limit's call before it acts on it, as its
+    documentation never says and canary C4, not run, would settle; where
+    GitHub wrote the comment it refused so and lists it only later, the
+    labels go back beside it and hold the claim for good
+    (comment-limited-late; F23's review)."""
+    return problem.status is not None and 400 <= problem.status < 500
+
+
+def wrote_nothing_by_the_last_try(problem):
+    """github.wrote_nothing reading a refusal by the call's last try alone,
+    as it did until F23's second review: a 422 on the client's second
+    try, after a rate limit's refusal of the first, is taken for a refusal
+    that wrote nothing, though GitHub may have acted on the first try and
+    list the comment only later, so the labels go back beside it
+    (comment-limited-then-422). Every other answer it reads by the
+    library's own rule, so it changes that one rule alone."""
+    alone = copy.copy(problem)
+    alone.after_rate_limit = False
+    return ORIGINAL_WROTE_NOTHING(alone)
+
+
 def release_one_counting_unsettled(api, snap, key, now):
     """github.release_one counting a release it cannot tell stands: where
     GitHub refused the comment and then the read of the issue's comments
-    that would say whether it wrote it anyway, the snapshot counts the
-    release at the run's start, so the same run renames the branch and
+    that would say whether a release comment stands, the snapshot counts
+    the release at the run's start, so the same run renames the branch and
     says where it went, where the spec has the run count no release it
     cannot tell stands and the next run settle it (F20)."""
     def counted(snap, key, names, put_on, problem, unread):
@@ -1269,6 +1320,66 @@ def free_though_blocked(snap, issue):
     return issue["number"] not in snap.claimed and labels.CLAIMED not in labels.label_names(issue)
 
 
+def in_review_left_where_a_branch_stands(snapshot, number, names):
+    """coordinator.freeing taking nothing off a reopened issue whose claim
+    branch, or a released branch, stands, so in-review stays and the
+    claim, finished by its label, is never released (F22)."""
+    plan = ORIGINAL_FREEING(snapshot, number, names)
+    return coordinator.Freeing() if plan.branch_stands else plan
+
+
+def ready_pull_request_unread(snapshot, number, names):
+    """coordinator.freeing reading no pull request, so a reopened issue whose
+    claim's own pull request, marked ready, waits for review loses the
+    in-review that finishes it (F22)."""
+    return ORIGINAL_FREEING(dataclasses.replace(board.as_snapshot(snapshot), pulls=[]), number, names)
+
+
+def entry_since_the_close_alone(api, key, closed, claimed_at):
+    """claimed_by_a_claim reading any entry of the claim branch at or after
+    the close as the claim's, whenever the label went on, so a person's
+    undo after a claim made since has ended reads as that claim's."""
+    entry = github.newest_entry(api, claims.branch_of(key))
+    if entry is None:
+        return None
+    at = github.entry_time(entry) if entry else ""
+    return bool(at) and claims.parse_time(at) >= claims.parse_time(closed)
+
+
+def todo_put_on_last(api, snap, number):
+    """github.free_reopened taking the labels off before it puts todo on, so
+    a run that fails after claimed came off leaves an issue no section of
+    the board lists and no later run frees (F22). It reads what the
+    library reads, in its order, and changes only when todo goes on."""
+    branch = claims.branch_of(str(number))
+    issue = api.issue(number) or {}
+    if issue.get("state") != "open":
+        return f"#{number}: not freed"
+    pull = api.pull_detail(branch)
+    plan = coordinator.freeing(github.with_claims_pull(snap, number, pull), number, labels.label_names(issue))
+    if plan.taken_off and not plan.branch_stands and github.branch_sha(api, branch):
+        return f"#{number}: not freed"
+    for name in plan.taken_off:
+        if name == labels.CLAIMED and not plan.branch_stands and github.branch_sha(api, branch):
+            return f"#{number}: not freed"
+        github.take_label_off(api, number, name)
+    if plan.put_on:
+        api.post(f"/repos/{api.repo}/issues/{number}/labels", {"labels": list(plan.put_on)})
+    coordinator.after_labels(snap, str(number), plan.taken_off, plan.put_on)
+    return f"#{number}: freed"
+
+
+def releases_read_before_the_freeing(api, snapshot, now):
+    """github.coordinate reading which claims are due before it frees the
+    reopened issues, so a claim whose in-review the freeing takes off waits
+    for the next run, where the spec releases it in the same run (F22)."""
+    snap = board.as_snapshot(snapshot)
+    due = coordinator.releases_due(snap, now)
+    lines = [github.free_reopened(api, snap, number) for number in coordinator.reopened_due(snap)]
+    lines += [github.release_one(api, snap, key, now) for key in due]
+    return lines + github.tell_overlaps(api, snap)
+
+
 MUTANTS = {
     "idle at exactly 24 hours": Mutant(
         claims, "is_idle", lambda last, now, idle_after=claims.IDLE_AFTER: now - claims.parse_time(last) >= idle_after,
@@ -1339,21 +1450,45 @@ MUTANTS = {
         "G7", "overlapping work is told once"),
     "the labels not put back": Mutant(
         github, "put_back", lambda api, key, names, put_on=(): "",
-        "G3L", "a run that fails between the two puts back the labels it took off"),
+        "G3L", "a run that fails before its release comment, or whose comment GitHub refused, puts back the labels "
+               "it took off"),
     "a lost comment's release not seen": Mutant(
         github, "landed_release", lambda api, key, release: "",
         "G3L", "a comment GitHub wrote and lost its answer to makes the release whole"),
     "an unsettled release put back": Mutant(
         github, "landed_release", landed_release_finding_none_unread,
-        "G3L", "a run that cannot read whether its release comment stands leaves the labels as the release left "
-               "them (F20)"),
+        "G3L", "a run that cannot read whether a release comment stands leaves the labels as the release left "
+               "them, whatever GitHub answered its own with (F20)"),
     "an unsettled release counted": Mutant(
         github, "release_one", release_one_counting_unsettled,
-        "G3L", "a run that cannot read whether its release comment stands counts no release, the next run "
+        "G3L", "a run that cannot read whether a release comment stands counts no release, the next run "
                "settling it (F20)"),
     "an unsettled release failing the run": Mutant(
         github, "unsettled", unsettled_raising,
-        "G15", "a run that cannot read whether its release comment stands goes on and writes its page (F20)"),
+        "G15", "a run that cannot read whether a release comment stands goes on and writes its page (F20)"),
+    "a late comment's labels put back": Mutant(
+        github, "wrote_nothing", lambda problem: True,
+        "G3L", "a run whose release comment GitHub answered with a server error, or with no answer at all, and "
+               "whose issue's comments then list none, leaves the labels as the release left them, since GitHub may "
+               "have written the comment and list it only later (F23)"),
+    "no answer taken for a refusal": Mutant(
+        github, "wrote_nothing", wrote_nothing_unless_answered,
+        "G3L", "no answer at all, like a server error, may come after GitHub wrote the comment, so it is no refusal "
+               "and the labels stay as the release left them (F23)"),
+    "a refusal taken for a late comment": Mutant(
+        github, "wrote_nothing", lambda problem: False,
+        "G3L", "a release comment GitHub refused with a 4xx, which it answers in place of writing one, puts the "
+               "labels back when the issue's comments list none (F23)"),
+    "a rate limit's refusal taken for one that wrote nothing": Mutant(
+        github, "wrote_nothing", wrote_nothing_after_a_rate_limit,
+        "G3L", "a run whose release comment GitHub refused for a rate limit, which its documentation never says "
+               "comes before GitHub acts on the call, and whose issue's comments then list none, leaves the labels "
+               "as the release left them (F23's review)"),
+    "a refusal after a rate limit read by its last try alone": Mutant(
+        github, "wrote_nothing", wrote_nothing_by_the_last_try,
+        "G3L", "a run whose release comment GitHub refused for a rate limit and then, on the client's next try, "
+               "with a 422, and whose issue's comments then list none, leaves the labels as the release left them, "
+               "since GitHub may have acted on the first try (F23's second review)"),
     "a writer's release not vouched for": Mutant(
         github, "may_write", nobody_vouched_for,
         "G5", "anyone who may write may release, whatever author_association GitHub shows"),
@@ -1879,6 +2014,52 @@ MUTANTS = {
         "G10", "a rename a rate limit refused on every try is refused for the moment and owes no word on the "
                "issue, which would name a rule or a right that is not missing (the first review of the "
                "client's waits)"),
+    "a reopened issue left as it is": Mutant(
+        coordinator, "reopened_due", lambda snapshot: [],
+        "G8", "a reopened issue whose claim ended with its close loses claimed, in-review and the worker's labels, "
+              "and todo goes on, so the Queue lists it again (F22)"),
+    "a claim branch not read for a reopened issue": Mutant(
+        coordinator, "claim_stands",
+        lambda snap, key: any(name.startswith(claims.released_branch(key, "")) for name in snap.kept_names),
+        "G8", "a claim branch is a claim whatever the labels say, so a reopened issue whose claim branch stands "
+              "loses in-review alone (F22)"),
+    "a released branch not read for a reopened issue": Mutant(
+        github, "kept_names", lambda listed: [],
+        "G8", "a released branch beside the label claimed is a release being undone, so a reopened issue that "
+              "carries both loses no label (F22)"),
+    "in-review left on where a branch stands": Mutant(
+        coordinator, "freeing", in_review_left_where_a_branch_stands,
+        "G8", "a reopened issue whose claim branch stands loses in-review, so its claim is released once idle "
+              "(F22)"),
+    "a ready pull request's in-review taken off": Mutant(
+        coordinator, "freeing", ready_pull_request_unread,
+        "G8", "a claim's own pull request marked ready finishes it, so its reopened issue loses no label (F22)"),
+    "todo put on last": Mutant(
+        github, "free_reopened", todo_put_on_last,
+        "G8", "a freeing puts todo on first and takes claimed off last, so a run that fails partway leaves the issue "
+              "for the next run to free (F22)"),
+    "a release before the last close read as an undo": Mutant(
+        github, "ended_releases", lambda api, issues, branches, kept, asked: [],
+        "G8", "a released branch an earlier claim's release left before the issue's last close undoes nothing, so "
+              "a reopened issue whose later claim ended with the close is freed wholly (F22's review)"),
+    "claimed put back after the close read as the ended claim's": Mutant(
+        github, "claimed_since_close", lambda events: False,
+        "G8", "the label claimed put on after a reopened issue's last close is a person undoing a release an "
+              "earlier claim's release left before it, so the freeing leaves claimed on (F22's second review)"),
+    "a claim made since the close read as an undo": Mutant(
+        github, "claimed_by_a_claim", lambda api, key, closed, claimed_at: False,
+        "G8", "the label claimed a claim made since a reopened issue's last close put on is that claim's, so once "
+              "its branch is deleted with no release the freeing takes it off with the claim's other labels (F22's "
+              "third review)"),
+    "an undo after an ended claim read as the claim's": Mutant(
+        github, "claimed_by_a_claim", entry_since_the_close_alone,
+        "G8", "the label claimed a person puts back after a claim made since a reopened issue's last close has "
+              "ended, later than its branch's delete, is a person's undo, so the freeing leaves claimed on (the "
+              "review of F22's third review)"),
+    "the releases due read before the freeing": Mutant(
+        github, "coordinate", releases_read_before_the_freeing,
+        "G3", "a claim whose in-review a freeing takes off is released in the same run where its branch has gone a "
+              "day without a commit (F22)"),
 }
 
 
@@ -1891,6 +2072,32 @@ WORKER = Verb("label-on", "a", (1, "worker:a"))
 # clock runs 25 hours.
 DUE = (CLAIM, CLAIMED, WORKER, Verb("wait", "clock", (25,)))
 SHARED = ("src/shared.py",)
+# a's idle claim released, then b's claim on #1, announced, finished as
+# Finish says, its claim file deleted, its pull request marked ready and
+# in-review on, for the owner to merge (F22).
+REOPENS = DUE + (Verb("board", verbs.BOARD, (cycle.SCHEDULE, "")), Verb("claim", "b", (1,)),
+                 Verb("label-on", "b", (1, "claimed")), Verb("label-on", "b", (1, "worker:b")),
+                 Verb("label-off", "b", (1, "todo")), Verb("open-draft", "b", (1,)), Verb("drop-claim-file", "b", (1,)),
+                 Verb("mark-ready", "b", (100,)), Verb("label-on", "b", (1, "in-review")))
+# a's idle claim on #1 released, then #1 closed by hand and reopened with
+# no claim between, so the release came before the issue's last close and
+# the owner, following the release's note, may still undo it by putting
+# claimed back after the close (F22's second review).
+UNDOABLE = DUE + (Verb("board", verbs.BOARD, (cycle.SCHEDULE, "")), Verb("close-issue", M.OWNER, (1,)),
+                  Verb("reopen-issue", M.OWNER, (1,)))
+# b's claim on #1 after that close and reopen, announced and ready for
+# review, which the owner may close unmerged and delete the branch of
+# while #1 stays open, so the claim ends with no release comment and its
+# claimed, put on after the close, is the claim's own (F22's third review).
+LATER_CLAIM = UNDOABLE + (Verb("claim", "b", (1,)), Verb("label-on", "b", (1, "claimed")),
+                          Verb("label-on", "b", (1, "worker:b")), Verb("label-off", "b", (1, "todo")),
+                          Verb("open-draft", "b", (1,)), Verb("mark-ready", "b", (100,)),
+                          Verb("label-on", "b", (1, "in-review")))
+# That claim ended with its branch deleted and #1 freed, so the owner may
+# still undo a's release an hour later by putting claimed back, later than
+# the branch's delete (the review of F22's third review).
+ENDED_LATER_CLAIM = LATER_CLAIM + (Verb("delete-claim-branch", M.OWNER, (1,)),
+                                   Verb("board", verbs.BOARD, (cycle.SCHEDULE, "")))
 
 # Cheapest first, since a mutant is judged by the first search that
 # catches it. The traces met F4, dealing from differing looks, on the
@@ -2012,6 +2219,21 @@ SEARCHES = (
     Search("a stranger's marker on overlapping claims", (CLAIM, Verb("claim", "b", (2,))),
            Scope(workers=("a", "b"), issues=(1, 2), people=(SAM,), waits=(25,),
                  files=((1, SHARED), (2, SHARED))), 2, issues=(1, 2)),
+    # a's claim released, b's claim on #1 ready for review: the owner may
+    # merge it, keeping its branch or not, and close and reopen #1, so each
+    # rule of the freeing is searched and not only traced; and a release
+    # before #1 was closed and reopened, which the owner may still undo;
+    # a claim made after that reopen whose branch the owner deletes while
+    # #1 stays open; and the owner's undo once that claim has ended (F22's
+    # reviews).
+    Search("a reopened issue after a release and a later claim", REOPENS, Scope(workers=("a", "b"),
+           people=(M.OWNER,), waits=(25,), reopens=True), 4),
+    Search("a release undone on a reopened issue", UNDOABLE, Scope(workers=("a", "b"), people=(M.OWNER,),
+           waits=(25,), reopens=True), 2),
+    Search("a claim since a reopen ended by deleting its branch", LATER_CLAIM, Scope(workers=("a", "b"),
+           people=(M.OWNER,), waits=(25,), reopens=True, deletes=True), 2),
+    Search("an undo after a claim since a reopen ended", ENDED_LATER_CLAIM, Scope(workers=("a", "b"),
+           people=(M.OWNER,), waits=(1,), reopens=True, deletes=True), 3),
 )
 CATCHERS = LANES + SEARCHES + (PICKING, LABEL_MIXES)
 
