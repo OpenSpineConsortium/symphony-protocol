@@ -260,7 +260,9 @@ BUDGET_SECONDS = 10
 # are read only as written; and at b's leases after /usr/bin/time
 # GIT_DIR=x, step 10, and "time" GIT_DIR=x, step 11, taken once time is
 # matched by its program's name, or a time the guard cannot tell is read
-# as the keyword alone.
+# as the keyword alone; and, from its second review, at its seventh guard
+# step, step 12, env -S with ${NOPE} -u ${HOME} before the push, which
+# passes once the string's names are read all set or all unset.
 UNDONE = {
     "F1": [("the comment before the labels", 5, "G3L")],
     "F2": [("a piece of work named by the number it is shown by", 4, "G7"),
@@ -363,7 +365,8 @@ UNDONE = {
             ("a lone - read past as one of env's options", 8, "G11a"),
             ("an -S string's variables read only as written", 9, "G11a"),
             ("time matched by its program's name", 10, "G11a"),
-            ("a time the guard cannot tell read as the keyword alone", 11, "G11a")],
+            ("a time the guard cannot tell read as the keyword alone", 11, "G11a"),
+            ("every ${NAME} read all set or all unset", 12, "G11a")],
 }
 # The findings with a trace, every one settled since F25's fix: F1, F3,
 # F5, F6, F10 and F11 fixed in 0.4.1; F2, F4, F7, F8, F9, F12, F13, F14,

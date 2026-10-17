@@ -160,6 +160,7 @@ TRACES = {
     "an -S string's variables read only as written": "the regression traces",
     "time matched by its program's name": "the regression traces",
     "a time the guard cannot tell read as the keyword alone": "the regression traces",
+    "every ${NAME} read all set or all unset": "the regression traces",
     "an epic gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "epic"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocker gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocker"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocked task gets no todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocked"))] + HELD + [WAIT, BOARD],
@@ -414,9 +415,10 @@ class TheLane(unittest.TestCase):
         four, a lone - read past as one of env's options, an -S string's
         variables read only as written, time matched by its program's
         name and a time the guard cannot tell read as the keyword alone,
-        180."""
+        180; and its second review one, every ${NAME} read all set or all
+        unset, 181."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 180)
+        self.assertEqual(len(mutants.MUTANTS), 181)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

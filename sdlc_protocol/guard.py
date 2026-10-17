@@ -185,7 +185,16 @@ of a word's length, so a command longer than MAX_COMMAND is refused
 unread (TOO_LONG); and a command the guard still takes longer than
 DEADLINE_SECONDS over, reading it and judging its pushes, git's answers
 included, for a shape no test has timed, is refused too (TOO_SLOW),
-never passed.
+never passed. The template's hook as it stands before it calls
+refused_push (its tools/guard_push.py, which predates F28) calls
+simple_commands, push_arguments and refusal itself, under neither
+MAX_COMMAND nor DEADLINE_SECONDS: there a command too long or too slow to
+read runs once the hook runs out of time, a gap older than F28 that goes
+when the template calls refused_push. What F28 adds is bounded inside
+push_arguments, so that hook meets it too: the -S strings by MAX_NESTING
+and SPLIT_BUDGET, and a command it cannot read, which holds a push, comes
+back as a word refusal refuses (Unreadable), never as an exception, which
+that hook, exiting 1, would read as no objection (F28's second review).
 A third reading, of each line alone, was weighed
 and left out: with a quote that never closes read leniently it finds no
 push in F25's shapes that the two miss, and what it alone would read is
@@ -204,6 +213,7 @@ stands behind it.
 """
 
 import contextvars
+import itertools
 import os
 import re
 import shlex
@@ -434,10 +444,18 @@ def quote_end(command, i):
 def as_quoted(span):
     """A quoted span as shlex is handed it: a double-quoted one without its
     backslash-newlines, the line continuation the shell removes there too,
-    every other pair kept; a single-quoted one as written."""
+    and with \\$ and \\` made $ and `, as bash makes them there and shlex
+    does not (F28's second review: "env -S \"\\${NOPE}git push origin
+    main\"" hands env ${NOPE}, which the guard read as \\${NOPE}), every
+    other pair kept; a single-quoted one as written."""
     if not span.startswith('"'):
         return span
-    return BACKSLASH_PAIR.sub(lambda pair: "" if pair.group(1) == "\n" else pair.group(0), span)
+    return BACKSLASH_PAIR.sub(lambda pair: QUOTED_PAIRS.get(pair.group(1), pair.group(0)), span)
+
+
+# What a backslash pair inside double quotes is handed to shlex as, where
+# it is not kept whole (as_quoted).
+QUOTED_PAIRS = {"\n": "", "$": "$", "`": "`"}
 
 
 def plain_text(command, lenient=False, spans_run=True):
@@ -1379,19 +1397,20 @@ def takes_next_word(word, wrapper):
     return value_is_next(word[1:], wrapper.short_values)
 
 
-def read_options(rest, read, wrapper, splits=False):
+def read_options(rest, read, wrapper, splits=None):
     """Move a wrapper's options, each with its value (Wrapper,
     long_value_is_next), and a -- that ends them, from rest, the words
     still to read, the next last, to read, stopping before the first word
     that is no option or a lone - (ends_options); for env (splits), each
-    string -S gives is split and its words read in its place (spliced)."""
+    string -S gives is split and its words read in its place (spliced),
+    splits the budget it is split by."""
     while rest and rest[-1][0].startswith("-") and not ends_options(rest[-1][0]):
         in_time()
         word, depth = rest.pop()
         if word == "--":
             read.append(word)
             return
-        if splits and spliced(rest, read, word, depth):
+        if splits and spliced(rest, read, word, depth, splits):
             continue
         read.append(word)
         if rest and takes_next_word(word, wrapper):
@@ -1405,11 +1424,22 @@ SPLIT_ESCAPES = {"f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"'
                  "\\": "\\"}
 SPLIT_VARIABLE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 # The refusal of a command whose env -S strings nest, a string's words
-# holding an -S of their own, more than MAX_NESTING deep: each level is
-# split again, so the guard refuses it unread rather than run out of time
-# (F28's review).
-SPLIT_TOO_DEEP = (f"a command whose env -S strings nest more than {MAX_NESTING} deep is refused: the guard cannot "
-                  "read it in time; give env the words themselves (.claude/rules/board.md)")
+# holding an -S of their own, more than MAX_NESTING deep, or whose strings
+# hold more than SPLIT_BUDGET characters in all, each level split again:
+# the guard refuses it unread rather than run out of time (F28's review
+# and its second).
+SPLIT_BUDGET = 2 * MAX_COMMAND
+SPLIT_TOO_DEEP = (f"a command whose env -S strings nest more than {MAX_NESTING} deep, or hold more than "
+                  f"{SPLIT_BUDGET} characters to split in all, is refused: the guard cannot read it in time; give "
+                  "env the words themselves (.claude/rules/board.md)")
+# The most distinct ${NAME}s of a command's -S strings that the guard reads
+# each way, set and unset, one reading per subset (unset_subsets); a
+# command with more that holds a push is refused unread (F28's second
+# review).
+MOST_NAMES = 3
+SPLIT_TOO_MANY_NAMES = (f"a command whose env -S strings hold more than {MOST_NAMES} distinct ${{NAME}}s is refused: "
+                        "env drops each one that is not set, and the guard reads each mix of them only up to "
+                        f"{MOST_NAMES}; give env the words themselves (.claude/rules/board.md)")
 
 
 def split_string(text, unset=False):
@@ -1420,8 +1450,8 @@ def split_string(text, unset=False):
     outside double quotes and a space in the word inside them, \\c the end
     of the string, and a # that starts a word a comment to the end. A
     ${NAME} is kept as written, as the guard keeps the shell's own $NAME,
-    since its value is the one in the command's environment; or, unset,
-    expands to nothing, as env expands a variable that is not set, starting
+    since its value is the one in the command's environment; or, unset
+    (True, or a set holding its name), expands to nothing, as env expands a variable that is not set, starting
     no word, so a word that is nothing but ${NAME} goes (env_readings).
     None where env refuses the string and runs nothing: a quote that never
     closes, a $ that opens no ${NAME}, a backslash at the end or before a
@@ -1462,7 +1492,7 @@ def split_string(text, unset=False):
             variable = SPLIT_VARIABLE.match(text, i)
             if variable is None:
                 return None
-            if not unset:
+            if not (unset is True or (unset and variable.group()[2:-1] in unset)):
                 add(variable.group())
             i = variable.end()
         else:
@@ -1491,12 +1521,12 @@ def split_string_option(word, following):
     return None
 
 
-# Whether env's -S strings are read with every ${NAME} unset (split_string,
-# env_readings); set for one reading at a time.
-UNSET = contextvars.ContextVar("UNSET", default=False)
+# Which ${NAME}s of env's -S strings a reading takes as unset
+# (split_string, readings_of): none, as written, by default.
+UNSET = frozenset()
 
 
-def spliced(rest, read, word, depth):
+def spliced(rest, read, word, depth, budget):
     """Whether env's option word, at depth, the number of -S strings it came
     out of, gives a string to -S (split_string_option) that is split, its
     words then put on rest, to be read next, as options again, as GNU env
@@ -1506,19 +1536,24 @@ def spliced(rest, read, word, depth):
     read. A string env refuses, which runs nothing, is left for the caller
     to read as one word, -S's value, as before the fix. Each word is moved
     once, so many strings cost no more than their words (F28's review: the
-    whole command was copied for each); one nested deeper than MAX_NESTING
-    raises TooDeep (SPLIT_TOO_DEEP)."""
+    whole command was copied for each). A string -S takes from the next
+    word comes out of that word, so its words are one deeper than it, not
+    than the -S (the second review: seventeen -S side by side read as
+    nested). One nested deeper than MAX_NESTING, or one that takes the
+    characters split past budget, a list of what is left, raises TooDeep
+    (SPLIT_TOO_DEEP)."""
     given = split_string_option(word, rest[-1][0] if rest else None)
     if given is None or given[0] is None:
         return False
-    text, used, before = given
-    words = split_string(text, UNSET.get())
+    text, used, (unset, before) = given[0], given[1], (budget[1], given[2])
+    words = split_string(text, unset)
     if words is None:
         return False
-    if depth >= MAX_NESTING:
-        raise TooDeep(SPLIT_TOO_DEEP)
     if used == 2:
-        rest.pop()
+        depth = rest.pop()[1]
+    budget[0] -= len(text)
+    if depth >= MAX_NESTING or budget[0] < 0:
+        raise TooDeep(SPLIT_TOO_DEEP)
     read.extend(before)
     rest.extend((split, depth + 1) for split in reversed(words))
     return True
@@ -1565,25 +1600,55 @@ class Launch(NamedTuple):
     that runs it, by name with its option words, where the command starts,
     None when nothing is run, as after a lone assignment or command -v,
     the words as the wrappers read them, which start indexes: argv itself,
-    but where env's -S splits a string into words (F28); and each
-    wrapper's word as written, /usr/bin/time where its name is time."""
+    but where env's -S splits a string into words (F28); each wrapper's
+    word as written, /usr/bin/time where its name is time; and why the
+    words were not read, where they were not: then nothing is read to run
+    (F28's second review: env -S strings nested too deep raised out of the
+    reading, and the template's hook, which calls push_arguments itself,
+    took the exception for no objection)."""
 
     assignments: list
     wrappers: list
     start: object
     argv: list
     wrapper_words: tuple = ()
+    unread: str = ""
 
 
-def launch(argv):
+def launch(argv, unset=UNSET):
     """argv read as the shell and the wrappers read it, past leading
     assignments, the RESERVED words, function and its name, and the
     WRAPPERS with their options (read_options), env's -S strings split into
-    the words env reads (spliced) and its assignments after them
-    (read_env_assignments) (Launch). The words still to read are kept with
-    the next last, so each is moved once, whatever -S puts back."""
+    the words env reads (spliced), the ${NAME}s unset names taken as
+    unset, and its assignments after them (read_env_assignments) (Launch);
+    one read too deep or too wide in its -S strings is read as nothing,
+    with why (Launch.unread). The words still to read are kept with the
+    next last, so each is moved once, whatever -S puts back; and within a
+    run of the hook (refused_push) each reading is kept for the next ask of
+    the same words (LAUNCHES; F28's second review: the readings, the moves
+    and the places read each command again)."""
+    key, kept = (tuple(argv), frozenset(unset)), LAUNCHES.get()
+    if kept is not None and key in kept:
+        return kept[key]
+    try:
+        found = read_launch(list(argv), key[1])
+    except TooDeep as problem:
+        found = Launch([], [], None, list(argv), (), problem.args[0] if problem.args else TOO_DEEP)
+    if kept is not None:
+        kept[key] = found
+    return found
+
+
+# The readings launch has made in the run under way, by words and the
+# names taken as unset, handed out again unchanged; None outside a run.
+LAUNCHES = contextvars.ContextVar("LAUNCHES", default=None)
+
+
+def read_launch(argv, unset):
+    """launch's reading, which raises TooDeep where the -S strings nest too
+    deep or hold too much to split (spliced)."""
     rest, read = [(word, 0) for word in reversed(argv)], []
-    assignments, wrappers, words = [], [], []
+    assignments, wrappers, words, budget = [], [], [], [SPLIT_BUDGET, unset]
 
     def unread():
         return read + [word for word, _ in reversed(rest)]
@@ -1601,7 +1666,7 @@ def launch(argv):
         elif name in WRAPPERS:
             read.append(rest.pop()[0])
             begin = len(read)
-            read_options(rest, read, WRAPPERS[name], splits=name == "env")
+            read_options(rest, read, WRAPPERS[name], splits=budget if name == "env" else None)
             for _ in range(WRAPPERS[name].operands):
                 if rest:
                     read.append(rest.pop()[0])
@@ -1617,23 +1682,54 @@ def launch(argv):
     return Launch(assignments, wrappers, None, read, tuple(words))
 
 
-def env_readings(argv):
-    """The words of a simple command as env may run them: as launch reads
-    them, each ${NAME} in an -S string kept as written; and, where that
-    string holds one, with every ${NAME} unset, which env expands to
-    nothing, so a word that is nothing but ${NAME} goes and one that starts
-    with it starts with what follows (F28's review: "env -S '${NOPE} git
-    push origin main'" runs the push where NOPE is not set). The guard
-    judges every push either reading finds."""
-    kept = launch(argv).argv
-    if not any("${" in word for word in argv) or kept == argv:
+def names_in(argv):
+    """The distinct ${NAME}s the words of argv hold, in order."""
+    return list(dict.fromkeys(name for word in argv if "${" in word for name in SPLIT_VARIABLE.findall(word)))
+
+
+def unset_subsets(names):
+    """Every set of names a reading takes as unset, the empty one, every
+    ${NAME} as written, first: env drops each that is not set, and which are
+    is the command's environment's (F28's second review: "env -S '${NOPE}
+    -C ${HOME} git push origin main'" runs the push from $HOME where NOPE
+    alone is not set)."""
+    return [frozenset(chosen) for size in range(len(names) + 1)
+            for chosen in itertools.combinations([name[2:-1] for name in names], size)]
+
+
+def holds_push(argv):
+    """Whether any word of argv holds the word push, in an -S string or
+    alone."""
+    return any("push" in word for word in argv)
+
+
+def readings_of(argv):
+    """The ways env may run a simple command (Launch): as launch reads it,
+    each ${NAME} in an -S string kept as written; and, where the strings
+    hold any, once more for each set of them unset (unset_subsets), env
+    expanding an unset one to nothing, so a word that is nothing but
+    ${NAME} goes and one that starts with it starts with what follows
+    (F28's review: "env -S '${NOPE} git push origin main'" runs the push
+    where NOPE is not set). Past MOST_NAMES distinct names a command that
+    holds a push is read as nothing, with why (SPLIT_TOO_MANY_NAMES)."""
+    kept = launch(argv)
+    names = names_in(argv)
+    if not names or kept.argv == list(argv) or kept.unread:
         return [kept]
-    token = UNSET.set(True)
-    try:
-        unset = launch(argv).argv
-    finally:
-        UNSET.reset(token)
-    return [kept] if unset == kept else [kept, unset]
+    if len(names) > MOST_NAMES:
+        return [kept] + ([kept._replace(start=None, unread=SPLIT_TOO_MANY_NAMES)] if holds_push(argv) else [])
+    found = {}
+    for unset in unset_subsets(names):
+        reading = launch(argv, unset)
+        found.setdefault(tuple(reading.argv), reading)
+    return list(found.values())
+
+
+def env_readings(argv):
+    """The words of each way env may run a simple command (readings_of),
+    argv itself for a way that could not be read, whose push push_arguments
+    then refuses unread; the guard judges every push any of them finds."""
+    return [list(argv) if reading.unread else reading.argv for reading in readings_of(argv)]
 
 
 def command_start(argv):
@@ -1643,11 +1739,44 @@ def command_start(argv):
     return launch(argv).start
 
 
+class Unreadable(str):
+    """A word push_arguments gives back in place of a push's arguments
+    where it could not read the command, which holds a push: its text is
+    why, which refusal gives back, so the template's hook, which calls
+    push_arguments and refusal itself, refuses the command too (F28's
+    second review)."""
+
+
+class Readings(list):
+    """A push's arguments as one way of reading the command finds them, the
+    first, with others, those every other way that finds a push finds,
+    each of which refusal judges (F28's second review: the template's hook
+    judged only one reading)."""
+
+    def __init__(self, first, others):
+        super().__init__(first)
+        self.others = others
+
+
 def push_arguments(argv):
-    """The arguments after "push" when argv is a git push, else None; git
-    may stand behind assignments and wrappers (command_start), and a query
-    of git's own, as --exec-path alone, runs no command at all."""
-    found = launch(argv)
+    """The arguments after "push" when argv is a git push, else None, in
+    every way env may run it (readings_of): the one way's alone, or, where
+    ways differ, Readings, all of them; and [Unreadable(why)] where a way
+    could not be read and argv holds a push. git may stand behind
+    assignments and wrappers (command_start), and a query of git's own, as
+    --exec-path alone, runs no command at all."""
+    readings = readings_of(argv)
+    unread = next((reading.unread for reading in readings if reading.unread), "")
+    if unread:
+        return [Unreadable(unread)] if holds_push(argv) else None
+    found = list(dict.fromkeys(tuple(args) for args in map(arguments_of, readings) if args is not None))
+    if not found:
+        return None
+    return list(found[0]) if len(found) == 1 else Readings(found[0], [list(args) for args in found[1:]])
+
+
+def arguments_of(found):
+    """The arguments after "push" in one reading (Launch), else None."""
     start, argv = found.start, found.argv
     if start is None or program(argv[start]) != "git":
         return None
@@ -1754,7 +1883,7 @@ def chdir_paths(argv):
     look."""
     found = launch(argv)
     argv = found.argv
-    if any(assigns_repository(word) for word in found.assignments):
+    if found.start is None or any(assigns_repository(word) for word in found.assignments):
         return None
     named = (env_directory(options) for name, options in found.wrappers if name == "env")
     paths = [directory for directory in named if directory is not None]
@@ -2190,7 +2319,7 @@ def refused_push(command, here, branches_of=None, reader_of=None, is_directory=N
     clone of its own, ran the judging past the hook's timeout)."""
     if len(command) > MAX_COMMAND:
         return TOO_LONG
-    deadline = DEADLINE.set(clock() + DEADLINE_SECONDS)
+    deadline, launches = DEADLINE.set(clock() + DEADLINE_SECONDS), LAUNCHES.set({})
     try:
         placed = placed_commands(command, here, is_directory or os.path.isdir)
         return first_refusal(placed, here, branches_of or branches, reader_of or claim_file_reader)
@@ -2200,6 +2329,7 @@ def refused_push(command, here, branches_of=None, reader_of=None, is_directory=N
         return TOO_SLOW
     finally:
         DEADLINE.reset(deadline)
+        LAUNCHES.reset(launches)
 
 
 def first_refusal(placed, here, branches_of, reader_of):
@@ -2440,10 +2570,19 @@ def other_holder(name, source, expected, claim_file_at, remote="origin"):
 
 
 def refusal(args, current_branch, default_branch, claim_file_at=None):
-    """Why this push is refused, or None when it is allowed. claim_file_at
+    """Why this push is refused, or None when it is allowed: each reading
+    of Readings, the first refused, and an Unreadable word's own why.
+    claim_file_at
     reads a claim file by a ref and an issue number, for the fence on a
     lease onto another worker's claim (other_holder); None, as a caller
     with no clone to read gives, leaves that fence out."""
+    if isinstance(args, Readings):
+        judged = (refusal(list(each), current_branch, default_branch, claim_file_at)
+                  for each in [args, *args.others])
+        return next((reason for reason in judged if reason), None)
+    unread = next((word for word in args if isinstance(word, Unreadable)), None)
+    if unread is not None:
+        return str(unread)
     options, positionals = push_words(args)
     remote, refspecs, deleting = (positionals or [""])[0], positionals[1:], "delete" in options
     wholesale = [name for name in options if name in WHOLESALE]

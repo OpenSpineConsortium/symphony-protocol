@@ -32,16 +32,16 @@ class TheGrammar(unittest.TestCase):
                       "timeout --sig KILL 60 git push origin HEAD:board", "env 1x=2 git push origin main",
                       "env -- - A.B=1 git push origin +claude/7", "nice env x-y=1 git push origin HEAD:board",
                       "env -S 'git push origin main'", "env - --sp=x git push origin main",
-                      "env -S '${NOPE} git push origin main'",
+                      "env -S '${NOPE} git push origin main'", "env -S '${NOPE} -u ${HOME} git push origin main'",
                       "git commit -F - <<'EOF'\nDon't stop\nEOF\ngit push origin main\ncat <<'EOF'\nIt's done\nEOF"):
             with self.subTest(shape=shape):
                 self.assertIn(shape, texts)
         self.assertEqual(len(set(texts)), len(texts))
         self.assertEqual(len(g.argument_lists()), 1398, "a prefix changes what the guard reads, never git's words")
-        self.assertEqual(len(texts), 52658, "since F28's fix and its review env's assignments and its -S, 1,398 more")
+        self.assertEqual(len(texts), 52891, "since F28's fix and its reviews env's assignments and its -S, 1,631 more")
         self.assertFalse(any(c.prefix in g.ABBREVIATED + g.ENV_ASSIGNED and (c.wrapper != "{}" or c.argv.startswith("-"))
                              for c in g.commands()), "an abbreviated wrapper is taken with the command alone")
-        self.assertFalse(any(c.wrapper in (g.SPLIT, g.SPLIT_UNSET) and (c.prefix or c.argv.startswith("-")) for c in g.commands()),
+        self.assertFalse(any(c.wrapper in (g.SPLIT, g.SPLIT_UNSET, g.SPLIT_MIXED) and (c.prefix or c.argv.startswith("-")) for c in g.commands()),
                          "env -S is taken with the command alone")
 
 
@@ -96,7 +96,7 @@ class TheGuardJudged(unittest.TestCase):
         self.assertLess(time.perf_counter() - began, BUDGET_SECONDS)
         self.assertEqual(judgement.missing, ())
         self.assertEqual(judgement.failures, {}, g.report(judgement))
-        self.assertEqual(judgement.commands, 52658)
+        self.assertEqual(judgement.commands, 52891)
         let_through = {d.why for d in judgement.classes if d.kind == "let through"}
         self.assertTrue(let_through)
         self.assertTrue(all("G11b" in why for why in let_through), let_through)
@@ -189,7 +189,7 @@ class TheGuardJudged(unittest.TestCase):
             self.assertEqual(sum(g.judge(commands=ended).failures.values()), 157,
                              "F28's review: read past the lone -, --sp=x splits into the command")
         unset = [c for c in g.commands() if c.wrapper == g.SPLIT_UNSET]
-        with mock.patch.object(guard, "env_readings", lambda argv: [guard.launch(argv).argv]):
+        with mock.patch.object(guard, "readings_of", lambda argv: [guard.launch(argv)]):
             self.assertEqual(sum(g.judge(commands=unset).failures.values()), 157,
                              "F28's review: ${NOPE} read only as written is the command")
 

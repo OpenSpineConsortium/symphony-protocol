@@ -1609,7 +1609,7 @@ MUTANTS = {
         "G11a", "getopt ends env's options at a lone -, so the push after env - --sp=x, an assignment there, is "
                 "judged and refused (F28's review)"),
     "an -S string's variables read only as written": Mutant(
-        guard, "env_readings", lambda argv: [guard.launch(argv).argv],
+        guard, "readings_of", lambda argv: [guard.launch(argv)],
         "G11a", "env drops a ${NAME} that is not set, so the push after env -S '${NOPE} git push ...' is judged "
                 "and refused (F28's review)"),
     "time matched by its program's name": Mutant(
@@ -1622,6 +1622,11 @@ MUTANTS = {
         "G11a", "a time that may be quoted, which bash runs as the program, is read both ways, so a lease by git -C "
                 "from another clone after \"time\" GIT_DIR=x, onto a claim another worker holds, is judged there "
                 "and refused (F28's review)"),
+    "every ${NAME} read all set or all unset": Mutant(
+        guard, "unset_subsets", lambda names: [frozenset(), frozenset(name[2:-1] for name in names)],
+        "G11a", "env drops each ${NAME} that is not set and keeps each that is, so the push after env -S "
+                "'${NOPE} -u ${HOME} git push ...', where NOPE alone is not set, is judged and refused (F28's "
+                "second review)"),
     "a quote that never closes hiding the command": Mutant(
         guard, "plain_text", lambda command, lenient=False, spans_run=True: ORIGINAL_PLAIN_TEXT(command),
         "G11a", "a quote that never closes is read as a character of its word, so a lease bash runs before the "

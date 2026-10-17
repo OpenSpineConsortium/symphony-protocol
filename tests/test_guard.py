@@ -433,12 +433,16 @@ class ParsingTest(unittest.TestCase):
 
 def plain_shell_before_f25(command):
     """guard.plain_shell as it was until F25's fix, word for word, which the
-    pass must still give: the template's shim and its profile read it."""
+    pass must still give: the template's shim and its profile read it; but
+    for \\$ and \\` inside double quotes, handed to shlex since F28's second
+    review as $ and `, as bash hands them on (as_quoted)."""
     out, quote, word_start, i = [], None, True, 0
     while i < len(command):
         ch = command[i]
         if ch == "\\" and quote != "'":
-            if command[i + 1:i + 2] != "\n":
+            if quote == '"' and command[i + 1:i + 2] in ("$", "`"):
+                out.append(command[i + 1])
+            elif command[i + 1:i + 2] != "\n":
                 out.append(command[i:i + 2])
             i, word_start = i + 2, False
         elif quote:
@@ -1402,10 +1406,128 @@ class EnvReviewTest(unittest.TestCase):
         if gnu_coreutils("env"):
             self.assertEqual(subprocess.run(["env", "-u", "NOPE", "-S", "${NOPE} printf %s ran"],
                                             capture_output=True, text=True).stdout, "ran")
-        with mock.patch.object(guard, "env_readings", lambda argv: [guard.launch(argv).argv]):
+        with mock.patch.object(guard, "readings_of", lambda argv: [guard.launch(argv)]):
             self.assertIsNone(guard.refused_push("env -S '${NOPE} git push origin main'", "/w",
                                                  lambda place: ("claude/7", "main"), lambda place: None,
                                                  lambda place: True))
+
+
+def template_hook(command, current="claude/7", default="main"):
+    """The template's hook as it stands before it calls refused_push, its
+    tools/guard_push.py's main copied: simple_commands, push_arguments and
+    refusal, under no length or time limit; an exception out of it exits
+    1, which Claude Code reads as no objection, so the command runs."""
+    if "push" not in command:
+        return None
+    pushes = [args for argv in guard.simple_commands(command)
+              if (args := guard.push_arguments(argv)) is not None]
+    for args in pushes:
+        reason = guard.refusal(args, current, default, files_at({}))
+        if reason:
+            return reason
+    return None
+
+
+def refused(command):
+    return guard.refused_push(command, "/w", lambda place: ("claude/7", "main"), lambda place: None,
+                              lambda place: True)
+
+
+class EnvSecondReviewTest(unittest.TestCase):
+    """F28's second review: the template's hook, which calls the public
+    helpers itself, meets every reading and every bound; a backslash in
+    double quotes hands $ and ` on as bash does; set and unset names are
+    read in every mix; nested strings and flat chains of -S are read in a
+    time in proportion to the command."""
+
+    def test_the_template_s_hook_refuses_what_the_guard_refuses(self):
+        """17 attached -S raised TooDeep out of push_arguments, and the
+        hook never saw the unset reading, so each of these ran there where
+        fcbe822 refused them through the same hook."""
+        commands = {"env " + "-S" * 17 + "git push origin main": guard.SPLIT_TOO_DEEP,
+                    "env -S '${NOPE}' git push origin main": MAIN,
+                    "env -S'-S${A}' git push origin main": MAIN,
+                    "env -S '${NOPE} -' git push origin main": MAIN,
+                    "env -S '${A}${B}' git push origin main": MAIN}
+        for command, reason in commands.items():
+            with self.subTest(command=command):
+                self.assertEqual(template_hook(command), reason)
+                self.assertEqual(refused(command), reason)
+                for argv, shell in guard.placed_commands(command, "/w", lambda place: True):
+                    guard.launch(argv), guard.command_start(argv), guard.chdir_paths(argv)
+                    guard.env_readings(argv), guard.moved_to(argv, shell, lambda place: True)
+        self.assertIsNone(template_hook("env -S '${NOPE}' git push origin claude/7"))
+        with mock.patch.object(guard, "readings_of", lambda argv: [guard.launch(argv)]):
+            self.assertIsNone(template_hook("env -S '${NOPE}' git push origin main"),
+                              "the reading as written alone: ${NOPE} run as the command")
+
+    def test_a_backslash_in_double_quotes_hands_on_the_dollar(self):
+        """bash turns \\$ and \\` inside double quotes into $ and `, so env
+        sees ${NOPE} and drops it where NOPE is not set."""
+        for command in ('env -S "\\${NOPE}git push origin main"',
+                        'env -S "-S\'\\${NOPE}git push origin main\'"',
+                        'env "-S\\${NOPE}git push origin main"'):
+            with self.subTest(command=command):
+                self.assertEqual(refused(command), MAIN)
+                self.assertEqual(template_hook(command), MAIN)
+        self.assertEqual(guard.simple_commands('env -S "\\${X} \\`y\\` \\a"'), [["env", "-S", "${X} `y` \\a"]])
+        shown = subprocess.run(["bash", "-c", 'printf %s "\\${X}\\`"'], capture_output=True, text=True)
+        self.assertEqual(shown.stdout, "${X}`")
+        with mock.patch.object(guard, "QUOTED_PAIRS", {"\n": ""}):
+            self.assertIsNone(refused('env -S "\\${NOPE}git push origin main"'))
+
+    def test_set_and_unset_names_are_read_in_every_mix(self):
+        """Up to MOST_NAMES names, one reading for each set of them unset;
+        past it a command that holds a push is refused unread."""
+        for command in ("env -S '${NOPE} -C ${HOME} git push origin main'",
+                        "env -S '${NOPE}-u ${HOME} git push origin main'",
+                        "env -S '${A} ${B} -C ${C} git push origin main'"):
+            with self.subTest(command=command):
+                self.assertEqual(refused(command), MAIN)
+                self.assertEqual(template_hook(command), MAIN)
+        self.assertIsNone(refused("env -S '${A} ${B} -C ${C} git push origin claude/7'"))
+        many = "env -S '${A}${B}${C}${D} git push origin claude/7'"
+        self.assertEqual(refused(many), guard.SPLIT_TOO_MANY_NAMES)
+        self.assertEqual(template_hook(many), guard.SPLIT_TOO_MANY_NAMES)
+        self.assertEqual(guard.readings_of(["env", "-S", "${A}${B}${C}${D} ls"])[0].argv,
+                         ["env", "${A}${B}${C}${D}", "ls"], "no push: read as written alone")
+        self.assertEqual(len(guard.unset_subsets(["${A}", "${B}", "${C}"])), 8)
+        with mock.patch.object(guard, "unset_subsets",
+                               lambda names: [frozenset(), frozenset(name[2:-1] for name in names)]):
+            self.assertIsNone(refused("env -S '${NOPE} -C ${HOME} git push origin main'"),
+                              "all set or all unset alone: -C takes git, or ${NOPE} runs")
+
+    def test_nested_strings_and_flat_chains_are_read_in_time(self):
+        """A string nested in quoted -S strings is split once a level, so a
+        wide one nested 14 to 16 deep spends the budget and is refused
+        unread, quickly; a narrow one is read by its content; and -S taking
+        the next word as its value starts from that word's depth, so a flat
+        chain of any length is read by its content."""
+        def nested(levels, inner):
+            for _ in range(levels - 1):
+                inner = "-S '" + inner.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            return "env -S " + shlex.quote(inner)
+        for levels in (14, 15, 16):
+            head = len(nested(levels, ""))
+            command = nested(levels, "-i " * ((guard.MAX_COMMAND - 2 * head - 400) // 3 // 2) + "git push origin main")
+            self.assertLessEqual(len(command), guard.MAX_COMMAND)
+            with self.subTest(levels=levels):
+                started = time.monotonic()
+                self.assertEqual(refused(command), guard.SPLIT_TOO_DEEP)
+                self.assertEqual(template_hook(command), guard.SPLIT_TOO_DEEP)
+                self.assertLess(time.monotonic() - started, 3.0)
+        self.assertEqual(refused(nested(16, "-i git push origin main")), MAIN)
+        self.assertIsNone(refused(nested(16, "-i git push origin claude/7")))
+        self.assertEqual(refused(nested(17, "-i git push origin claude/7")), guard.SPLIT_TOO_DEEP)
+        for count in (17, 40):
+            with self.subTest(count=count):
+                self.assertIsNone(refused("env " + "-S " * count + "git push origin claude/7"))
+                self.assertEqual(refused("env " + "-S " * count + "git push origin main"), MAIN)
+                self.assertEqual(template_hook("env " + "-S " * count + "git push origin main"), MAIN)
+        chain = "env " + "-S " * ((guard.MAX_COMMAND - 40) // 3) + "git push origin main"
+        started = time.monotonic()
+        self.assertEqual(refused(chain), MAIN)
+        self.assertLess(time.monotonic() - started, 3.0)
 
 
 HOME = os.path.expanduser("~")
