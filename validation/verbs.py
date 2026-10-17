@@ -117,7 +117,9 @@ CLONES = "/clones"
 # Or its second clone by git's -C behind env and a word env reads as an
 # assignment where the shell would run it, inside a string env's -S
 # splits, and after env GIT_DIR=x alone, which sets nothing in the shell
-# (F28).
+# (F28); and after /usr/bin/time GIT_DIR=x, which runs the assignment as
+# a command, and "time" GIT_DIR=x, which the guard cannot tell from bash's
+# keyword (F28's review).
 ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push}",
              "missing": "cd ../{clone}; cd ../{absent}; git {push}",
              "body": "cat > /dev/null <<'EOF'\ncd ..\nEOF\ngit {push}",
@@ -151,7 +153,9 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "env": "env --ch ../{clone} git {push}",
              "env-assigned": "env 1x=2 git -C ../{clone} {push}",
              "env-split": "env -S 'git -C ../{clone} {push}'",
-             "env-alone": "env GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}"}
+             "env-alone": "env GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "time-path": "/usr/bin/time GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "time-quoted": '"time" GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}'}
 # The ways whose push runs in the worker's own clone (leasing_clone).
 FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
                   "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",

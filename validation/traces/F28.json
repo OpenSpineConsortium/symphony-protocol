@@ -23,6 +23,14 @@
      "note": "the same lease inside a string env's -S splits, env -S 'git -C ../b-other push --force-with-lease origin claude/1': under the mutant that splits no string it is not read at all"},
     {"verb": "lease-elsewhere", "actor": "b", "args": [1, "env-alone"], "expect": {"taken": false, "holders": {"1": "a"}},
      "note": "the same lease by git -C ../b-other after env GIT_DIR=<the clones>/b/.git, which prints env's environment and sets nothing in the shell, so git runs in b-other and the guard judges it there and refuses it; under the mutant that reads env's lone assignment as the shell's, the push is judged by its words and in b's own clone, which shows no claim file on origin/claude/1, so the fence cannot judge and the lease is taken: G11a and G1 are red here"},
+    {"verb": "guard", "actor": "a", "args": ["env - --sp=x git push origin main"], "expect": {"refused": true},
+     "note": "getopt ends env's options at the lone -, which env reads as -i, so --sp=x is an assignment, not -S, and env runs git push origin main; under the mutant that reads on past a lone - as an option, --sp=x splits into x, read as the command, and the push passes (F28's review)"},
+    {"verb": "guard", "actor": "a", "args": ["env -S '${NOPE} git push origin main'"], "expect": {"refused": true},
+     "note": "where NOPE is not set env drops the word ${NOPE} and runs git push origin main; under the mutant that reads an -S string's variables only as written, ${NOPE} is read as the command and the push passes (F28's review)"},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "time-path"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "the same lease by git -C ../b-other after /usr/bin/time GIT_DIR=<the clones>/b/.git, which runs the assignment as a command and sets nothing in the shell; under the mutant that takes /usr/bin/time for bash's keyword, the push is judged by its words and in b's own clone alone and the lease is taken (F28's review)"},
+    {"verb": "lease-elsewhere", "actor": "b", "args": [1, "time-quoted"], "expect": {"taken": false, "holders": {"1": "a"}},
+     "note": "the same lease after \"time\" GIT_DIR=<the clones>/b/.git, which bash runs as the program, setting nothing; the guard cannot tell the quotes, so it judges the push in b-other as well as in b's own clone; under the mutant that reads it as the keyword alone, the lease is taken (F28's review)"},
     {"verb": "board", "expect": {"claims": {"claude/1": "a"}}}
   ]
 }

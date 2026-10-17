@@ -253,7 +253,14 @@ BUDGET_SECONDS = 10
 # its fourth, step 4, env -S with the push as its string, which passes
 # once the string is not split; and at b's lease from its second clone
 # by git -C after env GIT_DIR=x alone, step 7, taken once env's lone
-# assignment is read as the shell's.
+# assignment is read as the shell's; and, from its review, at its fifth
+# guard step, step 8, env - --sp=x before a push to main, which passes
+# once a lone - is read past as an option; at its sixth, step 9, env -S
+# with ${NOPE} before the push, which passes once the string's variables
+# are read only as written; and at b's leases after /usr/bin/time
+# GIT_DIR=x, step 10, and "time" GIT_DIR=x, step 11, taken once time is
+# matched by its program's name, or a time the guard cannot tell is read
+# as the keyword alone.
 UNDONE = {
     "F1": [("the comment before the labels", 5, "G3L")],
     "F2": [("a piece of work named by the number it is shown by", 4, "G7"),
@@ -352,7 +359,11 @@ UNDONE = {
             ("a label refused its removal put back", 20, "G3L"),
             ("a 404 after a rate limit read as never on", 22, "G3L")],
     "F28": [("env's assignments read as the shell's", 1, "G11a"), ("env's lone - not read", 2, "G11a"),
-            ("env's -S string not split", 4, "G11a"), ("env's lone assignment read as the shell's", 7, "G11a")],
+            ("env's -S string not split", 4, "G11a"), ("env's lone assignment read as the shell's", 7, "G11a"),
+            ("a lone - read past as one of env's options", 8, "G11a"),
+            ("an -S string's variables read only as written", 9, "G11a"),
+            ("time matched by its program's name", 10, "G11a"),
+            ("a time the guard cannot tell read as the keyword alone", 11, "G11a")],
 }
 # The findings with a trace, every one settled since F25's fix: F1, F3,
 # F5, F6, F10 and F11 fixed in 0.4.1; F2, F4, F7, F8, F9, F12, F13, F14,

@@ -94,10 +94,11 @@ while, until, do, and function with its name), and the wrappers env,
 command, nice, time, exec, nohup and timeout, each with its own options as
 it reads them, a long one by any start of its name that names it alone, as
 env --uns for env --unset, since GNU's getopt_long reads them so (WRAPPERS,
-F26), env's -S string split into the words env splits it into, and after
-env's options a lone -, and every word that holds a =, which env reads as
-an assignment where the shell would run it (F28), and git's own options
-before the verb, each with its value where it takes one
+F26), env's -S string split into the words env splits it into, read
+too with every ${NAME} in it unset, and after env's options, which a lone
+- ends, the -, and every word that holds a =, which env reads as an
+assignment where the shell would run it (F28 and its review), and git's
+own options before the verb, each with its value where it takes one
 (GIT_VALUE_OPTIONS), and a query after which git runs nothing
 (GIT_QUERIES). A push is read as git reads its arguments: short options
 in a bundle, as in -fu; a long one by any start of its name that names it
@@ -1361,21 +1362,40 @@ def long_value_is_next(word, wrapper):
     return "=" not in word and wrapper.long_options.get(long_option_of(word, wrapper)) == VALUE
 
 
-def past_options(argv, i, wrapper):
-    """Where a wrapper's command starts: past its options from argv[i] on,
-    each with its value (Wrapper, long_value_is_next), past a -- that ends
-    them, and past the operands the wrapper takes before the command."""
-    while i < len(argv) and argv[i].startswith("-"):
-        word = argv[i]
-        i += 1
+def ends_options(word):
+    """Whether a word ends a wrapper's options where it stands, unread as
+    one: a lone -, which getopt reads as no option, as it reads every word
+    that does not start with - (F28's review: the guard read on past it, so
+    "env - --split-string=x git push" was read as splitting x, where env
+    takes the - as -i and --split-string=x as an assignment)."""
+    return word == "-"
+
+
+def takes_next_word(word, wrapper):
+    """Whether a wrapper's option word takes the next word as its value
+    (long_value_is_next, value_is_next)."""
+    if word.startswith("--"):
+        return long_value_is_next(word, wrapper)
+    return value_is_next(word[1:], wrapper.short_values)
+
+
+def read_options(rest, read, wrapper, splits=False):
+    """Move a wrapper's options, each with its value (Wrapper,
+    long_value_is_next), and a -- that ends them, from rest, the words
+    still to read, the next last, to read, stopping before the first word
+    that is no option or a lone - (ends_options); for env (splits), each
+    string -S gives is split and its words read in its place (spliced)."""
+    while rest and rest[-1][0].startswith("-") and not ends_options(rest[-1][0]):
+        in_time()
+        word, depth = rest.pop()
         if word == "--":
-            break
-        if word.startswith("--"):
-            if long_value_is_next(word, wrapper):
-                i += 1
-        elif value_is_next(word[1:], wrapper.short_values):
-            i += 1
-    return i + wrapper.operands
+            read.append(word)
+            return
+        if splits and spliced(rest, read, word, depth):
+            continue
+        read.append(word)
+        if rest and takes_next_word(word, wrapper):
+            read.append(rest.pop()[0])
 
 
 # What GNU env's -S reads as the space between words, and what a backslash
@@ -1384,9 +1404,15 @@ SPLIT_SPACES = " \t\n\v\f\r"
 SPLIT_ESCAPES = {"f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"', "#": "#", "$": "$", "'": "'",
                  "\\": "\\"}
 SPLIT_VARIABLE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+# The refusal of a command whose env -S strings nest, a string's words
+# holding an -S of their own, more than MAX_NESTING deep: each level is
+# split again, so the guard refuses it unread rather than run out of time
+# (F28's review).
+SPLIT_TOO_DEEP = (f"a command whose env -S strings nest more than {MAX_NESTING} deep is refused: the guard cannot "
+                  "read it in time; give env the words themselves (.claude/rules/board.md)")
 
 
-def split_string(text):
+def split_string(text, unset=False):
     """The words env's -S splits text into, as GNU coreutils' env.c
     (build_argv) splits them: at spaces outside quotes; in single quotes
     every character as written but \\\\ and \\', in double quotes and
@@ -1394,36 +1420,39 @@ def split_string(text):
     outside double quotes and a space in the word inside them, \\c the end
     of the string, and a # that starts a word a comment to the end. A
     ${NAME} is kept as written, as the guard keeps the shell's own $NAME,
-    since its value is the one in the command's environment. None where
-    env refuses the string and runs nothing: a quote that never closes, a
-    $ that opens no ${NAME}, a backslash at the end or before a character
-    it takes no escape of, and \\c in double quotes. The env of FreeBSD and
-    macOS takes -S too, split by the same rules."""
-    words, starts, single, double, i = [], True, False, False, 0
+    since its value is the one in the command's environment; or, unset,
+    expands to nothing, as env expands a variable that is not set, starting
+    no word, so a word that is nothing but ${NAME} goes (env_readings).
+    None where env refuses the string and runs nothing: a quote that never
+    closes, a $ that opens no ${NAME}, a backslash at the end or before a
+    character it takes no escape of, and \\c in double quotes. The env of
+    FreeBSD and macOS takes -S too, split by the same rules. Each character
+    is looked at once and each word joined once, so the time is in
+    proportion to the text (F28's review)."""
+    words, word, single, double, i = [], None, False, False, 0
 
     def add(chars):
-        nonlocal starts
-        if starts:
-            words.append("")
-            starts = False
-        words[-1] += chars
+        nonlocal word
+        if word is None:
+            word = []
+            words.append(word)
+        word.append(chars)
 
     while i < len(text):
-        in_time()
         ch, escaped = text[i], text[i + 1:i + 2]
         if (ch == "'" and not double) or (ch == '"' and not single):
             single, double = (not single, double) if ch == "'" else (single, not double)
             add("")
             i += 1
         elif ch in SPLIT_SPACES and not (single or double):
-            starts, i = True, i + 1
-        elif ch == "#" and starts:
+            word, i = None, i + 1
+        elif ch == "#" and word is None:
             break
         elif ch == "\\" and not (single and escaped not in ("\\", "'")):
             if escaped == "c" and not double:
                 break
             if escaped == "_" and not double:
-                starts = True
+                word = None
             elif escaped == "_" or escaped in SPLIT_ESCAPES:
                 add(" " if escaped == "_" else SPLIT_ESCAPES[escaped])
             else:
@@ -1433,22 +1462,22 @@ def split_string(text):
             variable = SPLIT_VARIABLE.match(text, i)
             if variable is None:
                 return None
-            add(variable.group())
+            if not unset:
+                add(variable.group())
             i = variable.end()
         else:
             add(ch)
             i += 1
-    return None if single or double else words
+    return None if single or double else ["".join(parts) for parts in words]
 
 
-def split_string_option(argv, i):
-    """What env's option word argv[i] gives -S or --split-string, or a
-    start of it, to split: the string, attached or the next word (None
-    where there is none), how many words the option takes, and the letters
-    of a bundle before its S, as -i of -iS, which stay as options; None
-    where the word gives -S nothing."""
-    word, env = argv[i], WRAPPERS["env"]
-    following = argv[i + 1] if i + 1 < len(argv) else None
+def split_string_option(word, following):
+    """What env's option word gives -S or --split-string, or a start of it,
+    to split: the string, attached or following, the next word (None where
+    there is none), how many words the option takes, and the letters of a
+    bundle before its S, as -i of -iS, which stay as options; None where the
+    word gives -S nothing."""
+    env = WRAPPERS["env"]
     if word.startswith("--"):
         if long_option_of(word, env) != "split-string":
             return None
@@ -1462,30 +1491,37 @@ def split_string_option(argv, i):
     return None
 
 
-def with_split_strings(argv, i):
-    """argv with each string env's options from argv[i] on give -S, or
-    --split-string, split (split_string) and its words put in the option's
-    place, as GNU env puts them before it reads on from the first of them,
-    as options again (F28: "env -S 'git push origin main'" runs the push,
-    and the guard read the string as one word and passed it). A string env
-    refuses, which runs nothing, stays one word, as before the fix."""
-    env = WRAPPERS["env"]
-    while i < len(argv) and argv[i].startswith("-") and argv[i] != "--":
-        in_time()
-        given = split_string_option(argv, i)
-        if given is None:
-            word = argv[i]
-            i += 1 + (long_value_is_next(word, env) if word.startswith("--")
-                      else value_is_next(word[1:], env.short_values))
-            continue
-        text, used, before = given
-        words = split_string(text) if text is not None else None
-        if words is None:
-            i += used
-            continue
-        argv = argv[:i] + before + words + argv[i + used:]
-        i += len(before)
-    return argv
+# Whether env's -S strings are read with every ${NAME} unset (split_string,
+# env_readings); set for one reading at a time.
+UNSET = contextvars.ContextVar("UNSET", default=False)
+
+
+def spliced(rest, read, word, depth):
+    """Whether env's option word, at depth, the number of -S strings it came
+    out of, gives a string to -S (split_string_option) that is split, its
+    words then put on rest, to be read next, as options again, as GNU env
+    puts them in the option's place before it reads on (F28: "env -S 'git
+    push origin main'" runs the push, and the guard read the string as one
+    word and passed it), and the letters of its bundle before the S on
+    read. A string env refuses, which runs nothing, is left for the caller
+    to read as one word, -S's value, as before the fix. Each word is moved
+    once, so many strings cost no more than their words (F28's review: the
+    whole command was copied for each); one nested deeper than MAX_NESTING
+    raises TooDeep (SPLIT_TOO_DEEP)."""
+    given = split_string_option(word, rest[-1][0] if rest else None)
+    if given is None or given[0] is None:
+        return False
+    text, used, before = given
+    words = split_string(text, UNSET.get())
+    if words is None:
+        return False
+    if depth >= MAX_NESTING:
+        raise TooDeep(SPLIT_TOO_DEEP)
+    if used == 2:
+        rest.pop()
+    read.extend(before)
+    rest.extend((split, depth + 1) for split in reversed(words))
+    return True
 
 
 def env_assigns(word):
@@ -1498,21 +1534,23 @@ def env_assigns(word):
     return "=" in word
 
 
-def past_lone_dash(argv, i):
-    """Past the lone - GNU env reads after its options, a -- among them, as
-    -i (env.c), so "env -- - git push" runs the push (F28)."""
-    return i + 1 if i < len(argv) and argv[i] == "-" else i
+def past_lone_dash(rest, read):
+    """Move the lone - GNU env reads after its options, a -- among them, as
+    -i (env.c) from rest to read, so "env -- - git push" and "env - git
+    push" run the push (F28)."""
+    if rest and rest[-1][0] == "-":
+        read.append(rest.pop()[0])
 
 
-def past_env_assignments(argv, i, assignments):
-    """Where the command env runs starts, from argv[i], the word after its
-    options: past a lone - (past_lone_dash) and every word env reads as an
+def read_env_assignments(rest, read, assignments):
+    """Move what env reads after its options and before its command from
+    rest to read: a lone - (past_lone_dash) and every word env reads as an
     assignment (env_assigns), each added to assignments."""
-    i = past_lone_dash(argv, i)
-    while i < len(argv) and env_assigns(argv[i]):
-        assignments.append(argv[i])
-        i += 1
-    return i
+    past_lone_dash(rest, read)
+    while rest and env_assigns(rest[-1][0]):
+        in_time()
+        assignments.append(rest.pop()[0])
+        read.append(assignments[-1])
 
 
 def describes_only(options):
@@ -1526,43 +1564,76 @@ class Launch(NamedTuple):
     assignments to its environment, the shell's and env's, each wrapper
     that runs it, by name with its option words, where the command starts,
     None when nothing is run, as after a lone assignment or command -v,
-    and the words as the wrappers read them, which start indexes: argv
-    itself, but where env's -S splits a string into words (F28)."""
+    the words as the wrappers read them, which start indexes: argv itself,
+    but where env's -S splits a string into words (F28); and each
+    wrapper's word as written, /usr/bin/time where its name is time."""
 
     assignments: list
     wrappers: list
     start: object
     argv: list
+    wrapper_words: tuple = ()
 
 
 def launch(argv):
     """argv read as the shell and the wrappers read it, past leading
     assignments, the RESERVED words, function and its name, and the
-    WRAPPERS with their options, env's -S strings split into the words env
-    reads (with_split_strings) and its assignments after them
-    (past_env_assignments) (Launch)."""
-    assignments, wrappers, i = [], [], 0
-    while i < len(argv):
-        word = argv[i]
+    WRAPPERS with their options (read_options), env's -S strings split into
+    the words env reads (spliced) and its assignments after them
+    (read_env_assignments) (Launch). The words still to read are kept with
+    the next last, so each is moved once, whatever -S puts back."""
+    rest, read = [(word, 0) for word in reversed(argv)], []
+    assignments, wrappers, words = [], [], []
+
+    def unread():
+        return read + [word for word, _ in reversed(rest)]
+
+    while rest:
+        in_time()
+        word = rest[-1][0]
         name = program(word)
-        if word in RESERVED:
-            i += 1
-        elif ASSIGNMENT.match(word):
-            assignments.append(word)
-            i += 1
-        elif word == "function":
-            i += 2
+        if word in RESERVED or ASSIGNMENT.match(word) or word == "function":
+            read.append(rest.pop()[0])
+            if ASSIGNMENT.match(word):
+                assignments.append(word)
+            elif word == "function" and rest:
+                read.append(rest.pop()[0])
         elif name in WRAPPERS:
+            read.append(rest.pop()[0])
+            begin = len(read)
+            read_options(rest, read, WRAPPERS[name], splits=name == "env")
+            for _ in range(WRAPPERS[name].operands):
+                if rest:
+                    read.append(rest.pop()[0])
+            options = read[begin:]
+            if name == "command" and describes_only(options):
+                return Launch(assignments, wrappers, None, unread(), tuple(words))
+            wrappers.append((name, options))
+            words.append(word)
             if name == "env":
-                argv = with_split_strings(argv, i + 1)
-            end = past_options(argv, i + 1, WRAPPERS[name])
-            if name == "command" and describes_only(argv[i + 1:end]):
-                return Launch(assignments, wrappers, None, argv)
-            wrappers.append((name, argv[i + 1:end]))
-            i = past_env_assignments(argv, end, assignments) if name == "env" else end
+                read_env_assignments(rest, read, assignments)
         else:
-            return Launch(assignments, wrappers, i, argv)
-    return Launch(assignments, wrappers, None, argv)
+            return Launch(assignments, wrappers, len(read), unread(), tuple(words))
+    return Launch(assignments, wrappers, None, read, tuple(words))
+
+
+def env_readings(argv):
+    """The words of a simple command as env may run them: as launch reads
+    them, each ${NAME} in an -S string kept as written; and, where that
+    string holds one, with every ${NAME} unset, which env expands to
+    nothing, so a word that is nothing but ${NAME} goes and one that starts
+    with it starts with what follows (F28's review: "env -S '${NOPE} git
+    push origin main'" runs the push where NOPE is not set). The guard
+    judges every push either reading finds."""
+    kept = launch(argv).argv
+    if not any("${" in word for word in argv) or kept == argv:
+        return [kept]
+    token = UNSET.set(True)
+    try:
+        unset = launch(argv).argv
+    finally:
+        UNSET.reset(token)
+    return [kept] if unset == kept else [kept, unset]
 
 
 def command_start(argv):
@@ -1751,12 +1822,15 @@ class Shell(NamedTuple):
     (after_a_move); and whether a variable set alone or exported names the
     repository (GIT_REPOSITORY_VARIABLES), which holds wherever the shell
     moves after, since a move changes the directory and not the variable
-    (followed_and_unmoved)."""
+    (followed_and_unmoved); and whether such a variable may have been set,
+    behind a time the guard cannot tell from bash's keyword
+    (maybe_naming_repository)."""
 
     directory: object
     stack: object = ()
     moved: bool = False
     named_repository: bool = False
+    maybe_named: bool = False
 
 
 def operators(run):
@@ -1856,7 +1930,7 @@ def after_move(before, after):
     before it: one that has moved, and whose repository a variable names
     where it named it before, since a move changes the directory and not
     the variable."""
-    return after._replace(moved=True, named_repository=before.named_repository)
+    return after._replace(moved=True, named_repository=before.named_repository, maybe_named=before.maybe_named)
 
 
 def naming_repository(shell):
@@ -1876,8 +1950,29 @@ def sets_the_shells_own(found):
     the fix such a line was read as GIT_DIR set in the shell, and every
     push after it judged by its words and in the session's own clone
     alone, so a lease by git -C onto another worker's claim that a clone
-    elsewhere shows passed)."""
-    return all(name == "time" for name, _ in found.wrappers)
+    elsewhere shows passed). bash's keyword is the word time itself, so
+    /usr/bin/time, the program, which runs the assignment as a command,
+    sets nothing (F28's review: the guard matched the program's name)."""
+    return all(word == "time" for word in found.wrapper_words)
+
+
+def behind_time_alone(found):
+    """Whether a simple command's wrappers are bash's time and nothing else,
+    each written time (sets_the_shells_own): the lexer drops quotes, so a
+    "time" or \\time, which bash runs as the program and not as its
+    keyword, reads the same, and the guard cannot tell whether the
+    assignment set the shell's variable (maybe_naming_repository)."""
+    return bool(found.wrapper_words) and all(word == "time" for word in found.wrapper_words)
+
+
+def maybe_naming_repository(shell):
+    """The shell once a variable that names the repository may or may not
+    be set in it, behind a time the guard cannot tell from "time"
+    (behind_time_alone): each push after it is judged where the shell
+    stands, as though nothing were set, and by its words and in the
+    session's own clone, as though it were (push_places), so either way the
+    clone git runs in is judged."""
+    return shell._replace(maybe_named=True)
 
 
 def moved_to(argv, shell, is_directory):
@@ -1892,7 +1987,9 @@ def moved_to(argv, shell, is_directory):
     found = launch(argv)
     if found.start is None:
         named = sets_the_shells_own(found) and any(assigns_repository(word) for word in found.assignments)
-        return naming_repository(shell) if named else shell
+        if not named:
+            return shell
+        return maybe_naming_repository(shell) if behind_time_alone(found) else naming_repository(shell)
     if any(name not in IN_THE_SHELL for name, _ in found.wrappers):
         return shell
     argv = found.argv
@@ -1935,7 +2032,7 @@ def placed_parts(parts, here, is_directory):
     for part in parts:
         in_time()
         if isinstance(part, list):
-            placed.append((part, shell))
+            placed += [(argv, shell) for argv in env_readings(part)]
             shell = moved_to(part, shell, is_directory)
             continue
         for operator in operators(part):
@@ -2036,18 +2133,22 @@ def push_places(argv, shell, here):
     called as one the shell makes; and here, the session's own clone, as
     every push was judged before F21's fix, where either cannot be told or
     a ~ names the clone (from_a_tilde), or after a move where a relative -C
-    names it (after_a_move). git's and env's -C are joined on in each. Each
-    reading after the first is one the command's words do not name, and
+    names it (after_a_move); and, where a variable that names the
+    repository may be set (Shell.maybe_named), here and its words alone
+    too. git's and env's -C are joined on in each. Each reading after the
+    first is one the command's words do not name, and
     carries what a refusal there adds (UNMOVED, UNTOLD)."""
     followed, unmoved = followed_and_unmoved(argv, shell, here)
     found = [Reading(followed)]
     if unmoved is not None and unmoved != followed:
         found.append(Reading(unmoved, UNMOVED))
     if here is not None and here not in (followed, unmoved):
-        if followed is None or unmoved is None or from_a_tilde(argv):
+        if followed is None or unmoved is None or from_a_tilde(argv) or shell.maybe_named:
             found.append(Reading(here, UNTOLD))
         elif after_a_move(argv, shell):
             found.append(Reading(here, UNMOVED))
+    if shell.maybe_named and None not in (reading.place for reading in found):
+        found.append(Reading(None, UNTOLD))
     return found
 
 
@@ -2093,8 +2194,8 @@ def refused_push(command, here, branches_of=None, reader_of=None, is_directory=N
     try:
         placed = placed_commands(command, here, is_directory or os.path.isdir)
         return first_refusal(placed, here, branches_of or branches, reader_of or claim_file_reader)
-    except TooDeep:
-        return TOO_DEEP
+    except TooDeep as problem:
+        return problem.args[0] if problem.args else TOO_DEEP
     except TooSlow:
         return TOO_SLOW
     finally:

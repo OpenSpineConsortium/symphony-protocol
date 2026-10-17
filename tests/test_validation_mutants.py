@@ -156,6 +156,10 @@ TRACES = {
     "env's lone - not read": "the regression traces",
     "env's -S string not split": "the regression traces",
     "env's lone assignment read as the shell's": "the regression traces",
+    "a lone - read past as one of env's options": "the regression traces",
+    "an -S string's variables read only as written": "the regression traces",
+    "time matched by its program's name": "the regression traces",
+    "a time the guard cannot tell read as the keyword alone": "the regression traces",
     "an epic gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "epic"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocker gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocker"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocked task gets no todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocked"))] + HELD + [WAIT, BOARD],
@@ -406,9 +410,13 @@ class TheLane(unittest.TestCase):
         F23, F25, F26, F27 and F28 among them, with F24 still to come. F28's
         fix four, one for each rule of env's words: env's assignments read
         as the shell's, env's lone - not read, env's -S string not split
-        and env's lone assignment read as the shell's, 176."""
+        and env's lone assignment read as the shell's, 176; and its review
+        four, a lone - read past as one of env's options, an -S string's
+        variables read only as written, time matched by its program's
+        name and a time the guard cannot tell read as the keyword alone,
+        180."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 176)
+        self.assertEqual(len(mutants.MUTANTS), 180)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

@@ -85,12 +85,16 @@ PREFIXES = ("", "FOO=1 ", "env ", "command ", "nice ", "time ")
 ABBREVIATED = ("env --uns FOO ", "env --def ", "nice --adj 5 ", "timeout --sig KILL 60 ")
 # env given a word it reads as an assignment though the shell would run it,
 # one that holds a = after something no shell name holds, behind a lone -
-# after its --, which env reads as -i, and behind nice; and env given the
-# whole command as a string to split with -S (SPLIT). The guard read the
-# assignment, the - and the string as the command env runs (F28). They
-# are taken with the command alone, as ABBREVIATED is.
-ENV_ASSIGNED = ("env 1x=2 ", "env -- - A.B=1 ", "nice env x-y=1 ")
+# after its --, which env reads as -i, behind nice, and after a lone -,
+# where env's options end, so --sp=x is an assignment and no -S (F28's
+# review); and env given the whole command as a string to split with -S
+# (SPLIT), and as one after a ${NOPE} env drops where NOPE is not set
+# (SPLIT_UNSET, the review). The guard read the assignment, the - and
+# the string as the command env runs (F28). They are taken with the
+# command alone, as ABBREVIATED is.
+ENV_ASSIGNED = ("env 1x=2 ", "env -- - A.B=1 ", "nice env x-y=1 ", "env - --sp=x ")
 SPLIT = "env -S '{}'"
+SPLIT_UNSET = "env -S '${{NOPE}} {}'"
 # The wrapper that hides the command in a string another program runs is
 # the one the guard cannot read (G11b). The last is the shape a session
 # writes most, a commit message by here-document, the push, then text by
@@ -100,7 +104,7 @@ HERE_DOCUMENTS = "git commit -F - <<'EOF'\nDon't stop\nEOF\n{}\ncat <<'EOF'\nIt'
 WRAPPERS = ("{}", "bash -c '{}'", "true && {}", "( {} )", "echo $({})", HERE_DOCUMENTS)
 # The prefixes and wrappers taken with the command alone, no wrapper or
 # global option around it.
-ALONE = tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED) + (("", SPLIT),)
+ALONE = tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED) + (("", SPLIT), ("", SPLIT_UNSET))
 UNREADABLE = "bash -c '{}'"
 # git's own options before the verb: a directory, the empty one git -C
 # takes as no change, a setting, a setting from the environment, whose
@@ -145,7 +149,7 @@ class Command(NamedTuple):
 def commands():
     """Every command of the grammar: each prefix with every wrapper and
     global option, and each of ALONE, the ABBREVIATED and ENV_ASSIGNED
-    prefixes and the SPLIT wrapper, with the command alone. A wholesale
+    prefixes and the SPLIT and SPLIT_UNSET wrappers, with the command alone. A wholesale
     option takes no refspec and --delete needs one, as git reads them."""
     alone = ((prefix, wrapper, "", option, spec) for (prefix, wrapper), option, spec
              in itertools.product(ALONE, OPTIONS, REFSPECS))
