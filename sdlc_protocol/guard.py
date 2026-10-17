@@ -94,8 +94,11 @@ while, until, do, and function with its name), and the wrappers env,
 command, nice, time, exec, nohup and timeout, each with its own options as
 it reads them, a long one by any start of its name that names it alone, as
 env --uns for env --unset, since GNU's getopt_long reads them so (WRAPPERS,
-F26), and git's own options before the verb, each with its value where it
-takes one (GIT_VALUE_OPTIONS), and a query after which git runs nothing
+F26), env's -S string split into the words env splits it into, and after
+env's options a lone -, and every word that holds a =, which env reads as
+an assignment where the shell would run it (F28), and git's own options
+before the verb, each with its value where it takes one
+(GIT_VALUE_OPTIONS), and a query after which git runs nothing
 (GIT_QUERIES). A push is read as git reads its arguments: short options
 in a bundle, as in -fu; a long one by any start of its name that names it
 alone, as --force-w, or taken back with --no-; a value that is no
@@ -109,9 +112,9 @@ is exact for the default branch and board, which are always there, and a
 name the remote lacks becomes heads/X, a branch no rule names, so the
 module at worst refuses a push git would have let make one, as
 HEAD:heads/claude/03. What a command hands to another shell or command as
-text, as bash -c 'git push ...', eval and env -S do, is one word to this
-module and passes, as do a wrapper not named here (sudo, xargs), a git
-alias for push, and a push git's configuration sends where its words do
+text, as bash -c 'git push ...' and eval do, is one word to this module
+and passes, as do a wrapper not named here (sudo, xargs), a git alias
+for push, and a push git's configuration sends where its words do
 not say. With push.default=upstream, or its old name tracking, git 2.43
 sends a branch named alone, as in "git push origin claude/7" and "git
 push -u origin claude/7", and the current branch on a bare "git push", to
@@ -1375,6 +1378,143 @@ def past_options(argv, i, wrapper):
     return i + wrapper.operands
 
 
+# What GNU env's -S reads as the space between words, and what a backslash
+# gives before each character it takes, besides _ and c (split_string).
+SPLIT_SPACES = " \t\n\v\f\r"
+SPLIT_ESCAPES = {"f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"', "#": "#", "$": "$", "'": "'",
+                 "\\": "\\"}
+SPLIT_VARIABLE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+
+def split_string(text):
+    """The words env's -S splits text into, as GNU coreutils' env.c
+    (build_argv) splits them: at spaces outside quotes; in single quotes
+    every character as written but \\\\ and \\', in double quotes and
+    outside them the backslash's escapes; \\_ a space between words
+    outside double quotes and a space in the word inside them, \\c the end
+    of the string, and a # that starts a word a comment to the end. A
+    ${NAME} is kept as written, as the guard keeps the shell's own $NAME,
+    since its value is the one in the command's environment. None where
+    env refuses the string and runs nothing: a quote that never closes, a
+    $ that opens no ${NAME}, a backslash at the end or before a character
+    it takes no escape of, and \\c in double quotes. The env of FreeBSD and
+    macOS takes -S too, split by the same rules."""
+    words, starts, single, double, i = [], True, False, False, 0
+
+    def add(chars):
+        nonlocal starts
+        if starts:
+            words.append("")
+            starts = False
+        words[-1] += chars
+
+    while i < len(text):
+        in_time()
+        ch, escaped = text[i], text[i + 1:i + 2]
+        if (ch == "'" and not double) or (ch == '"' and not single):
+            single, double = (not single, double) if ch == "'" else (single, not double)
+            add("")
+            i += 1
+        elif ch in SPLIT_SPACES and not (single or double):
+            starts, i = True, i + 1
+        elif ch == "#" and starts:
+            break
+        elif ch == "\\" and not (single and escaped not in ("\\", "'")):
+            if escaped == "c" and not double:
+                break
+            if escaped == "_" and not double:
+                starts = True
+            elif escaped == "_" or escaped in SPLIT_ESCAPES:
+                add(" " if escaped == "_" else SPLIT_ESCAPES[escaped])
+            else:
+                return None
+            i += 2
+        elif ch == "$" and not single:
+            variable = SPLIT_VARIABLE.match(text, i)
+            if variable is None:
+                return None
+            add(variable.group())
+            i = variable.end()
+        else:
+            add(ch)
+            i += 1
+    return None if single or double else words
+
+
+def split_string_option(argv, i):
+    """What env's option word argv[i] gives -S or --split-string, or a
+    start of it, to split: the string, attached or the next word (None
+    where there is none), how many words the option takes, and the letters
+    of a bundle before its S, as -i of -iS, which stay as options; None
+    where the word gives -S nothing."""
+    word, env = argv[i], WRAPPERS["env"]
+    following = argv[i + 1] if i + 1 < len(argv) else None
+    if word.startswith("--"):
+        if long_option_of(word, env) != "split-string":
+            return None
+        return (word.partition("=")[2], 1, []) if "=" in word else (following, 2, [])
+    for at, letter in enumerate(word[1:], start=1):
+        if letter in env.short_values:
+            if letter != "S":
+                return None
+            before = [word[:at]] if at > 1 else []
+            return (word[at + 1:], 1, before) if word[at + 1:] else (following, 2, before)
+    return None
+
+
+def with_split_strings(argv, i):
+    """argv with each string env's options from argv[i] on give -S, or
+    --split-string, split (split_string) and its words put in the option's
+    place, as GNU env puts them before it reads on from the first of them,
+    as options again (F28: "env -S 'git push origin main'" runs the push,
+    and the guard read the string as one word and passed it). A string env
+    refuses, which runs nothing, stays one word, as before the fix."""
+    env = WRAPPERS["env"]
+    while i < len(argv) and argv[i].startswith("-") and argv[i] != "--":
+        in_time()
+        given = split_string_option(argv, i)
+        if given is None:
+            word = argv[i]
+            i += 1 + (long_value_is_next(word, env) if word.startswith("--")
+                      else value_is_next(word[1:], env.short_values))
+            continue
+        text, used, before = given
+        words = split_string(text) if text is not None else None
+        if words is None:
+            i += used
+            continue
+        argv = argv[:i] + before + words + argv[i + used:]
+        i += len(before)
+    return argv
+
+
+def env_assigns(word):
+    """Whether env reads a word after its options as an assignment to the
+    command's environment: any word that holds a =, as GNU env.c and the
+    env of FreeBSD and macOS read it, where the shell takes only a name
+    and a = (ASSIGNMENT) and runs any other word as a command (F28: "env
+    1x=2 git push origin main" runs the push, and the guard read 1x=2 as
+    the command)."""
+    return "=" in word
+
+
+def past_lone_dash(argv, i):
+    """Past the lone - GNU env reads after its options, a -- among them, as
+    -i (env.c), so "env -- - git push" runs the push (F28)."""
+    return i + 1 if i < len(argv) and argv[i] == "-" else i
+
+
+def past_env_assignments(argv, i, assignments):
+    """Where the command env runs starts, from argv[i], the word after its
+    options: past a lone - (past_lone_dash) and every word env reads as an
+    assignment (env_assigns), each added to assignments."""
+    i = past_lone_dash(argv, i)
+    while i < len(argv) and env_assigns(argv[i]):
+        assignments.append(argv[i])
+        i += 1
+    return i
+
+
 def describes_only(options):
     """Whether command's options say it runs nothing (DESCRIBES_ONLY), one
     of them alone or in a bundle such as -pv."""
@@ -1383,19 +1523,24 @@ def describes_only(options):
 
 class Launch(NamedTuple):
     """What stands before the command itself in a simple command: the
-    assignments to its environment, each wrapper that runs it, by name with
-    its option words, and where the command starts, None when nothing is
-    run, as after a lone assignment or command -v."""
+    assignments to its environment, the shell's and env's, each wrapper
+    that runs it, by name with its option words, where the command starts,
+    None when nothing is run, as after a lone assignment or command -v,
+    and the words as the wrappers read them, which start indexes: argv
+    itself, but where env's -S splits a string into words (F28)."""
 
     assignments: list
     wrappers: list
     start: object
+    argv: list
 
 
 def launch(argv):
     """argv read as the shell and the wrappers read it, past leading
     assignments, the RESERVED words, function and its name, and the
-    WRAPPERS with their options (Launch)."""
+    WRAPPERS with their options, env's -S strings split into the words env
+    reads (with_split_strings) and its assignments after them
+    (past_env_assignments) (Launch)."""
     assignments, wrappers, i = [], [], 0
     while i < len(argv):
         word = argv[i]
@@ -1408,19 +1553,22 @@ def launch(argv):
         elif word == "function":
             i += 2
         elif name in WRAPPERS:
+            if name == "env":
+                argv = with_split_strings(argv, i + 1)
             end = past_options(argv, i + 1, WRAPPERS[name])
             if name == "command" and describes_only(argv[i + 1:end]):
-                return Launch(assignments, wrappers, None)
+                return Launch(assignments, wrappers, None, argv)
             wrappers.append((name, argv[i + 1:end]))
-            i = end
+            i = past_env_assignments(argv, end, assignments) if name == "env" else end
         else:
-            return Launch(assignments, wrappers, i)
-    return Launch(assignments, wrappers, None)
+            return Launch(assignments, wrappers, i, argv)
+    return Launch(assignments, wrappers, None, argv)
 
 
 def command_start(argv):
-    """Where the command itself starts in argv, or None when nothing is run
-    (launch)."""
+    """Where the command itself starts in the words as the wrappers read
+    them, argv but where env's -S splits a string (Launch.argv), or None
+    when nothing is run (launch)."""
     return launch(argv).start
 
 
@@ -1428,7 +1576,8 @@ def push_arguments(argv):
     """The arguments after "push" when argv is a git push, else None; git
     may stand behind assignments and wrappers (command_start), and a query
     of git's own, as --exec-path alone, runs no command at all."""
-    start = command_start(argv)
+    found = launch(argv)
+    start, argv = found.start, found.argv
     if start is None or program(argv[start]) != "git":
         return None
     i = start + 1
@@ -1533,6 +1682,7 @@ def chdir_paths(argv):
     it (GIT_REPOSITORY_VARIABLES), so it goes where this module does not
     look."""
     found = launch(argv)
+    argv = found.argv
     if any(assigns_repository(word) for word in found.assignments):
         return None
     named = (env_directory(options) for name, options in found.wrappers if name == "env")
@@ -1717,6 +1867,19 @@ def naming_repository(shell):
     return shell._replace(directory=None, named_repository=True)
 
 
+def sets_the_shells_own(found):
+    """Whether the assignments of a simple command that runs nothing
+    (Launch) set the shell's own variables, as a lone GIT_DIR=x does, and
+    after bash's time, which times the assignment in the shell: they do
+    not behind any other wrapper, since env GIT_DIR=x, with no command,
+    prints its environment and leaves the shell's as it was (F28: until
+    the fix such a line was read as GIT_DIR set in the shell, and every
+    push after it judged by its words and in the session's own clone
+    alone, so a lease by git -C onto another worker's claim that a clone
+    elsewhere shows passed)."""
+    return all(name == "time" for name, _ in found.wrappers)
+
+
 def moved_to(argv, shell, is_directory):
     """Where the shell stands after the simple command argv: cd, pushd and
     popd, run by the shell itself, behind assignments, reserved words,
@@ -1728,10 +1891,11 @@ def moved_to(argv, shell, is_directory):
     them, as env cd does, leaves it where it was."""
     found = launch(argv)
     if found.start is None:
-        named = any(assigns_repository(word) for word in found.assignments)
+        named = sets_the_shells_own(found) and any(assigns_repository(word) for word in found.assignments)
         return naming_repository(shell) if named else shell
     if any(name not in IN_THE_SHELL for name, _ in found.wrappers):
         return shell
+    argv = found.argv
     name, operands = argv[found.start], argv[found.start + 1:]
     if name == "builtin" and operands:
         name, operands = operands[0], operands[1:]

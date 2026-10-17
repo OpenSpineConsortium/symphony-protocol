@@ -1588,6 +1588,22 @@ MUTANTS = {
         guard, "long_value_is_next", optional_value_from_the_next_word,
         "G11a", "a value a wrapper's long option may take is taken only attached, so the push after env "
                 "--default-signal is judged and refused (F26)"),
+    "env's assignments read as the shell's": Mutant(
+        guard, "env_assigns", lambda word: bool(guard.ASSIGNMENT.match(word)),
+        "G11a", "env reads every word after its options that holds a = as an assignment, so the push behind env "
+                "1x=2 is judged and refused (F28)"),
+    "env's lone - not read": Mutant(
+        guard, "past_lone_dash", lambda argv, i: i,
+        "G11a", "GNU env reads a lone - after its options as -i, so the push behind env -- - is judged and "
+                "refused (F28)"),
+    "env's -S string not split": Mutant(
+        guard, "split_string", lambda text: None,
+        "G11a", "env splits the string -S gives it into the words it runs, so the push inside env -S '...' is "
+                "judged and refused (F28)"),
+    "env's lone assignment read as the shell's": Mutant(
+        guard, "sets_the_shells_own", lambda found: True,
+        "G11a", "env GIT_DIR=x with no command sets nothing in the shell, so a lease after it by git -C from "
+                "another clone onto a claim another worker holds is judged there and refused (F28)"),
     "a quote that never closes hiding the command": Mutant(
         guard, "plain_text", lambda command, lenient=False, spans_run=True: ORIGINAL_PLAIN_TEXT(command),
         "G11a", "a quote that never closes is read as a character of its word, so a lease bash runs before the "
