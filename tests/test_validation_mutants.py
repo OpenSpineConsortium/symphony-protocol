@@ -132,6 +132,16 @@ TRACES = {
     "a claim file of another issue let through": "the regression traces",
     "a claim branch's every claim file its own": "the regression traces",
     "a pull request that is no claim's let carry a claim file": "the regression traces",
+    # F32's eight, one for each way a command hands a shell text to run:
+    # F32's trace is their catcher, at its guard steps and b's leases.
+    "text handed to a shell left unread": "the regression traces",
+    "a shell's -c string read as a script's name": "the regression traces",
+    "eval's words left unread": "the regression traces",
+    "trap's action left unread": "the regression traces",
+    "a shell's standard input left unread": "the regression traces",
+    "a here-string left off standard input": "the regression traces",
+    "what a pipe carries left unread": "the regression traces",
+    "source of standard input read as a file's": "the regression traces",
     "a long option read only in full": "the regression traces",
     "env's abbreviated --chdir not read": "the regression traces",
     "an optional value taken from the next word": "the regression traces",
@@ -500,13 +510,19 @@ class TheLane(unittest.TestCase):
         claim file let through, 222; and F31's fix three, one for each
         rule of the change a pull request makes: a claim file of another
         issue let through, a claim branch's every claim file its own and
-        a pull request that is no claim's let carry a claim file, 225. 206
+        a pull request that is no claim's let carry a claim file, 225; and
+        F32's fix eight, one for each way a command hands a shell text to
+        run: text handed to a shell left unread, a shell's -c string read
+        as a script's name, eval's words left unread, trap's action left
+        unread, a shell's standard input left unread, a here-string left
+        off standard input, what a pipe carries left unread and source of
+        standard input read as a file's, 233. 206
         passed 200, so the bound was widened to 250 with F29's fix, as
         F23's fix widened it from 150: the lane grows by a mutant for each
         rule a fix adds, and the guard's reading of bash is the part of the
         library that grows most."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
-        self.assertEqual(len(mutants.MUTANTS), 225)
+        self.assertEqual(len(mutants.MUTANTS), 233)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
