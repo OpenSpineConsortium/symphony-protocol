@@ -144,7 +144,8 @@ class ClaimFilesOfOtherIssues(unittest.TestCase):
         self.assertEqual(protocol_check.claim_files_changed(diff), [6])
         self.assertEqual(protocol_check.claim_files_changed(diff.decode("ascii")), [6])
         self.assertEqual(protocol_check.claim_files_changed(""), [])
-        self.assertEqual(protocol_check.claim_folder_problems(diff), [])
+        self.assertEqual([p.split()[0] for p in protocol_check.claim_folder_problems(diff)],
+                         ["docs/agents/claims/sub/4.md"], "a path below a folder of the claim folder")
         deleted = protocol_check.claim_files_changed(raw(("D", "100644", "000000", "docs/agents/claims/1.md")))
         self.assertEqual(protocol_check.problems_for(pull(branch="notes", body="", draft=False), False, deleted), [])
 
@@ -193,15 +194,42 @@ class TheClaimFolder(unittest.TestCase):
                 problems = protocol_check.claim_folder_problems(raw(("A", "000000", "100644", path)))
                 self.assertEqual(len(problems), 1)
                 self.assertIn("but for the case of its letters", problems[0])
-        for path in ("Docs/guide.md", "docs/README.md", "docs/agents/claims/9.md", "src/docs"):
+        for path in ("Docs/guide.md", "docs/README.md", "docs/agents/claims/9.md", "src/docs",
+                     "docs/agents/claims/README.md", "docs/agents/claims/Readme.MD", "docs/agents/claims/09.MD"):
             with self.subTest(path=path):
                 self.assertEqual(protocol_check.claim_folder_problems(raw(("A", "000000", "100644", path))), [])
+
+
+    def test_a_claim_file_s_name_in_another_case_fails(self):
+        """F31's second review, s3.sh: 9.MD, a claim folder spelt with a
+        dotless i and docs spelt with a long s each fold into a claim file
+        or the claim folder."""
+        for path in ("docs/agents/claims/9.MD", "docs/agents/claims/9.Md", "docs/agents/cla\u0131ms/10.md",
+                     "doc\u017f/agents/claims/11.md"):
+            with self.subTest(path=path):
+                problems = protocol_check.claim_folder_problems(raw(("A", "000000", "100644", path)))
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("but for the case of its letters", problems[0])
+
+    def test_a_path_below_a_folder_of_the_claim_folder_fails(self):
+        """F31's second review, s6.sh: a folder named as a claim file,
+        holding a file named as a worker line, which `git show` lists and
+        the guard reads as naming that worker; any deeper path fails, and
+        deleting one passes."""
+        for path in ("docs/agents/claims/9.md/- Worker: mallory", "docs/agents/claims/notes/x.md",
+                     "docs/agents/claims/9.md/a/b"):
+            with self.subTest(path=path):
+                problems = protocol_check.claim_folder_problems(raw(("A", "000000", "100644", path)))
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("lies below a folder in docs/agents/claims", problems[0])
+        self.assertEqual(protocol_check.claim_folder_problems(
+            raw(("D", "100644", "000000", "docs/agents/claims/9.md/- Worker: mallory"))), [])
 
 
 def raw(*entries):
     """`git diff --raw --no-renames -z` output for (status, old mode, new
     mode, path) entries."""
-    return b"".join(f":{old} {new} {'1' * 7} {'2' * 7} {status}\0{path}\0".encode("ascii")
+    return b"".join(f":{old} {new} {'1' * 7} {'2' * 7} {status}\0{path}\0".encode("utf-8")
                     for status, old, new, path in entries)
 
 

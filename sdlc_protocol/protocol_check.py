@@ -20,9 +20,10 @@ forgot them cannot merge however the session that made it was feeling:
   (F31). Deleting a claim file passes, so a stale one on the default
   branch can always be taken off.
 - Nor does one make the claim folder, or a folder above it, anything but
-  a folder, make a claim file a link, or add a path that is the claim
-  folder's but for its letters' case: each would have a checkout show
-  claim files git does not hold (claim_folder_problems).
+  a folder, make a claim file a link, add a path below a folder in the
+  claim folder, or add a path that is the claim folder's or a claim
+  file's but for its letters' case: each would have a checkout, or git
+  show, give claim files git does not hold (claim_folder_problems).
 
 Any other head branch, dependabot's or a person's, is not a claim and
 passes but for the claim files it adds or changes. The pull request is
@@ -109,13 +110,23 @@ def claim_files_changed(raw):
 
 def claim_folder_problems(raw):
     """The problems of a diff that changes what the claim files are rather
-    than which (F31's review): the claim folder, or a folder above it,
-    made a file, a symbolic link or a submodule, so the default branch's
-    checkout would show claim files git does not hold; a claim file made a
-    symbolic link or a submodule; and a path that is a claim folder's or a
-    claim file's but for the case of its letters, which a checkout on a
-    file system that folds case reads as the claim folder. Deleting any of
-    them passes, as deleting a claim file does."""
+    than which (F31's reviews), each but a deletion, which passes as
+    deleting a claim file does:
+    - the claim folder, or a folder above it, made a file, a symbolic
+      link or a submodule, so the default branch's checkout would show
+      claim files git does not hold;
+    - a claim file made a symbolic link or a submodule;
+    - a path more than one level below the claim folder, since a folder
+      there named as a claim file is (claims/9.md/<anything>) is read by
+      `git show` as a listing that names a worker, and no claim file
+      lies deeper than the folder itself;
+    - a name in the claim folder that is a claim file's but for the case
+      of its letters (9.MD), and a path that is a claim folder's, or lies
+      in it, but for the case of its letters (Docs/Agents/claims), each
+      of which a checkout on a file system that folds case reads as the
+      claim file or the claim folder; case is folded as Python's
+      str.upper and str.casefold together fold it, so both the dotless i
+      and the long s fold as well."""
     problems = []
     for status, _, mode, path in raw_changes(raw):
         if status.startswith("D"):
@@ -126,18 +137,31 @@ def claim_folder_problems(raw):
         elif claim_file_number(path) is not None and mode not in FILE_MODES:
             problems.append(f"{path} is made a link or a submodule here (mode {mode}), and a claim file is a file "
                             f"git holds ({PROTOCOL}, Rules)")
+        elif path.startswith(CLAIM_DIR + "/") and "/" in path[len(CLAIM_DIR) + 1:]:
+            problems.append(f"{path} lies below a folder in {CLAIM_DIR}, where only claim files and the README "
+                            f"belong; a folder named as a claim file reads as one ({PROTOCOL}, Rules)")
         elif folds_into_claims(path):
-            problems.append(f"{path} is the claim folder's path but for the case of its letters, which a checkout "
-                            f"that folds case reads as {CLAIM_DIR} ({PROTOCOL}, Rules)")
+            problems.append(f"{path} is a claim folder's or a claim file's path but for the case of its letters, "
+                            f"which a checkout that folds case reads as one ({PROTOCOL}, Rules)")
     return problems
 
 
+def folded(text):
+    """A path as a file system that folds case compares it."""
+    return text.upper().casefold()
+
+
 def folds_into_claims(path):
-    """Whether a path is a claim folder's, or lies in the claim folder,
-    when case is folded, and is not, as it is written."""
-    folded, own = path.casefold(), (path in CLAIM_FOLDERS or path.startswith(CLAIM_DIR + "/"))
-    inside = folded in {f.casefold() for f in CLAIM_FOLDERS} or folded.startswith(CLAIM_DIR.casefold() + "/")
-    return inside and not own
+    """Whether a path is a claim folder's, lies in the claim folder, or
+    names a claim file there, once case is folded, and is not, as it is
+    written."""
+    own = path in CLAIM_FOLDERS or path.startswith(CLAIM_DIR + "/")
+    folder = folded(CLAIM_DIR) + "/"
+    inside = folded(path) in {folded(f) for f in CLAIM_FOLDERS} or folded(path).startswith(folder)
+    if not own:
+        return inside
+    name = path[len(CLAIM_DIR) + 1:]
+    return claim_file_number(path) is None and claim_file_number(CLAIM_DIR + "/" + folded(name)) is not None
 
 
 def stray_claim_files(pull, changed_claims):

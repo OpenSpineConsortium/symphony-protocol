@@ -246,25 +246,63 @@ def read_event(environ):
     return event, ""
 
 
-# How long one git call of the check may take: the fetch of the base is
-# one commit's objects.
+# How long one git call of the check may take: a fetch is of a few
+# commits' objects, or of the history down to a merge base.
 GIT_SECONDS = 120
-
-
-def git_output(args, root):
-    """git's standard output for args, run in root, or None where git is
-    missing, fails or runs past GIT_SECONDS."""
-    try:
-        done = subprocess.run(["git", *args], cwd=root, capture_output=True, timeout=GIT_SECONDS)
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    return done.stdout if done.returncode == 0 else None
-
-
+# What git is run with whatever the environment or the checkout's own
+# configuration say: no automatic housekeeping, and pathspecs read with
+# their magic, never literally (F31's second review).
+GIT_SETTINGS = ("--no-literal-pathspecs", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                "-c", "diff.ignoreSubmodules=none")
 UNREAD = "the claim files this pull request changes could not be read: "
 # How far a shallow clone is deepened, in turn, to find where a pull
 # request's branch left its base; the last step takes the whole history.
 DEEPENINGS = (("--deepen=64",), ("--deepen=512",), ("--unshallow",))
+# How much of git's last words a reason quotes.
+STDERR_TAIL = 200
+
+
+class Git:
+    """git run in one checkout, with every GIT_* variable of the
+    environment left out, since an earlier step of the job can set any of
+    them through $GITHUB_ENV (GIT_LITERAL_PATHSPECS, which empties the
+    diff, GIT_DIR, which reads another repository, GIT_CONFIG_*), and the
+    last failure's words kept for the reason the check gives."""
+
+    def __init__(self, root):
+        self.root = root
+        self.environ = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+        self.why = ""
+
+    def __call__(self, *args):
+        """git's standard output, or None, with why saying what went
+        wrong: git missing, a timeout, or the tail of what git wrote to
+        its standard error."""
+        try:
+            done = subprocess.run(["git", *GIT_SETTINGS, *args], cwd=self.root, env=self.environ,
+                                  capture_output=True, timeout=GIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            self.why = f"git {args[0]} timed out after {GIT_SECONDS} s"
+            return None
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            self.why = f"git could not be run ({error.__class__.__name__})"
+            return None
+        if done.returncode != 0:
+            self.why = f"git {args[0]} failed: {last_words(done.stderr)}"
+            return None
+        return done.stdout
+
+    def said(self, what):
+        """A reason, with git's own last words where it gave any."""
+        return f"{what} ({self.why})" if self.why else what
+
+
+def last_words(stderr):
+    """The last line git wrote to its standard error, as plain ASCII of
+    bounded length, or how it ended where it wrote nothing."""
+    lines = [line.strip() for line in stderr.decode("utf-8", "replace").splitlines() if line.strip()]
+    text = (lines[-1] if lines else "no message").encode("ascii", "replace").decode("ascii")
+    return text[:STDERR_TAIL]
 
 
 def event_sha(side):
@@ -274,94 +312,102 @@ def event_sha(side):
     return sha if isinstance(sha, str) and 7 <= len(sha) <= 64 and sha.isascii() and sha.isalnum() else None
 
 
-def parents_of(root, commit):
+def parents_of(git, commit):
     """The parents a commit's own object names, which a clone of depth 1
     still holds where commit^1 is not there; None where git cannot read
     it."""
-    text = git_output(["cat-file", "commit", commit], root)
+    text = git("cat-file", "commit", commit)
     if text is None:
         return None
     return [line.split()[1] for line in text.decode("ascii", "replace").splitlines()
             if line.startswith("parent ") and len(line.split()) == 2]
 
 
-def has_commit(root, sha):
-    return git_output(["cat-file", "-e", f"{sha}^{{commit}}"], root) is not None
-
-
-def fetched(root, sha):
+def fetched(git, sha):
     """Whether the commit is in the clone, fetched one deep from origin
     where it was not, as actions/checkout's default depth of 1 leaves it
     out; origin is the base repository, which holds a fork's head too."""
-    if not has_commit(root, sha):
-        git_output(["fetch", "--quiet", "--no-tags", "--depth=1", "origin", sha], root)
-    return has_commit(root, sha)
+    if git("cat-file", "-e", f"{sha}^{{commit}}") is not None:
+        return True
+    if git("fetch", "--quiet", "--no-tags", "--depth=1", "origin", sha) is None:
+        return False
+    return git("cat-file", "-e", f"{sha}^{{commit}}") is not None
 
 
-def merge_base(root, one, two):
-    """Where the branch at two left one, git's merge base, deepening a
-    shallow clone step by step until git finds it; None where it never
-    does, which the check fails on rather than guess."""
+def merge_bases(git, one, two):
+    """Every commit where the branch at two left one, git's merge bases
+    (`merge-base --all`, so criss-cross history, which has several, hides
+    nothing behind the one git would pick), deepening a shallow clone step
+    by step until git finds one; () where it never does, which the check
+    fails on rather than guess. one and two are shas, so a deepening
+    fetches the pull request's own commits."""
     for deepening in ((),) + DEEPENINGS:
         if deepening:
-            shallow = git_output(["rev-parse", "--is-shallow-repository"], root)
+            shallow = git("rev-parse", "--is-shallow-repository")
             if shallow is None or shallow.strip() != b"true":
-                return None
-            git_output(["fetch", "--quiet", "--no-tags", *deepening, "origin", one, two], root)
-        found = git_output(["merge-base", one, two], root)
-        if found is not None and found.strip():
-            return found.decode("ascii", "replace").strip()
-    return None
+                return ()
+            git("fetch", "--quiet", "--no-tags", *deepening, "origin", one, two)
+        found = git("merge-base", "--all", one, two)
+        if found is not None and found.split():
+            return tuple(line.decode("ascii", "replace") for line in found.split())
+    return ()
 
 
-def tip_of(root, pull, base):
-    """The commit whose change is the pull request's own, and whether the
-    checkout is GitHub's test merge: where HEAD is a merge whose first
-    parent is the base and whose second is the head the event names (or
-    the event names none), the head is that second parent; any other
-    checkout, a head commit that is itself a merge among them, is the
-    tip itself."""
-    parents = parents_of(root, "HEAD")
+def checkout_of(git, pull, base):
+    """What the checkout is: the commit whose change is the pull request's
+    own, whether HEAD is GitHub's test merge, and whether HEAD is the pull
+    request at all. HEAD is the test merge where it is a merge whose first
+    parent is the base and whose second is the head the event names, or
+    any second where the event names none; the tip is the event's head
+    wherever it names one, so a checkout of something else, the base as
+    pull_request_target leaves it among them, still has the pull request's
+    own change judged; and where the event names none, HEAD itself, as a
+    sha, a head commit that is itself a merge among them. None for the tip
+    where git cannot read HEAD."""
+    here = git("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    parents = parents_of(git, "HEAD") if here is not None else None
     if parents is None:
-        return None, False
+        return None, False, False
+    here = here.decode("ascii", "replace").strip()
     head = event_sha(pull.get("head"))
-    if len(parents) == 2 and parents[0] == base and (head is None or parents[1] == head):
-        return parents[1], True
-    return "HEAD", False
+    test_merge = len(parents) == 2 and parents[0] == base and (head is None or parents[1] == head)
+    tip = parents[1] if test_merge else (head or here)
+    return tip, test_merge, test_merge or head is None or here == head
 
 
-def changes_between(root, older, newer):
-    """`git diff --raw` from older to newer over every path that is the
-    claim folder's or a folder above it, in any case, or None."""
-    return git_output(["diff", "--no-renames", "--raw", "-z", older, newer, "--",
-                       f":(icase){claims.CLAIM_DIR.split('/')[0]}"], root)
-
-
-def change_of(root, pull):
+def change_of(git, pull):
     """The diffs a pull request's change is judged by, read with git from
-    the checkout the check runs in, or why they could not be read: the
-    branch's own change, from where it left the base to its tip (git's
-    three dots), so a file the base also holds, which the merge leaves
-    alone, still counts where the branch added it; and, in GitHub's test
-    merge, the merge's change against the base as well."""
+    the checkout the check runs in, over every path, since a path that
+    folds into the claim folder may be spelt in letters git's own icase
+    pathspec does not fold (F31's second review), or why they could not
+    be read: the
+    branch's own change, from each commit where it left the base to its
+    tip (git's three dots, from every merge base), so a file the base
+    also holds, which the merge leaves alone, still counts where the
+    branch added it; and, in GitHub's test merge, the merge's change
+    against the base as well. A checkout that is neither the test merge
+    nor the event's head is no reading of the pull request's claim file,
+    so it is a reason too, beside the change judged."""
     base = event_sha(pull.get("base"))
     if base is None:
         return None, "the event names no base commit"
-    if not fetched(root, base):
-        return None, f"the base commit {base[:12]} could not be fetched"
-    tip, test_merge = tip_of(root, pull, base)
+    if not fetched(git, base):
+        return None, git.said(f"the base commit {base[:12]} could not be fetched")
+    tip, test_merge, is_pull = checkout_of(git, pull, base)
     if tip is None:
-        return None, "git could not read the checked-out commit"
-    if tip != "HEAD" and not fetched(root, tip):
-        return None, f"the head commit {tip[:12]} could not be fetched"
-    left = merge_base(root, base, tip)
-    if left is None:
-        return None, f"git found no commit where the branch left {base[:12]}"
-    pairs = [(left, tip)] + ([(base, "HEAD")] if test_merge else [])
-    diffs = [changes_between(root, older, newer) for older, newer in pairs]
+        return None, git.said("git could not read the checked-out commit")
+    if not fetched(git, tip):
+        return None, git.said(f"the head commit {tip[:12]} could not be fetched")
+    lefts = merge_bases(git, base, tip)
+    if not lefts:
+        return None, git.said(f"git found no commit where the branch left {base[:12]}")
+    pairs = [(left, tip) for left in lefts] + ([(base, "HEAD")] if test_merge else [])
+    diffs = [git("diff", "--no-renames", "--raw", "-z", older, newer) for older, newer in pairs]
     if any(d is None for d in diffs):
-        return None, f"git could not compare {base[:12]} with the checkout"
-    return diffs, ""
+        return None, git.said(f"git could not compare {base[:12]} with the checkout")
+    away = "" if is_pull else (f"the checkout is neither the head the event names, {tip[:12]}, nor GitHub's test "
+                               f"merge of it, so the claim file looked for there is not the pull request's")
+    return diffs, away
 
 
 def changed_claims_in(root, pull):
@@ -371,22 +417,24 @@ def changed_claims_in(root, pull):
     no .git, as a test's scratch folder does, where nothing is judged;
     and where it holds one, every problem, a reason the change could not
     be read among them, since a claim file the check cannot see may be the
-    one it is there to stop (F31 and its review): git missing or refusing
+    one it is there to stop (F31 and its reviews): git missing or refusing
     the checkout, a checkout whose top is another folder, a base or head
-    that cannot be fetched or a branch whose merge base is never found."""
+    that cannot be fetched, a branch whose merge base is never found, or a
+    checkout that is not the pull request."""
     if not (Path(root) / ".git").exists():
         return (), []
-    top = git_output(["rev-parse", "--show-toplevel"], root)
+    git = Git(root)
+    top = git("rev-parse", "--show-toplevel")
     if top is None:
-        return (), [UNREAD + "git is missing or will not read the checkout"]
+        return (), [UNREAD + git.said("git is missing or will not read the checkout")]
     if Path(os.fsdecode(top.strip())).resolve() != Path(root).resolve():
         return (), [UNREAD + f"the checkout's top is {os.fsdecode(top.strip())}, not the folder the check runs in"]
-    diffs, why = change_of(root, pull)
+    diffs, why = change_of(git, pull)
     if diffs is None:
         return (), [UNREAD + why]
     numbers = sorted({n for diff in diffs for n in protocol_check.claim_files_changed(diff)})
     problems = list(dict.fromkeys(p for diff in diffs for p in protocol_check.claim_folder_problems(diff)))
-    return tuple(numbers), problems
+    return tuple(numbers), problems + ([why] if why else [])
 
 
 def run_check(argv, environ=None, root="."):

@@ -993,7 +993,7 @@ class CheckReadsTheChange(unittest.TestCase):
         clone, base, head = self.merged("notes", {"Docs/Agents/claims/9.md": "- Worker: mallory\n"})
         code, out, _ = check_in(clone, "notes", base, head)
         self.assertEqual(code, 1, out)
-        self.assertIn("Docs/Agents/claims/9.md is the claim folder's path but for the case of its letters", out)
+        self.assertIn("Docs/Agents/claims/9.md is a claim folder's or a claim file's path but for the case", out)
 
     def test_git_missing_fails_where_the_checkout_is_git_s(self):
         """The review's d.sh: with no git on PATH the check cannot read the
@@ -1046,6 +1046,129 @@ class CheckReadsTheChange(unittest.TestCase):
         code, out, _ = check_in(clone, "feature", base, head)
         self.assertEqual(code, 1, out)
         self.assertIn("git found no commit where the branch left", out)
+
+
+    def test_criss_cross_history_hides_no_stray_behind_the_base_git_picks(self):
+        """F31's second review, s1.sh: main and the branch each merged the
+        other's side, so they have two merge bases, one holding 7.md and
+        one without; the branch's merge brought 7.md back. Judged from
+        every merge base, it fails at its head and in the test merge."""
+        o, path = self.origin, self.origin.path
+        a = o.commit("main", {"docs/agents/claims/7.md": "7\n"})
+        b2 = o.commit("y", {"docs/agents/claims/7.md": None})
+        git(path, "checkout", "-q", "-b", "x", a)
+        (path / "foo").write_text("f\n", encoding="ascii")
+        git(path, "add", "-A")
+        git(path, "commit", "-q", "-m", "B1")
+        b1 = o.sha("x")
+        git(path, "checkout", "-q", "main")
+        git(path, "reset", "-q", "--hard", b1)
+        git(path, "merge", "-q", "--no-edit", b2)
+        base = o.sha("main")
+        git(path, "checkout", "-q", "-b", "claude/8", b2)
+        subprocess.run(["git", "merge", "-q", "--no-edit", "--no-commit", b1], cwd=path, capture_output=True)
+        git(path, "checkout", a, "--", "docs/agents/claims/7.md")
+        git(path, "commit", "-q", "-m", "evil merge")
+        (path / "docs/agents/claims/8.md").write_text("- Worker: b\n", encoding="ascii")
+        git(path, "add", "-A")
+        git(path, "commit", "-q", "-m", "claim")
+        head = o.sha("claude/8")
+        git(path, "checkout", "-q", "main")
+        self.assertGreater(len(git(path, "merge-base", "--all", base, head).split()), 1)
+        o.test_merge("claude/8")
+        for name, ref in (("head", head), ("merge", "refs/pull/1/merge")):
+            with self.subTest(checkout=name):
+                code, out, _ = check_in(o.checkout(ref, name, 0), "claude/8", base, head, draft=True,
+                                        body="Closes #8")
+                self.assertEqual(code, 1, out)
+                self.assertIn("docs/agents/claims/7.md is added or changed here", out)
+
+    def test_a_checkout_of_the_base_judges_the_head_and_fails(self):
+        """F31's second review, s2.sh: HEAD at the base, as
+        pull_request_target checks out, is not the pull request: the head
+        the event names is fetched and judged, and the checkout itself is
+        a reason to fail, since its claim file is not the pull
+        request's."""
+        head = self.origin.commit("claude/8", {"docs/agents/claims/8.md": "- Worker: b\n",
+                                               "docs/agents/claims/9.md": "- Worker: b\n"})
+        base = self.origin.sha("main")
+        clone = self.origin.checkout(base)
+        for draft in (True, False):
+            with self.subTest(draft=draft):
+                code, out, _ = check_in(clone, "claude/8", base, head, draft=draft, body="Closes #8")
+                self.assertEqual(code, 1, out)
+                self.assertIn(STRAY, out)
+                self.assertIn("the checkout is neither the head the event names", out)
+
+    def test_a_shallow_head_far_from_its_base_is_deepened_by_its_own_commits(self):
+        """F31's second review, s4.sh: a clone one commit deep at the head,
+        a hundred commits past where it left main, which moved a hundred
+        on: the deepening fetches the pull request's own commits, not
+        origin's HEAD, and the stray is found."""
+        o, path = self.origin, self.origin.path
+        o.commit("claude/8", {"docs/agents/claims/8.md": "- Worker: b\n", "docs/agents/claims/9.md": "9\n"})
+        for branch in ("claude/8", "main"):
+            git(path, "checkout", "-q", branch)
+            for n in range(100):
+                (path / f"{branch[0]}.txt").write_text(f"{n}\n", encoding="ascii")
+                git(path, "add", "-A")
+                git(path, "commit", "-q", "-m", f"{n}")
+        git(path, "checkout", "-q", "main")
+        head, base = o.sha("claude/8"), o.sha("main")
+        code, out, _ = check_in(o.checkout(head), "claude/8", base, head, draft=True, body="Closes #8")
+        self.assertEqual(code, 1, out)
+        self.assertIn(STRAY, out)
+
+    def test_git_s_environment_changes_nothing_the_check_reads(self):
+        """F31's second review, s5.sh: GIT_LITERAL_PATHSPECS, GIT_DIR and
+        GIT_CONFIG_* that an earlier step set through $GITHUB_ENV are left
+        out of the check's own git."""
+        clone, base, head = self.merged("notes", {"docs/agents/claims/9.md": "- Worker: mallory\n"})
+        empty = self.origin.folder / "empty.git"
+        git(self.origin.folder, "init", "-q", "--bare", str(empty))
+        for name, value in (("GIT_LITERAL_PATHSPECS", "1"), ("GIT_DIR", str(empty)),
+                            ("GIT_CONFIG_PARAMETERS", "'diff.ignoreSubmodules'='all'")):
+            with self.subTest(variable=name), mock.patch.dict(os.environ, {name: value}):
+                code, out, _ = check_in(clone, "notes", base, head)
+                self.assertEqual(code, 1, out)
+                self.assertIn(STRAY, out)
+
+    def test_a_folder_named_as_a_claim_file_fails(self):
+        """F31's second review, s6.sh."""
+        clone, base, head = self.merged("notes", {"docs/agents/claims/9.md/- Worker: mallory": "x\n"})
+        code, out, _ = check_in(clone, "notes", base, head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("docs/agents/claims/9.md/- Worker: mallory lies below a folder", out)
+
+    def test_a_claim_file_s_name_in_another_case_fails(self):
+        """F31's second review, s3.sh."""
+        clone, base, head = self.merged("claude/8", {"docs/agents/claims/8.md": "- Worker: b\n",
+                                                     "docs/agents/claims/9.MD": "9\n",
+                                                     "docs/agents/cla\u0131ms/10.md": "10\n",
+                                                     "doc\u017f/agents/claims/11.md": "11\n"})
+        code, out, _ = check_in(clone, "claude/8", base, head, draft=True, body="Closes #8")
+        self.assertEqual(code, 1, out)
+        for path in ("docs/agents/claims/9.MD", "docs/agents/cla\u0131ms/10.md", "doc\u017f/agents/claims/11.md"):
+            self.assertIn(f"{path} is a claim folder's or a claim file's path but for the case", out)
+
+    def test_git_s_last_words_and_a_timeout_are_in_the_reason(self):
+        """F31's second review: the reason quotes the tail of git's
+        standard error, and says when git ran out of time."""
+        clone, base, head = self.merged("notes", {"src/x.py": "x\n"})
+        git(clone, "remote", "set-url", "origin", (self.origin.folder / "nowhere").as_uri())
+        code, out, _ = check_in(clone, "notes", "1" * 40, head)
+        self.assertEqual(code, 1, out)
+        self.assertRegex(out, r"the base commit 111111111111 could not be fetched \(git fetch failed: \S")
+        real = subprocess.run
+
+        def slow(args, **kwargs):
+            if "fetch" in args:
+                raise subprocess.TimeoutExpired(args, cli.GIT_SECONDS)
+            return real(args, **kwargs)
+
+        with mock.patch.object(cli.subprocess, "run", slow):
+            code, out, _ = check_in(clone, "notes", "1" * 40, head)
+        self.assertIn(f"(git fetch timed out after {cli.GIT_SECONDS} s)", out)
 
 
 class Guard(unittest.TestCase):
