@@ -484,9 +484,12 @@ class Scope(NamedTuple):
     opens pull requests from a fork whose branch bears a claim's name
     (F17), whether a stranger opens them from a claim's own branch
     here (F19), whether the owner reopens closed issues and merges
-    keeping the head branch (F22), and whether the owner closes a claim's
+    keeping the head branch (F22), whether the owner closes a claim's
     pull request unmerged and deletes its branch on an open issue (F22's
-    third review)."""
+    third review), and whether claim files stray (F31): carol, who may
+    write, opens a pull request that is no claim's carrying an issue's
+    claim file, and a worker claims an issue from another claim's branch,
+    whose claim file its own then carries."""
 
     workers: tuple = ("a", "b")
     issues: tuple = (1,)
@@ -502,6 +505,7 @@ class Scope(NamedTuple):
     strangers: bool = False
     reopens: bool = False
     deletes: bool = False
+    strays: bool = False
 
     def files_of(self, number):
         return dict(self.files).get(number, (f"src/{number}.py",))
@@ -654,15 +658,16 @@ def apply_pull_change(model, pull):
 
 # --- the verbs ----------------------------------------------------------------
 
-def claim(model, worker, number, files, skew=0, name=None, guarded=True):
-    """Push the claim commit, the claim file alone, from main. A name that
+def claim(model, worker, number, files, skew=0, name=None, guarded=True, base=MAIN):
+    """Push the claim commit, the claim file alone, from main, or from
+    another claim's branch for a claim stacked on it (F31). A name that
     reads as a claim and claims nothing, as claude/03, is a shape the rules
     forbid (spec/PROTOCOL.md, Claim); a person's push by hand, outside a
     session, meets no guard."""
     ref = name or claim_ref(number)
-    tree = model.tree(model.refs[MAIN])
+    tree = model.tree(model.refs[base])
     tree[f"{CLAIM_DIR}/{number}.md"] = claim_text(number, worker, files)
-    sha = model.commit((model.refs[MAIN],), worker, tree, f"Claim #{number}", skew)
+    sha = model.commit((model.refs[base],), worker, tree, f"Claim #{number}", skew)
     return pushed(model, worker, ref, sha, f"git push origin {ref}", allowed=not oracle.reads_as_claim(ref),
                   guarded=guarded)
 
@@ -941,6 +946,37 @@ def close_pull(model, number):
     return Outcome(True, "closed", events=((cycle.PULL_REQUEST, ""),))
 
 
+def stray_ref(number):
+    """The branch of carol's own that carries issue number's claim file
+    (F31)."""
+    return f"notes/{number}"
+
+
+def stray_pull(model, writer, number, files):
+    """carol, who may write, pushes a branch of her own from main whose one
+    commit adds issue number's claim file, as a careless copy of a claim
+    would, and opens a pull request from it to main, ready and closing
+    nothing: a pull request that is no claim's, which the protocol check
+    fails since F31, so no merge of it puts a claim on the issue on the
+    default branch. She pushes by hand, as a person outside a session
+    does."""
+    return opened_stray(model, writer, number, claim(model, writer, number, files, name=stray_ref(number),
+                                                     guarded=False))
+
+
+def opened_stray(model, writer, number, pushed_branch):
+    """The ready pull request from carol's branch, once the push is taken."""
+    if not pushed_branch.taken:
+        return pushed_branch
+    pull = PullRequest(model.next_pull, stray_ref(number), writer, f"Notes for issue {number}.",
+                       f"Notes for issue {number}", draft=False, opened_at=model.now, updated_at=model.now,
+                       association=ASSOCIATIONS[writer])
+    model.pulls[pull.number] = pull
+    model.next_pull += 1
+    return pushed_branch._replace(note=f"pushed {pull.head} and opened #{pull.number}",
+                                  events=pushed_branch.events + ((cycle.PULL_REQUEST, ""),))
+
+
 def open_fork_pull(model, number):
     """sam's open pull request from the fork's claude/<number>, or None."""
     return next((p for p in model.pulls.values() if p.fork and p.state == "open" and p.head == claim_ref(number)),
@@ -971,13 +1007,50 @@ def passes_check(model, pull):
     required_status_checks "check", bypass_actors empty), so GitHub
     refuses the owner's merge of any other (F30). A claim file still
     reaches main where the check lets it through: a pull request that is
-    no claim's adding one, or a claim's carrying another issue's (F31)."""
+    no claim's adding one, or a claim's carrying another issue's, until
+    the check judged the change a pull request makes to main (F31): since
+    then one that adds or changes a claim file other than its own issue's
+    on its own claim branch fails it too (oracle.SPEC["strays"]), and one
+    that deletes a claim file is judged as any other
+    (oracle.SPEC["stray deleted"]; claim_files_changed)."""
     number = oracle.claim_number(pull.head)
+    if strays_of(model, pull):
+        return False
     if number is None:
         return not pull.draft and not oracle.reads_as_claim(pull.head)
     has_file = model.tree(model.pull_head(pull)).get(f"{CLAIM_DIR}/{number}.md") is not None
     closes = re.search(oracle.CLOSES % number, pull.body) is not None
     return not pull.fork and not pull.draft and not has_file and closes
+
+
+def claim_files_changed(model, pull):
+    """The issues whose claim file a pull request adds or changes against
+    main, as the protocol check reads the change of the merge GitHub tests
+    (F31): a path docs/agents/claims/<n>.md, n spelled as a claim's number
+    is, that the merge of the head into main holds with a text main's tree
+    does not; a file the merge deletes counts for nothing, so a pull
+    request that takes a stale claim file off main is judged as any
+    other."""
+    head = model.pull_head(pull)
+    if not head:
+        return ()
+    main = model.refs[MAIN]
+    before, after = model.tree(main), merged_tree(model, head, main)
+    found = set()
+    for path, text in after.items():
+        folder, _, name = path.rpartition("/")
+        if (folder == CLAIM_DIR and name.endswith(".md") and oracle.CLAIM_NUMBER.fullmatch(name[:-len(".md")])
+                and before.get(path) != text):
+            found.add(int(name[:-len(".md")]))
+    return tuple(sorted(found))
+
+
+def strays_of(model, pull):
+    """The claim files a pull request adds or changes that are not its own:
+    every one, but its own issue's on its own claim branch here, never in a
+    fork (spec, Rules; F31)."""
+    own = oracle.claim_number(pull.head) if not pull.fork else None
+    return tuple(n for n in claim_files_changed(model, pull) if n != own)
 
 
 # What GitHub does with the merge of a pull request the required check
@@ -1144,6 +1217,10 @@ def act(model, verb, scope):
         return claim(model, actor, number, scope.files_of(number), *args[1:])
     if name == "claim-misnamed":
         return claim(model, actor, number, scope.files_of(number), name=args[1])
+    if name == "claim-stacked":
+        return claim(model, actor, number, scope.files_of(number), base=claim_ref(args[1]))
+    if name == "stray-pull":
+        return stray_pull(model, actor, number, scope.files_of(number))
     if name == "push-by-hand":
         return claim(model, actor, number, scope.files_of(number), name=args[1], guarded=False)
     if name == "commit":
@@ -1266,6 +1343,8 @@ def issue_verbs(model, scope, number):
         found += fork_verbs(model, number)
     if scope.strangers and issue.state == "open":
         found += stranger_verbs(model, number, pull)
+    if scope.strays and CAROL in scope.people and issue.state == "open" and stray_ref(number) not in model.refs:
+        found.append(Verb("stray-pull", CAROL, (number,)))
     if OWNER in scope.people:
         found += owner_verbs(model, number, pull, scope)
         misnamed = f"{CLAIM_PREFIX}0{number}"
@@ -1283,6 +1362,9 @@ def worker_verbs(model, scope, number, worker, pull):
         for old in released_refs(model, number):
             if model.creators.get(old) == worker:
                 found.append(Verb("push-old-head", worker, (number, old)))
+        if scope.strays:
+            found += [Verb("claim-stacked", worker, (number, other)) for other in others(scope, number)
+                      if claim_ref(other) in model.refs]
     if scope.careless and issue.state == "open":
         if ref in model.refs and holder(model, number) != worker:
             found.append(Verb("lease-onto", worker, (number,)))

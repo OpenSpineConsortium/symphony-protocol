@@ -1,7 +1,7 @@
 """One replayable regression trace per finding (DESIGN.md, 5.3 and 14, step 5).
 
 Each file under validation/traces/, <finding>.json, is the trace of
-DESIGN.md's table in 5.3 for one finding, F1 to F28 and F30: the
+DESIGN.md's table in 5.3 for one finding, F1 to F28, F30 and F31: the
 repository it starts from (its issues with their labels, its workers, the
 people beside them, the files each claim lists, whether the workers are
 careless, the events the board hears and whether a run is made in two
@@ -14,7 +14,7 @@ scripts/validate.py replay <file> prints it.
 
 A trace of a fixed finding (F1, F3, F5, F6, F10 and F11 in 0.4.1; F2,
 F4, F7, F8, F9, F12, F13, F14, F15, F17, F18, F19 and F20 in 0.5.0; F21,
-F22, F26, F23, F25, F27, F24 and F28 after it; F16 in the spec's words, which the library
+F22, F26, F23, F25, F27, F24, F28 and F31 after it; F16 in the spec's words, which the library
 already kept; F30 in the harness, whose model let the owner make a merge GitHub
 refuses) is green, and each mutant that undoes a part of its fix
 turns it red at the step where that part showed, for the guarantee the
@@ -49,7 +49,7 @@ from .model import HOUR, OWNER
 from .scenarios import Expect, Scenario, Step
 
 TRACES = Path(__file__).resolve().parent / "traces"
-FINDINGS = tuple(f"F{n}" for n in range(1, 29)) + ("F30",)
+FINDINGS = tuple(f"F{n}" for n in range(1, 29)) + ("F30", "F31")
 SET_FIELDS = ("labels", "told")
 BOARD_VERBS = ("board", "board-start", "board-finish")
 

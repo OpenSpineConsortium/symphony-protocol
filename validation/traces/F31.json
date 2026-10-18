@@ -1,0 +1,33 @@
+{
+  "finding": "F31",
+  "title": "a claim file of another issue reaches main by a pull request the protocol check let through",
+  "status": "fixed after 0.5.0: the protocol check read only the head's own claim file, so a writer's pull request that was no claim's, adding an issue's claim file, passed it, as did a claim stacked on another claim's branch, carrying that claim's file; once merged, the file read as a claim on the default branch, the route to G1 and G11a that F30's model could not express; since the fix the check judges the change a pull request makes against its base and fails one that adds or changes a claim file other than its own issue's on its own claim branch (DESIGN.md, 13)",
+  "breaks": ["G1", "G11a", "G12"],
+  "world": "memory; the git world runs it over real git (build step 6)",
+  "issues": {"1": ["todo"], "2": ["todo"]},
+  "workers": ["a", "b"],
+  "steps": [
+    {"verb": "claim", "actor": "a", "args": [1], "expect": {"holders": {"1": "a"}}},
+    {"verb": "open-draft", "actor": "a", "args": [1], "expect": {"pulls": [100]},
+     "note": "a's draft carries its own claim file, as Claim says, and passes the check"},
+    {"verb": "stray-pull", "actor": "carol", "args": [1], "expect": {"pulls": [100, 101]},
+     "note": "carol, who may write, opens a ready pull request from notes/1 that is no claim's and adds docs/agents/claims/1.md; since the fix the check fails it, and on 20f2a2b it passed, so G12 is red here under the mutant that undoes the fix"},
+    {"verb": "merge", "actor": "owner", "args": [101], "expect": {"taken": false},
+     "note": "the required check fails carol's pull request, so GitHub refuses the merge; on 20f2a2b it would have merged, putting a claim on #1 naming carol on the default branch"},
+    {"verb": "claim-stacked", "actor": "b", "args": [2, 1], "expect": {"holders": {"1": "a", "2": "b"}},
+     "note": "b claims #2 from claude/1's head, not from main, so claude/2 carries a's claim file beside its own"},
+    {"verb": "open-draft", "actor": "b", "args": [2], "expect": {"pulls": [100, 101, 102]},
+     "note": "b's draft adds docs/agents/claims/1.md against main: since the fix the check fails it, its own claim file passing as it should; on 20f2a2b it passed"},
+    {"verb": "drop-claim-file", "actor": "b", "args": [2]},
+    {"verb": "mark-ready", "actor": "b", "args": [102]},
+    {"verb": "merge", "actor": "owner", "args": [102], "expect": {"taken": false},
+     "note": "b's pull request still adds a's claim file, so the check fails it and GitHub refuses the merge; on 20f2a2b the merge put a's claim file on main while claude/1 still stood"},
+    {"verb": "drop-claim-file", "actor": "a", "args": [1]},
+    {"verb": "mark-ready", "actor": "a", "args": [100]},
+    {"verb": "merge", "actor": "owner", "args": [100], "expect": {"taken": true, "refs": {"claude/1": false}},
+     "note": "a's own pull request, its claim file deleted at Finish, passes and merges: deleting a claim file passes"},
+    {"verb": "merge", "actor": "owner", "args": [102], "expect": {"taken": true, "refs": {"claude/2": false}},
+     "note": "with claude/1 merged, the merge of claude/2 into main no longer adds a's claim file, which main took off, so b's pull request passes and merges"},
+    {"verb": "board", "expect": {"holders": {}}}
+  ]
+}

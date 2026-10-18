@@ -115,5 +115,33 @@ class CheckProtocolTest(unittest.TestCase):
         self.assertIsNone(protocol_check.claim_number({}))
 
 
+class ClaimFilesOfOtherIssues(unittest.TestCase):
+    """F31: no pull request adds or changes, against its base, a claim
+    file other than its own issue's on its own claim branch; deleting one
+    passes, so a stale claim file on the default branch can be taken off."""
+
+    def test_a_pull_request_that_is_no_claim_s_adding_one_fails(self):
+        problems = protocol_check.problems_for(pull(branch="notes", body="", draft=False), False, [1])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("docs/agents/claims/1.md is added or changed here", problems[0])
+
+    def test_a_claim_carrying_another_issue_s_claim_file_fails_and_its_own_passes(self):
+        stacked = pull(branch="claude/2", body="Closes #2", draft=False)
+        self.assertEqual(len(protocol_check.problems_for(stacked, False, [1])), 1)
+        self.assertEqual(protocol_check.problems_for(pull(branch="claude/2", body="Closes #2"), True, [2]), [])
+
+    def test_a_fork_s_claim_file_is_no_claim_s_own(self):
+        fork = pull(head_repo="someone/widgets")
+        self.assertTrue(any("added or changed here" in p for p in protocol_check.problems_for(fork, True, [7])))
+
+    def test_a_deletion_the_readme_and_a_misspelt_number_are_no_claim_file_added(self):
+        diff = (b"D\0docs/agents/claims/1.md\0M\0docs/agents/claims/README.md\0A\0docs/agents/claims/03.md\0"
+                b"A\0docs/agents/claims/sub/4.md\0A\0docs/agents/claims/5.txt\0M\0docs/agents/claims/6.md\0")
+        self.assertEqual(protocol_check.claim_files_changed(diff), [6])
+        self.assertEqual(protocol_check.claim_files_changed(""), [])
+        self.assertEqual(protocol_check.problems_for(pull(branch="notes", body="", draft=False), False,
+                                                     protocol_check.claim_files_changed(b"D\0docs/agents/claims/1.md\0")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,7 @@ time of urllib is no use to it.
 import argparse
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -245,10 +246,69 @@ def read_event(environ):
     return event, ""
 
 
+# How long one git call of the check may take: the fetch of the base is
+# one commit's objects.
+GIT_SECONDS = 120
+
+
+def git_output(args, root):
+    """git's standard output for args, run in root, or None where git is
+    missing, fails or runs past GIT_SECONDS."""
+    try:
+        done = subprocess.run(["git", *args], cwd=root, capture_output=True, timeout=GIT_SECONDS)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def merge_base_of(root, pull):
+    """The commit a pull request's change is read against: the checked-out
+    merge commit's first parent, the base branch as GitHub merged it into
+    refs/pull/<n>/merge, which is what actions/checkout gives a
+    pull_request event, a fork's among them; else, for a checkout of one
+    commit, the event's base.sha. The commit's own object names its
+    parents even in a clone of depth 1, where HEAD^1 is not there."""
+    commit = git_output(["cat-file", "commit", "HEAD"], root)
+    if commit is None:
+        return None
+    parents = [line.split()[1] for line in commit.decode("ascii", "replace").splitlines()
+               if line.startswith("parent ") and len(line.split()) == 2]
+    if len(parents) >= 2:
+        return parents[0]
+    sha = ((pull.get("base") or {}).get("sha") or "")
+    return sha if isinstance(sha, str) and sha.isascii() and sha.isalnum() else None
+
+
+def changed_claims_in(root, pull):
+    """The issues whose claim files the pull request adds or changes
+    against its base, read with git from the checkout (protocol_check.
+    claim_files_changed), and what went wrong where they could not be:
+    ((), "") where root is no git checkout's top, as a test's folder is,
+    where nothing is judged; (numbers, "") where the diff was read; and ((), why) where
+    the checkout is git's but the diff could not be read, which the check
+    then fails on, since a claim file it cannot see may be the one it is
+    there to stop (F31). The base is fetched, one commit deep, where the
+    checkout lacks it, as actions/checkout's default depth of 1 does."""
+    top = git_output(["rev-parse", "--show-toplevel"], root)
+    if top is None or Path(os.fsdecode(top.strip())).resolve() != Path(root).resolve():
+        return (), ""
+    base = merge_base_of(root, pull)
+    if base is None:
+        return (), "the claim files this pull request changes could not be read: no base commit to compare with"
+    if git_output(["cat-file", "-e", f"{base}^{{tree}}"], root) is None:
+        git_output(["fetch", "--quiet", "--no-tags", "--depth=1", "origin", base], root)
+    diff = git_output(["diff", "--no-renames", "--name-status", "-z", base, "HEAD", "--", claims.CLAIM_DIR], root)
+    if diff is None:
+        return (), f"the claim files this pull request changes could not be read: git could not compare {base[:12]} " \
+                   f"with the checkout"
+    return tuple(protocol_check.claim_files_changed(diff)), ""
+
+
 def run_check(argv, environ=None, root="."):
     """The protocol check: a run outside a pull request event passes, so
     the check never breaks a push build; the claim file is looked for in
-    the checkout, root."""
+    the checkout, root, and the claim files the pull request adds or
+    changes are read from it with git (changed_claims_in)."""
     argparse.ArgumentParser(
         prog=f"{PROG} check",
         description="Hold the claude/<issue> pull request in GITHUB_EVENT_PATH to the claim protocol.",
@@ -257,8 +317,11 @@ def run_check(argv, environ=None, root="."):
     if event is None:
         print(why_not)
         return 0
+    pull = event.get("pull_request") or {}
+    changed, unread = changed_claims_in(root, pull) if pull else ((), "")
     problems = protocol_check.problems_for(
-        event.get("pull_request") or {}, lambda number: (Path(root) / claims.claim_path(number)).is_file())
+        pull, lambda number: (Path(root) / claims.claim_path(number)).is_file(), changed)
+    problems += [unread] if unread else []
     for problem in problems:
         print(problem)
     if problems:

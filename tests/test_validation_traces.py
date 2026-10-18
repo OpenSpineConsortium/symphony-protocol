@@ -1,4 +1,4 @@
-"""The regression traces of DESIGN.md 5.3, one per finding, F1 to F28 and F30
+"""The regression traces of DESIGN.md 5.3, one per finding, F1 to F28, F30 and F31
 (validation/traces/, played by validation/replay.py), and known.json, the
 record of what is red on purpose: every trace loads and plays with no
 mismatch; its red results are exactly what known.json records, as built
@@ -285,7 +285,12 @@ BUDGET_SECONDS = 10
 # with push spelled pu""sh, step 13, taken once push is looked for only as
 # written. F30's at b's marking ready, step 5, where #100 keeps its claim
 # file, once the protocol check lets such a pull request through, on
-# which GitHub's refusal of the owner's merge rests.
+# which GitHub's refusal of the owner's merge rests. F31's at carol's
+# pull request from notes/1, step 2, which adds #1's claim file, once the
+# check reads no claim file the change adds or changes, or none on a
+# pull request that is no claim's; and at b's stacked draft, step 5,
+# which adds a's claim file beside its own, once it reads none or a claim
+# branch's every one as its own.
 UNDONE = {
     "F1": [("the comment before the labels", 5, "G3L")],
     "F2": [("a piece of work named by the number it is shown by", 4, "G7"),
@@ -404,17 +409,22 @@ UNDONE = {
             ("every ${NAME} read all set or all unset", 12, "G11a"),
             ("a push env's -S spells read only as written", 13, "G11a")],
     "F30": [("a ready pull request's claim file let through", 5, "G12")],
+    "F31": [("a claim file of another issue let through", 2, "G12"),
+            ("a claim file of another issue let through", 5, "G12"),
+            ("a pull request that is no claim's let carry a claim file", 2, "G12"),
+            ("a claim branch's every claim file its own", 5, "G12")],
 }
 # The findings with a trace, every one settled since F25's fix: F1, F3,
 # F5, F6, F10 and F11 fixed in 0.4.1; F2, F4, F7, F8, F9, F12, F13, F14,
 # F15, F17, F18, F19 and F20 fixed in 0.5.0, and F21, F22, F26, F23, F25,
-# F27, F24 and F28 on main after it (known.json's fixed_after); and F16,
+# F27, F24, F28 and F31 on main after it (known.json's fixed_after); and F16,
 # fixed in the spec's words, which the library as built already keeps,
 # so known.json names no version for it; and F30, fixed in the harness,
 # whose model let the owner make a merge GitHub refuses, the library
 # unchanged, so known.json names no version for it either.
 FIXED = ("F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "F15", "F16", "F17",
-         "F18", "F19", "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F30")
+         "F18", "F19", "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F30",
+         "F31")
 # Findings red as built, which no rule of the library answers: none since
 # F4's fix; the test keeps the case for the next one.
 RED_AS_BUILT = ()
@@ -598,7 +608,8 @@ class KnownJson(unittest.TestCase):
                          {"F2": "0.4.1", "F4": "0.4.1", "F7": "0.4.1", "F8": "0.4.1", "F9": "0.4.1", "F12": "0.4.1",
                           "F13": "0.4.1", "F14": "0.4.1", "F15": "0.4.1", "F17": "0.4.1", "F18": "0.4.1",
                           "F19": "0.4.1", "F20": "0.4.1", "F21": "0.5.0", "F22": "0.5.0", "F23": "0.5.0", "F24": "0.5.0",
-                          "F25": "0.5.0", "F26": "0.5.0", "F27": "0.5.0", "F28": "0.5.0"})
+                          "F25": "0.5.0", "F26": "0.5.0", "F27": "0.5.0", "F28": "0.5.0",
+                          "F31": "0.5.0"})
         current = known.version_key(sdlc_protocol.__version__)
         for finding, version in known.FIXED_AFTER.items():
             with self.subTest(finding=finding):
@@ -608,15 +619,15 @@ class KnownJson(unittest.TestCase):
                 self.assertLessEqual(known.version_key(version), current,
                                      "the last version with a finding is one main has stated, never a later one")
         fixed_in_0_5_0 = {"F2", "F4", "F7", "F8", "F9", "F12", "F13", "F14", "F15", "F17", "F18", "F19", "F20"}
-        fixed_after_0_5_0 = {"F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28"}
+        fixed_after_0_5_0 = {"F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F31"}
         self.assertEqual(known.as_built_for("0.4.1"), known.AS_BUILT | fixed_in_0_5_0 | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.4.0"), known.AS_BUILT | fixed_in_0_5_0 | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.4.2"), known.AS_BUILT | fixed_after_0_5_0,
                          "the next release carries the fixes")
         self.assertEqual(known.as_built_for("0.5.0"), known.AS_BUILT | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.5.1"), known.AS_BUILT,
-                         "the release after 0.5.0 carries F21's, F22's, F23's, F24's, F25's, F26's, F27's "
-                         "and F28's fixes")
+                         "the release after 0.5.0 carries F21's, F22's, F23's, F24's, F25's, F26's, F27's, "
+                         "F28's and F31's fixes")
         self.assertEqual(known.as_built_for("1.0.0"), known.AS_BUILT)
         for none in (None, "", "unknown", "0.4", "0.4.1-dirty", "1" * 10 + ".0.0"):
             self.assertEqual(known.as_built_for(none), known.AS_BUILT, none)

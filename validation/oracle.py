@@ -216,6 +216,8 @@ SPEC = {
                      "activity lists for `claude/<issue>` at or after it",
     "read again": "It reads the issue again first and frees none that is closed by then",
     "same run": "which is released once its branch has gone a day without a commit, in the same run where it has",
+    "strays": "No pull request adds or changes a claim file other than its own issue's on its own claim branch",
+    "stray deleted": "A pull request that deletes a claim file passes",
 }
 
 CLAIM_PREFIX = "claude/"

@@ -768,6 +768,86 @@ class Check(unittest.TestCase):
             self.assertEqual(self.check(raw=raw)[:2], (0, "the event is not readable; nothing checked\n"), raw)
 
 
+def git(where, *args):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "gc.auto=0",
+                           "-c", "maintenance.auto=false", "-c", "protocol.file.allow=always", *args],
+                          cwd=where, capture_output=True, check=True, text=True).stdout
+
+
+class CheckReadsTheChange(unittest.TestCase):
+    """F31: the check reads which claim files the pull request adds or
+    changes from the checkout of refs/pull/<n>/merge, whose first parent
+    is the base, in a clone one commit deep as actions/checkout makes by
+    default, fetching the base, and fails where it cannot read them."""
+
+    def checkout(self, folder, branch_files, deleted=()):
+        """A repository whose main holds a stale claim file, and the merge
+        of a branch that adds or deletes files, cloned one commit deep."""
+        source = Path(folder) / "source"
+        source.mkdir()
+        git(source, "init", "-q", "-b", "main")
+        claims_dir = source / "docs" / "agents" / "claims"
+        claims_dir.mkdir(parents=True)
+        (claims_dir / "9.md").write_text("- Worker: a\n", encoding="ascii")
+        (source / "README.md").write_text("main\n", encoding="ascii")
+        git(source, "add", "-A")
+        git(source, "commit", "-q", "-m", "main")
+        git(source, "checkout", "-q", "-b", "work")
+        for path in branch_files:
+            (source / path).parent.mkdir(parents=True, exist_ok=True)
+            (source / path).write_text("text\n", encoding="ascii")
+        for path in deleted:
+            (source / path).unlink()
+        git(source, "add", "-A")
+        git(source, "commit", "-q", "-m", "work")
+        git(source, "checkout", "-q", "main")
+        (source / "README.md").write_text("main moved\n", encoding="ascii")
+        git(source, "commit", "-q", "-am", "moved")
+        git(source, "merge", "-q", "--no-ff", "-m", "merge", "work")
+        clone = Path(folder) / "clone"
+        git(folder, "clone", "-q", "--depth", "1", source.as_uri(), str(clone))
+        return clone
+
+    def check(self, branch, files, deleted=(), draft=False, body=""):
+        with tempfile.TemporaryDirectory() as folder:
+            clone = self.checkout(folder, files, deleted)
+            where = Path(folder) / "event.json"
+            pull = {"head": {"ref": branch, "repo": {"full_name": "o/r"}}, "base": {"repo": {"full_name": "o/r"}},
+                    "body": body, "draft": draft}
+            where.write_text(json.dumps({"pull_request": pull}), encoding="utf-8")
+            return run(["check"], environ={"GITHUB_EVENT_PATH": str(where)}, root=clone)
+
+    def test_a_pull_request_that_is_no_claim_s_adding_a_claim_file_fails(self):
+        code, out, _ = self.check("notes", ["docs/agents/claims/1.md"])
+        self.assertEqual(code, 1, out)
+        self.assertIn("docs/agents/claims/1.md is added or changed here", out)
+
+    def test_a_stacked_claim_carrying_the_claim_it_sits_on_fails(self):
+        code, out, _ = self.check("claude/2", ["docs/agents/claims/1.md", "docs/agents/claims/2.md"], draft=True,
+                                  body="Closes #2")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out.splitlines()[0][:len("docs/agents/claims/1.md")], "docs/agents/claims/1.md")
+        self.assertNotIn("claims/2.md is added", out)
+
+    def test_a_claim_s_own_draft_and_a_stale_file_on_main_pass(self):
+        self.assertEqual(self.check("claude/2", ["docs/agents/claims/2.md"], draft=True, body="Closes #2")[:2],
+                         (0, "protocol ok\n"))
+        self.assertEqual(self.check("notes", ["src/x.py"])[:2], (0, "protocol ok\n"))
+
+    def test_deleting_a_stale_claim_file_passes(self):
+        self.assertEqual(self.check("notes", [], deleted=["docs/agents/claims/9.md"])[:2], (0, "protocol ok\n"))
+
+    def test_a_checkout_whose_base_cannot_be_read_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            clone = self.checkout(folder, ["src/x.py"])
+            git(clone, "remote", "set-url", "origin", (Path(folder) / "nowhere").as_uri())
+            where = Path(folder) / "event.json"
+            where.write_text(json.dumps({"pull_request": {"head": {"ref": "notes"}, "base": {}}}), encoding="utf-8")
+            code, out, _ = run(["check"], environ={"GITHUB_EVENT_PATH": str(where)}, root=clone)
+        self.assertEqual(code, 1, out)
+        self.assertIn("could not be read", out)
+
+
 class Guard(unittest.TestCase):
     """The template's hook tests (MainTest on claude/11), through the command line."""
 
