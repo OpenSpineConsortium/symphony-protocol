@@ -122,6 +122,12 @@ CLONES = "/clones"
 # a double-quoted $( ), in a <( ), in a $( ) three deep in double quotes,
 # in a backquoted span in a double-quoted $( ), and in a double-quoted
 # $( ) inside arithmetic.
+# Or its second clone by git's -C behind env and a word env reads as an
+# assignment where the shell would run it, inside a string env's -S
+# splits, and after env GIT_DIR=x alone, which sets nothing in the shell
+# (F28); and after /usr/bin/time GIT_DIR=x, which runs the assignment as
+# a command, and "time" GIT_DIR=x, which the guard cannot tell from bash's
+# keyword (F28's review).
 ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push}",
              "missing": "cd ../{clone}; cd ../{absent}; git {push}",
              "body": "cat > /dev/null <<'EOF'\ncd ..\nEOF\ngit {push}",
@@ -166,7 +172,13 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "body-arithmetic": "cat <<EOF\necho \"$(( $(git {push}) ))\"\nEOF",
              "body-after-ansi-c": "echo $'\\'' \"$(cat <<'E'\n\"\nE\ngit {push})\"",
              "alike-substitutions": "echo \"$(echo $(true))\" \"$(echo $(git {push}))\"",
-             "hidden-body": "echo `echo \"\\$(cat <<'E'\n\"\nE\ngit {push})\"`"}
+             "hidden-body": "echo `echo \"\\$(cat <<'E'\n\"\nE\ngit {push})\"`",
+             "env-assigned": "env 1x=2 git -C ../{clone} {push}",
+             "env-split": "env -S 'git -C ../{clone} {push}'",
+             "env-alone": "env GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "time-path": "/usr/bin/time GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "time-quoted": '"time" GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}',
+             "env-names": "env -S '${{A}}${{B}}${{C}}${{D}}${{E}}${{F}}${{G}} git -C ../{clone} pu\"\"sh{rest}'"}
 # The ways whose push runs in the worker's own clone (leasing_clone).
 FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
                   "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",
@@ -765,8 +777,8 @@ def lease_elsewhere(model, worker, number, files, how):
     which bash reads as text or as a line it runs nothing of, after the
     push. Git would take it, so the guard must read the push and judge it
     in the clone it runs in and refuse it, as it refuses lease_onto's. No
-    search offers it; F21's trace plays it, F26's its env and F25's its
-    here-documents."""
+    search offers it; F21's trace plays it, F26's its env, F25's its
+    here-documents and F28's env's assignments and -S."""
     pusher = leasing_clone(worker, how)
     model.fetch(pusher)
     ref = claim_ref(number)
@@ -788,7 +800,7 @@ def leasing_command(worker, how, ref, root=CLONES):
     clone (ELSEWHERE), naming the second clone, the absent one, the
     worker's own and root, the directory that holds them."""
     return ELSEWHERE[how].format(clone=other_clone(worker), absent=absent_clone(worker), own=worker, root=root,
-                                 push=f"push --force-with-lease origin {ref}")
+                                 push=f"push --force-with-lease origin {ref}", rest=f" --force-with-lease origin {ref}")
 
 
 def claim_commit(model, number):

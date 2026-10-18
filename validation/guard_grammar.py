@@ -7,7 +7,9 @@ name the worker's own claim branch, another worker's, the default and the
 board branch under every spelling, a branch that is no claim and a name
 that reads as a claim and claims nothing; and, with no wrapper or global
 option around them, the prefixes whose wrapper is given a long option by
-a start of its name (ABBREVIATED, F26). Each command is judged twice:
+a start of its name (ABBREVIATED, F26), and env given a word it reads
+as an assignment where the shell would not, or the command as a string
+its -S splits (ENV_ASSIGNED, SPLIT, F28). Each command is judged twice:
 by the guard, as the hook runs it, and by the board rules read off what
 git would do with it.
 
@@ -81,6 +83,21 @@ PREFIXES = ("", "FOO=1 ", "env ", "command ", "nice ", "time ")
 # command (F26). Like every prefix they change what the guard reads and
 # never git's arguments, so they are taken with the command alone.
 ABBREVIATED = ("env --uns FOO ", "env --def ", "nice --adj 5 ", "timeout --sig KILL 60 ")
+# env given a word it reads as an assignment though the shell would run it,
+# one that holds a = after something no shell name holds, behind a lone -
+# after its --, which env reads as -i, behind nice, and after a lone -,
+# where env's options end, so --sp=x is an assignment and no -S (F28's
+# review); and env given the whole command as a string to split with -S
+# (SPLIT), and as one after a ${NOPE} env drops where NOPE is not set
+# (SPLIT_UNSET, the review), and as one after ${NOPE} -u ${HOME}, which
+# env runs where NOPE is not set and HOME is, a mix neither reading alone
+# finds (SPLIT_MIXED, the second review). The guard read the assignment,
+# the - and the string as the command env runs (F28). They are taken with
+# the command alone, as ABBREVIATED is.
+ENV_ASSIGNED = ("env 1x=2 ", "env -- - A.B=1 ", "nice env x-y=1 ", "env - --sp=x ")
+SPLIT = "env -S '{}'"
+SPLIT_UNSET = "env -S '${{NOPE}} {}'"
+SPLIT_MIXED = "env -S '${{NOPE}} -u ${{HOME}} {}'"
 # The wrapper that hides the command in a string another program runs is
 # the one the guard cannot read (G11b). The last is the shape a session
 # writes most, a commit message by here-document, the push, then text by
@@ -95,6 +112,9 @@ QUOTED_SUBSTITUTION = 'x="$({})"'
 PROCESS_SUBSTITUTION = "cat <({})"
 WRAPPERS = ("{}", "bash -c '{}'", "true && {}", "( {} )", "echo $({})", HERE_DOCUMENTS, QUOTED_SUBSTITUTION,
             PROCESS_SUBSTITUTION)
+# The prefixes and wrappers taken with the command alone, no wrapper or
+# global option around it.
+ALONE = tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED) + (("", SPLIT), ("", SPLIT_UNSET), ("", SPLIT_MIXED))
 UNREADABLE = "bash -c '{}'"
 # git's own options before the verb: a directory, the empty one git -C
 # takes as no change, a setting, a setting from the environment, whose
@@ -138,11 +158,12 @@ class Command(NamedTuple):
 
 def commands():
     """Every command of the grammar: each prefix with every wrapper and
-    global option, and each ABBREVIATED one with the command alone. A
-    wholesale option takes no refspec and --delete needs one, as git reads
-    them."""
-    parts = itertools.chain(itertools.product(PREFIXES, WRAPPERS, GLOBALS, OPTIONS, REFSPECS),
-                            itertools.product(ABBREVIATED, ("{}",), ("",), OPTIONS, REFSPECS))
+    global option, and each of ALONE, the ABBREVIATED and ENV_ASSIGNED
+    prefixes and the SPLIT, SPLIT_UNSET and SPLIT_MIXED wrappers, with the
+    command alone. A wholesale option takes no refspec and --delete needs one, as git reads them."""
+    alone = ((prefix, wrapper, "", option, spec) for (prefix, wrapper), option, spec
+             in itertools.product(ALONE, OPTIONS, REFSPECS))
+    parts = itertools.chain(itertools.product(PREFIXES, WRAPPERS, GLOBALS, OPTIONS, REFSPECS), alone)
     for prefix, wrapper, glob, option, spec in parts:
         if option in WHOLESALE_OPTIONS and spec:
             continue
