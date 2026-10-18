@@ -1317,6 +1317,31 @@ class NodeLineTest(unittest.TestCase):
         self.assertEqual(board.node_label(Issue(7, "a #1 b")), "#7 a #35;1 b")
         self.assertEqual(board.node_label(Issue(7, "a\nb\tc")), "#7 a b c")
 
+    def test_a_percent_sign_is_written_as_its_entity(self):
+        self.assertEqual(board.node_label(Issue(7, "Cut 50% of the reads")), "#7 Cut 50#37; of the reads")
+        # The fold turns the small and the fullwidth percent signs into "%",
+        # so they are written as the entity too.
+        self.assertEqual(board.node_label(Issue(7, "a \ufe6a b \uff05 c")), "#7 a #37; b #37; c")
+        self.assertEqual(board.node_label(Issue(7, "a #% b")), "#7 a #35;#37; b")
+
+    def test_a_title_that_spells_a_directive_leaves_no_percent_sign_in_the_chart(self):
+        directive = '%%{init: {"theme":"dark"}}%% x'
+        snap = Snapshot(issues=[Issue(20, "Draw %%{init", ["epic"]), Issue(21, directive, ["todo"]),
+                                Issue(22, "Cut 50% of the reads", ["todo"]), Issue(30, "Ship 100%", ["goal"])],
+                        sub_issues={20: [21, 22], 30: [20]})
+        text = board.render(snap)
+        blocks = [block.split("```", 1)[0] for block in text.split("```mermaid\n")[1:]]
+        self.assertEqual(len(blocks), 2)
+        for block in blocks:
+            self.assertNotIn("%", block)
+        self.assertIn('  i21["#21 #37;#37;{init: {#quot;theme#quot;:#quot;dark#quot;}}#37;#37; x"]:::todo\n', blocks[1])
+        self.assertIn('  i22["#22 Cut 50#37; of the reads"]:::todo\n', blocks[1])
+        self.assertIn('  i20["#20 Draw #37;#37;{init"]\n', blocks[0])
+        self.assertIn('  i30["#30 Ship 100#37;"]\n', blocks[0])
+        # Outside the charts a percent sign means nothing, so the heading
+        # and the rows keep it as the title has it.
+        self.assertIn("\n### Epic #20: Draw %%{init\n", text)
+
     def test_the_progress_follows_the_label_only_when_it_counts_something(self):
         self.assertEqual(board.node_label(Issue(20, "Draw", progress=(1, 3))), "#20 Draw (1/3)")
         self.assertEqual(board.node_label(Issue(20, "Draw", progress=None)), "#20 Draw")
