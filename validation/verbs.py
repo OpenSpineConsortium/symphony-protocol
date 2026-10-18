@@ -958,19 +958,23 @@ def passes_check(model, pull):
     """Whether the required check passes a pull request ready to merge, as
     the protocol check it runs reads one (spec, Rules: "the claim file is
     there while the pull request is a draft, gone once it is ready, the
-    body closes its issue, and the branch lives in this repository"): a
+    body closes its issue, and the branch lives in the repository itself,
+    never in a fork"): a
     claim's branch here, its claim file gone at the head and its body
-    closing the issue; one from a branch that is no claim's passes it
-    where it is ready, since GitHub merges no draft.
-    The default branch takes only a pull request the check passes, with
-    no one to bypass the rule (symphony-template's
-    docs/setup/ruleset-main.json and ruleset-org.json: required_status_
-    checks "check", bypass_actors empty), so GitHub refuses the owner's
-    merge of any other, and a claim file never reaches main by a merge
-    (F30)."""
+    closing the issue; one from a branch that reads as a claim and claims
+    nothing, as claude/03, fails it (spec, Rules: "a pull request from a
+    branch that reads as a claim and claims nothing, as `claude/03`, fails
+    it"), and one from any other branch passes it where it is ready,
+    since GitHub merges no draft. The default branch takes only a pull
+    request the check passes, with no one to bypass the rule
+    (symphony-template's docs/setup/ruleset-main.json and ruleset-org.json:
+    required_status_checks "check", bypass_actors empty), so GitHub
+    refuses the owner's merge of any other (F30). A claim file still
+    reaches main where the check lets it through: a pull request that is
+    no claim's adding one, or a claim's carrying another issue's (F31)."""
     number = oracle.claim_number(pull.head)
     if number is None:
-        return not pull.draft
+        return not pull.draft and not oracle.reads_as_claim(pull.head)
     has_file = model.tree(model.pull_head(pull)).get(f"{CLAIM_DIR}/{number}.md") is not None
     closes = re.search(oracle.CLOSES % number, pull.body) is not None
     return not pull.fork and not pull.draft and not has_file and closes

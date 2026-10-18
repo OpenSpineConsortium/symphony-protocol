@@ -226,11 +226,11 @@ class RepoModel:
     lenient_rules: bool = False
     # Whether GitHub refuses the merge of a pull request the required check
     # fails, as the default branch's ruleset, which no one bypasses, makes
-    # it (verbs.passes_check, F30): on for every search and scenario, and
-    # off only for the two traces written before F30 that merge what the
-    # check fails, their merges standing for ones after the finishing push
-    # their steps leave out (scenarios.Scenario.checked_merges). Part of
-    # the key.
+    # it (verbs.passes_check, F30): on for every search, scenario and
+    # trace, and off only where tests/test_validation_soak.py replays the
+    # soak's two G1 leads of 2026-10-14, which the soak met under the model
+    # before F30 and which reach their faults through such a merge
+    # (scenarios.Scenario.checked_merges). Part of the key.
     checked_merges: bool = True
     # The logins GitHub will not say whether they may write, answering the
     # permission API 403 on every call, as for a token without the right:

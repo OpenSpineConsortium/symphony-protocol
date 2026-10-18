@@ -1,7 +1,7 @@
 {
   "finding": "F30",
   "title": "the owner merges a pull request the required check fails, putting its claim file on main",
-  "status": "fixed in the harness after 0.5.0: the model let the owner merge a claim's pull request marked ready with its claim file still on its branch, which the protocol check fails and the default branch's ruleset, with no one to bypass it, refuses, and rename a branch to a name a branch still had; the library was right (DESIGN.md, 13)",
+  "status": "fixed in the harness after 0.5.0: the model let the owner merge a claim's pull request marked ready with its claim file still on its branch, which the protocol check fails and the default branch's ruleset, with no one to bypass it, refuses, and rename a branch to a name a branch still had; the model's fault was real, and the route to the same violations it could not express, a claim file the protocol check lets through, is F31 (DESIGN.md, 13)",
   "breaks": ["G1", "G11a", "G12"],
   "world": "memory; the git world runs it over real git (build step 6)",
   "issues": {"1": ["todo"]},

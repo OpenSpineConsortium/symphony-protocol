@@ -5,6 +5,7 @@ take: a run for the schedule or for each run queued, one at a time, and,
 with the scope's split_board on, a run in two halves with any verb but
 the clock's between them."""
 
+import dataclasses
 import sys
 import unittest
 from pathlib import Path
@@ -85,6 +86,10 @@ class TheEventsAnActFires(unittest.TestCase):
         self.assertIn("merge owner 100", names(verbs.enabled(model, Scope())))
         model.pulls[100].body = "Part of #1"
         self.assertFalse(verbs.passes_check(model, model.pulls[100]))
+        misnamed = dataclasses.replace(model.pulls[100], head="claude/03")
+        self.assertFalse(verbs.passes_check(model, misnamed), "a branch that reads as a claim and claims nothing")
+        misnamed.head = "notes"
+        self.assertTrue(verbs.passes_check(model, misnamed))
         model, _ = after([CLAIM, Verb("open-draft", "a", (1,))])
         model.refs["released/1-aaaaaaa"] = model.refs["claude/1"]
         outcome = verbs.apply(model, Verb("rename-back", M.OWNER, (1, "released/1-aaaaaaa")), LISTENING)
@@ -92,7 +97,8 @@ class TheEventsAnActFires(unittest.TestCase):
         self.assertIn("released/1-aaaaaaa", model.refs)
 
     def test_a_merge_the_check_fails_is_made_where_a_trace_written_before_f30_says(self):
-        """F12's and F22's traces set checked_merges off (F30)."""
+        """The soak's two G1 leads of 2026-10-14 are replayed with
+        checked_merges off, as the soak met them before F30."""
         model = M.seeded()
         model.checked_merges = False
         cycle.board_run(model)
