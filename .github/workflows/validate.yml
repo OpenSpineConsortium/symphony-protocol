@@ -60,10 +60,11 @@ jobs:
   mutants:
     if: github.event.action != 'labeled' || github.event.label.name == 'deep validation'
     runs-on: ubuntu-latest
-    # Every trace plays under every mutant, so the lane grows with both:
-    # at 225 mutants it took 29 to 30 minutes, and F32's eight mutants and
-    # trace took it past 30, where the job was cancelled unfinished.
-    timeout-minutes: 45
+    # Every trace plays under every mutant, so the lane grows with both,
+    # and GitHub's runners differ by half again in speed: at 233 mutants it
+    # took 25 minutes on one runner and passed 45 on another, cancelled
+    # unfinished, while 35 minutes of a session's 4 processors finish it.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
