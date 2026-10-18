@@ -67,10 +67,8 @@ FAILED_READ = 500
 # branch stands (F9) and when a branch began (F13), so a run that fails
 # over one of them breaks G15.
 READS_DONE_WITHOUT = ("/compare/", "/activity")
-# A body that closes issue N, as GitHub reads one: a closing keyword, in
-# any case, then #N and no further digit (spec, Finish: the body says
-# "Closes #N"; Rules: "the body closes its issue").
-CLOSES = r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#%d\b"
+# A body that closes issue N, as GitHub reads one (oracle.CLOSES).
+CLOSES = oracle.CLOSES
 # The client's waits for a rate limit as README.md's What a board run
 # costs promises them, written out here so the harness reads none of the
 # library's constants (adapters.github.RATE_*): where GitHub asks for no

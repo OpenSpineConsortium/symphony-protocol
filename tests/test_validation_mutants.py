@@ -122,6 +122,9 @@ TRACES = {
     "claimed put back after the close read as the ended claim's": "the regression traces",
     "a claim made since the close read as an undo": "the regression traces",
     "an undo after an ended claim read as the claim's": "the regression traces",
+    # F30's one, the rule GitHub's refusal of the owner's merge rests on:
+    # F30's trace is its catcher, at b's marking ready.
+    "a ready pull request's claim file let through": "the regression traces",
     "a long option read only in full": "the regression traces",
     "env's abbreviated --chdir not read": "the regression traces",
     "an optional value taken from the next word": "the regression traces",
@@ -455,9 +458,12 @@ class TheLane(unittest.TestCase):
         in, 194; and the dependencies two, the clerk dealing an issue an
         open issue blocks and the board listing a goal in the Queue, 196;
         and their review's two, the rows saying nothing of an issue an
-        open issue blocks and the Dependencies section never drawn, 198."""
+        open issue blocks and the Dependencies section never drawn, 198;
+        and F30's fix, in the harness, one of the rule its refusal of the
+        owner's merge rests on, a ready pull request's claim file let
+        through, 199."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 198)
+        self.assertEqual(len(mutants.MUTANTS), 199)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

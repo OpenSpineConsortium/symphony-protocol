@@ -1,0 +1,29 @@
+{
+  "finding": "F30",
+  "title": "the owner merges a pull request the required check fails, putting its claim file on main",
+  "status": "fixed in the harness after 0.5.0: the model let the owner merge a claim's pull request marked ready with its claim file still on its branch, which the protocol check fails and the default branch's ruleset, with no one to bypass it, refuses, and rename a branch to a name a branch still had; the model's fault was real, and the route to the same violations it could not express, a claim file the protocol check lets through, is F31 (DESIGN.md, 13)",
+  "breaks": ["G1", "G11a", "G12"],
+  "world": "memory; the git world runs it over real git (build step 6)",
+  "issues": {"1": ["todo"]},
+  "workers": ["a", "b"],
+  "steps": [
+    {"verb": "claim", "actor": "a", "args": [1], "expect": {"holders": {"1": "a"}}},
+    {"at": 25, "verb": "wait", "args": [25]},
+    {"verb": "board", "expect": {"released": {"1": 1}, "refs": {"claude/1": false}},
+     "note": "a's claim has gone a day without a commit: the coordinator releases it and the board renames claude/1 to released/1-<sha>, a's claim file on it"},
+    {"verb": "claim", "actor": "b", "args": [1], "expect": {"holders": {"1": "b"}}},
+    {"verb": "open-draft", "actor": "b", "args": [1], "expect": {"pulls": [100]}},
+    {"verb": "mark-ready", "actor": "b", "args": [100],
+     "note": "b marks its pull request ready with its claim file still on claude/1, which Finish says the pull request deletes first, so the protocol check, part of the required check, fails it"},
+    {"verb": "merge", "actor": "owner", "args": [100], "expect": {"taken": false, "pulls": [100], "refs": {"claude/1": true}},
+     "note": "the default branch takes only a pull request the required check passes, and its ruleset names no one who may bypass it, so GitHub refuses the merge; on a4ff6c3 the model merged it, putting b's claim file on main and deleting claude/1"},
+    {"verb": "rename-back", "actor": "owner", "args": [1, ["released", 1, 0]], "expect": {"taken": false},
+     "note": "claude/1 still stands, b's, so GitHub refuses to rename a's released branch to its name; on a4ff6c3, claude/1 gone, the rename made claude/1 a's again, a's claim file on it"},
+    {"verb": "drop-claim-file", "actor": "a", "args": [1],
+     "note": "on a4ff6c3 a deletes its claim file from the branch renamed back, as Finish says; since the fix the branch is still b's, and the three steps by a show nothing, since the fence judges whose claim a branch carries, not who pushes (G11b)"},
+    {"verb": "rebase-main", "actor": "a", "args": [1],
+     "note": "on a4ff6c3 a's rebase onto main, which holds b's claim file, carries that file, so the guard reads the branch pushed as b's claim and refuses a's lease onto its own claim, G11a red"},
+    {"verb": "merge-main", "actor": "a", "args": [1],
+     "note": "on a4ff6c3 a brings main in by a merge, and with it b's claim file, so a's branch carries a claim file naming b and the board names b for it, G1 red"}
+  ]
+}

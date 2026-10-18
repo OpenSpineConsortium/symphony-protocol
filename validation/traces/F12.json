@@ -10,9 +10,11 @@
   "steps": [
     {"verb": "claim", "actor": "a", "args": [1]},
     {"verb": "open-draft", "actor": "a", "args": [1], "expect": {"pulls": [100]}},
+    {"verb": "drop-claim-file", "actor": "a", "args": [1]},
     {"verb": "mark-ready", "actor": "a", "args": [100]},
     {"verb": "claim", "actor": "b", "args": [2]},
     {"verb": "open-draft", "actor": "b", "args": [2], "expect": {"pulls": [100, 101]}},
+    {"verb": "drop-claim-file", "actor": "b", "args": [2]},
     {"verb": "mark-ready", "actor": "b", "args": [101]},
     {"verb": "board", "event": "pull_request", "expect": {"comments": {"100": {}, "101": {}}}},
     {"at": 1, "verb": "merge", "actor": "owner", "args": [101], "expect": {"pulls": [100]},

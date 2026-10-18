@@ -348,6 +348,17 @@ class TheKey(unittest.TestCase):
         lenient.lenient_rules = True
         self.assertTrue(lenient.clone().lenient_rules)
 
+    def test_keeps_whether_github_refuses_a_merge_the_check_fails(self):
+        """The owner's merge of a pull request the required check fails is
+        refused or made by it (F30), so two models alike but for it behave
+        differently; it is on unless a trace written before F30 sets it
+        off."""
+        self.assertTrue(self.differs(lambda m: setattr(m, "checked_merges", False)))
+        self.assertTrue(self.model.clone().checked_merges)
+        loose = self.model.clone()
+        loose.checked_merges = False
+        self.assertFalse(loose.clone().checked_merges)
+
     def test_two_paths_to_one_state_meet(self):
         one, two = self.model.clone(), self.model.clone()
         one.add_label(1, "a", "claimed")
