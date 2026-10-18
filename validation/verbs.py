@@ -114,6 +114,14 @@ CLONES = "/clones"
 # a here-document whose body holds an apostrophe, between two
 # double-quoted substitutions whose ) inside $[ ) ] closes nothing, and
 # after a backquoted span whose double quote pairs with nothing outside.
+# Since F24's fix, the push before a comment that holds an apostrophe in
+# the two shapes whose first body holds one too, so that read apart as a
+# substitution's own text the body still hides the push where the rule
+# under test is undone. Or its own clone, by a push inside a substitution
+# the guard read as part of a word or as a redirection until F24's fix: in
+# a double-quoted $( ), in a <( ), in a $( ) three deep in double quotes,
+# in a backquoted span in a double-quoted $( ), and in a double-quoted
+# $( ) inside arithmetic.
 # Or its second clone by git's -C behind env and a word env reads as an
 # assignment where the shell would run it, inside a string env's -S
 # splits, and after env GIT_DIR=x alone, which sets nothing in the shell
@@ -130,7 +138,7 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "apostrophe": "cat <<'EOF' > /dev/null\nIt's done\nEOF\ngit {push}",
              "unclosed": 'git {push}\necho "unclosed',
              "paired": "git commit -F - <<'EOF'\nDon't stop\nEOF\ngit {push}\ncat <<'EOF'\nIt's done\nEOF",
-             "quoted-substitution": ('git commit -q -m "$(cat <<\'EOF\'\nSay "hi\nEOF\n)"\ngit {push}\n'
+             "quoted-substitution": ('git commit -q -m "$(cat <<\'EOF\'\nIt\'s "hi\nEOF\n)"\ngit {push} # it\'s\n'
                                      'gh pr create --body "$(cat <<\'EOF\'\nQuote" here\nEOF\n)"'),
              "body-substitution": "cat <<EOF\nIt's $(git {push}) done, isn't it\nEOF",
              "closing-line": 'msg="$(cat <<\'EOF\'\nSay "hi\nEOF)"\ngit {push}\ngh pr create --body "x"',
@@ -138,19 +146,33 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "subshells": ("((cd .); cat <<'EOF'\nDon't\nEOF\n)\ngit {push}\n"
                            "((cd .); cat <<'EOF'\nIt's\nEOF\n)"),
              "closed-substitution": "x=$(cat <<'EOF')\nDon't\nEOF\ngit {push}\ny=$(cat <<'EOF')\nIt's\nEOF",
-             "nested-body": "cat <<EOF\n$(cat <<'X'\nDon't\nX\n)\nEOF\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
+             "nested-body": "cat <<EOF\n$(cat <<'X'\nDon't\nX\ngit {push})\nEOF\ncat <<'EOF'\nIt's\nEOF",
              "case-pattern": ('x="$(case a in a) cat <<\'EOF\'\nSay "hi\nEOF\n;; esac)"\ngit {push}\n'
                               'y="$(case a in a) cat <<\'EOF\'\nSay "bye\nEOF\n;; esac)"'),
              "quoted-arithmetic": "((echo \"))\"); cat <<'EOF'\nDon't\nEOF\n)\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
              "braced": ('x="$(echo ${{y:-)}}; cat <<\'EOF\'\nSay "hi\nEOF\n)"\ngit {push}\n'
                         'y="$(echo ${{y:-)}}; cat <<\'EOF\'\nSay "bye\nEOF\n)"'),
-             "backquoted": ('x="$(echo `case a in a) :;; esac`; cat <<\'EOF\'\nSay "hi\nEOF\n)"\ngit {push}\n'
+             "backquoted": ('x="$(echo `case a in a) :;; esac`; cat <<\'EOF\'\nIt\'s "hi\nEOF\n)"\ngit {push} # it\'s\n'
                             'y="$(echo `case a in a) :;; esac`; cat <<\'EOF\'\nSay "bye\nEOF\n)"'),
              "pid-brace": "echo $${{ ; cat <<EOF\nsay 'hi\nEOF\ngit {push}\necho '",
              "old-arithmetic": ('x="$(echo $[ ) ] ; cat <<\'EOF\'\nSay "hi\nEOF\n)"\ngit {push}\n'
                                 'y="$(echo $[ ) ] ; cat <<\'EOF\'\nSay "bye\nEOF\n)"'),
              "backquoted-quote": 'x=`echo "`; git {push} # "',
              "env": "env --ch ../{clone} git {push}",
+             "substituted": 'out="$(git {push} 2>&1)"',
+             "process": "cat <(git {push})",
+             "nested-substitutions": 'echo "$(echo "$(echo "$(git {push})")")"',
+             "backquote-in-substitution": 'echo "$(echo `git {push}`)"',
+             "arithmetic-substitution": '(( "$(git {push})" ))',
+             "ansi-c-in-substitution": 'echo "$(echo $\'it\\\'s\') $(git {push})" # it\'s',
+             "braced-apostrophe": "echo \"${{v:-'$(git {push})'}}\"",
+             "braced-ansi-c": ": ${{v:-$'a\\'b'}} `git {push}`",
+             "arithmetic-apostrophe": "echo $(( '$(git {push})' ))",
+             "bracket-apostrophe": "echo $[ '$(git {push})' ]",
+             "body-arithmetic": "cat <<EOF\necho \"$(( $(git {push}) ))\"\nEOF",
+             "body-after-ansi-c": "echo $'\\'' \"$(cat <<'E'\n\"\nE\ngit {push})\"",
+             "alike-substitutions": "echo \"$(echo $(true))\" \"$(echo $(git {push}))\"",
+             "hidden-body": "echo `echo \"\\$(cat <<'E'\n\"\nE\ngit {push})\"`",
              "env-assigned": "env 1x=2 git -C ../{clone} {push}",
              "env-split": "env -S 'git -C ../{clone} {push}'",
              "env-alone": "env GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
@@ -161,7 +183,11 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
 FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
                   "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",
                   "closed-substitution", "nested-body", "case-pattern", "quoted-arithmetic", "braced",
-                  "backquoted", "pid-brace", "old-arithmetic", "backquoted-quote")
+                  "backquoted", "pid-brace", "old-arithmetic", "backquoted-quote", "substituted", "process",
+                  "nested-substitutions", "backquote-in-substitution", "arithmetic-substitution",
+                  "ansi-c-in-substitution", "braced-apostrophe", "braced-ansi-c", "arithmetic-apostrophe",
+                  "bracket-apostrophe", "body-arithmetic", "body-after-ansi-c", "alike-substitutions",
+                  "hidden-body")
 
 # A read of the activity with no type named: the read of the push that set
 # a claim's head (github.read_push), told from the reads of a

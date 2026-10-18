@@ -104,7 +104,14 @@ SPLIT_MIXED = "env -S '${{NOPE}} -u ${{HOME}} {}'"
 # another, whose bodies' apostrophes pair around the push as quotes bash
 # never reads, so the guard read no push in it until F25's fix.
 HERE_DOCUMENTS = "git commit -F - <<'EOF'\nDon't stop\nEOF\n{}\ncat <<'EOF'\nIt's done\nEOF"
-WRAPPERS = ("{}", "bash -c '{}'", "true && {}", "( {} )", "echo $({})", HERE_DOCUMENTS)
+# Two more since F24's fix: a substitution in double quotes, whose text
+# the guard read as part of the word around it, and a process
+# substitution, which it read as a redirection that took git as its
+# target, so it read no push in either though bash runs both.
+QUOTED_SUBSTITUTION = 'x="$({})"'
+PROCESS_SUBSTITUTION = "cat <({})"
+WRAPPERS = ("{}", "bash -c '{}'", "true && {}", "( {} )", "echo $({})", HERE_DOCUMENTS, QUOTED_SUBSTITUTION,
+            PROCESS_SUBSTITUTION)
 # The prefixes and wrappers taken with the command alone, no wrapper or
 # global option around it.
 ALONE = tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED) + (("", SPLIT), ("", SPLIT_UNSET), ("", SPLIT_MIXED))
