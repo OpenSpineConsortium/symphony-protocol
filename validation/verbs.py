@@ -1012,7 +1012,10 @@ def passes_check(model, pull):
     then one that adds or changes a claim file other than its own issue's
     on its own claim branch fails it too (oracle.SPEC["strays"]), and one
     that deletes a claim file is judged as any other
-    (oracle.SPEC["stray deleted"]; claim_files_changed)."""
+    (oracle.SPEC["stray deleted"]; claim_files_changed).
+    This reads the claim file at the pull request's head where the real
+    check reads the merge ref's checkout; the two agree while main holds
+    no claim file."""
     number = oracle.claim_number(pull.head)
     if strays_of(model, pull):
         return False
