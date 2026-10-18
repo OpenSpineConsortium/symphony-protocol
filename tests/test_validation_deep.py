@@ -26,6 +26,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -68,6 +69,34 @@ def one_megabyte():
     return "x" * 1_000_000
 
 
+def waits():
+    """Runs until a signal's handler ends it. One long sleep slept
+    through a SIGTERM that came as it began: CPython runs a handler
+    between two steps of the code or once a system call the signal
+    interrupts returns, and a signal caught after the last such step
+    and before the sleep's system call interrupts nothing, so the part
+    slept on, end_workers' grace ran out and it was killed, -9 where
+    143 was asked, about once in a thousand runs under load. A
+    sleep a tenth of a second long keeps the handler waiting no longer
+    than that."""
+    while True:
+        time.sleep(0.1)
+
+
+def signalled_as_it_waits():
+    """A part whose SIGTERM is caught while it waits, by a thread of its
+    own, so the wait's system call goes on uninterrupted with the
+    handler due, as it does when the signal lands after the last step
+    of the code before the wait and before its system call."""
+    def signals():
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=signals).start()
+    signal.pthread_sigmask(signal.SIG_BLOCK, (signal.SIGTERM,))
+    waits()
+
+
 def ends_slowly(signum, frame):
     time.sleep(0.5)
     os._exit(3)
@@ -78,25 +107,25 @@ def slow_to_end(ready):
     that does not wait for it finds it still running."""
     signal.signal(signal.SIGTERM, ends_slowly)
     ready.set()
-    time.sleep(600)
+    waits()
 
 
 def waits_outside_its_work(ready):
     """A part's process where run_part's try does not hold it, as one
     sending its result is."""
     ready.set()
-    time.sleep(600)
+    waits()
 
 
 def sleeps():
     """A part that runs until it is ended."""
-    time.sleep(600)
+    waits()
 
 
 def begins_and_sleeps(began):
     """A part that says its work began, then runs until it is ended."""
     Path(began).write_text("began\n", encoding="ascii")
-    time.sleep(600)
+    waits()
 
 
 def ignores_sigterm(ready):
@@ -109,7 +138,7 @@ def ignores_sigterm(ready):
 
 def says_it_is_ready(folder):
     Path(folder, "ready").write_text("ready\n", encoding="ascii")
-    time.sleep(600)
+    waits()
 
 
 def runs_the_lane_and_goes_on(folder):
@@ -149,7 +178,8 @@ def ends_in_three_seconds(signum, frame):
 def slow_to_end():
     signal.signal(signal.SIGTERM, ends_in_three_seconds)
     (out / "ready").write_text("ready\\n", encoding="ascii")
-    time.sleep(600)
+    while True:
+        time.sleep(0.1)
 
 
 lanes.first_wave = lambda settings, results: [("a slow part", slow_to_end, ())]
@@ -176,7 +206,8 @@ out = Path({out!r})
 def says_it_is_ready():
     (out / "ready.tmp").write_text(f"{{os.getpid()}}\\n", encoding="ascii")
     (out / "ready.tmp").replace(out / "ready")
-    time.sleep(600)
+    while True:
+        time.sleep(0.1)
 
 
 def leaves(signum, frame):
@@ -1138,6 +1169,25 @@ class TheLaneAsOneRun(unittest.TestCase):
         self.addCleanup(part.kill)
         self.assertTrue(ready.wait(30))
         part.terminate()
+        part.join(30)
+        self.assertEqual(part.exitcode, 128 + signal.SIGTERM)
+
+    def test_a_part_whose_handler_is_due_as_it_waits_still_ends_by_the_signal(self):
+        """The parts these tests end waited in one long sleep, which a
+        SIGTERM that came as the sleep began did not interrupt: its
+        handler waited for the sleep's end, the grace ran out and the
+        part was killed, so a test that asked for 143 saw -9 now and
+        then. A part that waits in short sleeps runs a handler due
+        while it waits within a tenth of a second of it."""
+        context = lanes.fork_context()
+        previous = signal.signal(signal.SIGTERM, lanes.stop_on_term(os.getpid()))
+        try:
+            part = context.Process(target=signalled_as_it_waits)
+            part.start()
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        self.addCleanup(part.join)
+        self.addCleanup(part.kill)
         part.join(30)
         self.assertEqual(part.exitcode, 128 + signal.SIGTERM)
 
