@@ -291,7 +291,12 @@ TRACES = {
     "the clerk dealing an issue labelled blocked": dealing.Case({1: ("blocked", "todo")}, 1, "none", ("a", "b")),
     "the clerk dealing an issue blocked by an open issue": dealing.Case({1: ("todo",), 2: ("todo",)}, 2, "none",
                                                                        ("a", "b"), blocked_by=((1, 2),)),
-    "the board listing a goal in the Queue": ([labelled("goal"), BOARD], Scope()),
+    # The Queue leaving a goal out is caught by the lane below, on its
+    # fourth run, since no search seeds a goal: the trace that labels the
+    # seeded issue goal and runs the board catches the mutant here, but
+    # the lane plays only the regression traces, so its first CI run on
+    # the dependencies let this mutant slip (197 of 198).
+    "the board listing a goal in the Queue": "the dependencies on the page",
     # The dependencies' review: two rules of the page no search or trace
     # draws a relation for, caught by the lane that does.
     "the rows saying nothing of an issue an open issue blocks": "the dependencies on the page",

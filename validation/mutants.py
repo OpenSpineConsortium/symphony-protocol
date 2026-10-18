@@ -2421,21 +2421,32 @@ def labels_lane():
 def dependencies_lane():
     """One board run on each shape the dependencies take on a page, checked
     as a search checks one, since no search or trace draws a blocked-by
-    relation: #1 blocked by the open #2, labelled todo, blocker or given to
-    a, so a row of each section says so (invariants.rows_say_blocked), both
-    under epic #3, so the section draws them (invariants.dependencies_drawn)."""
+    relation or labels an issue goal: #1 blocked by the open #2, labelled
+    todo, blocker or given to a, so a row of each section says so
+    (invariants.rows_say_blocked), both under epic #3, so the section draws
+    them (invariants.dependencies_drawn); and, in a fourth run, that epic
+    under goal #4 labelled todo, so the section draws the goal above its
+    epic and the Queue leaves the goal out (SPEC["goal"]), the one rule of
+    the dependencies the lane's searches, which seed no goal, never reach
+    (the dependencies' CI run)."""
     found = {}
     now = Verb("board", verbs.BOARD, (cycle.SCHEDULE, ""))
-    for names in (("todo",), ("blocker",), ("todo", "worker:a")):
-        model = M.seeded((1, 2, 3), writers=("a", "b"))
+    shapes = [(names, False) for names in (("todo",), ("blocker",), ("todo", "worker:a"))] + [(("todo",), True)]
+    for names, goal in shapes:
+        model = M.seeded((1, 2, 3, 4) if goal else (1, 2, 3), writers=("a", "b"))
         model.issues[1].labels = frozenset(names)
         model.issues[1].blocked_by = (2,)
         model.issues[3].labels = frozenset({"epic"})
         model.issues[3].sub_issues = (1, 2)
+        shape = f"#1 labelled {', '.join(names)}, blocked by #2, under epic #3"
+        if goal:
+            model.issues[4].labels = frozenset({labels.GOAL, "todo"})
+            model.issues[4].sub_issues = (3,)
+            shape += " under goal #4 labelled todo"
         before = model.clone()
         outcome = verbs.apply(model, now)
         for v in invariants.step_checks(before, model, now, outcome):
-            found.setdefault((v.guarantee, v.detail), (f"#1 labelled {', '.join(names)}, blocked by #2, under epic #3", now))
+            found.setdefault((v.guarantee, v.detail), (shape, now))
     return found
 
 
