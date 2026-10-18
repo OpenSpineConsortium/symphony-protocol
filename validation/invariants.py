@@ -308,8 +308,8 @@ def protocol_check_agrees(model):
     from a branch that reads as a claim and claims nothing fails it (spec,
     Rules). Every pull request, a claim's or not, fails it where it adds or
     changes against main a claim file other than its own issue's on its own
-    claim branch (spec, Rules; F31), the change read as the check reads the
-    merge GitHub tests (verbs.claim_files_changed)."""
+    claim branch (spec, Rules; F31), the change read as the check reads it:
+    the branch's own change and the test merge's (verbs.claim_files_changed)."""
     problems = []
     for pull in sorted(model.pulls.values(), key=lambda p: p.number):
         number, head = oracle.claim_number(pull.head), model.pull_head(pull)

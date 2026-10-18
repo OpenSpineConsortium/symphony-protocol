@@ -135,12 +135,74 @@ class ClaimFilesOfOtherIssues(unittest.TestCase):
         self.assertTrue(any("added or changed here" in p for p in protocol_check.problems_for(fork, True, [7])))
 
     def test_a_deletion_the_readme_and_a_misspelt_number_are_no_claim_file_added(self):
-        diff = (b"D\0docs/agents/claims/1.md\0M\0docs/agents/claims/README.md\0A\0docs/agents/claims/03.md\0"
-                b"A\0docs/agents/claims/sub/4.md\0A\0docs/agents/claims/5.txt\0M\0docs/agents/claims/6.md\0")
+        diff = raw(("D", "100644", "000000", "docs/agents/claims/1.md"),
+                   ("M", "100644", "100644", "docs/agents/claims/README.md"),
+                   ("A", "000000", "100644", "docs/agents/claims/03.md"),
+                   ("A", "000000", "100644", "docs/agents/claims/sub/4.md"),
+                   ("A", "000000", "100644", "docs/agents/claims/5.txt"),
+                   ("M", "100644", "100755", "docs/agents/claims/6.md"))
         self.assertEqual(protocol_check.claim_files_changed(diff), [6])
+        self.assertEqual(protocol_check.claim_files_changed(diff.decode("ascii")), [6])
         self.assertEqual(protocol_check.claim_files_changed(""), [])
-        self.assertEqual(protocol_check.problems_for(pull(branch="notes", body="", draft=False), False,
-                                                     protocol_check.claim_files_changed(b"D\0docs/agents/claims/1.md\0")), [])
+        self.assertEqual(protocol_check.claim_folder_problems(diff), [])
+        deleted = protocol_check.claim_files_changed(raw(("D", "100644", "000000", "docs/agents/claims/1.md")))
+        self.assertEqual(protocol_check.problems_for(pull(branch="notes", body="", draft=False), False, deleted), [])
+
+    def test_an_entry_that_does_not_hold_together_is_left_out(self):
+        self.assertEqual(protocol_check.raw_changes(b"M\0docs/agents/claims/1.md\0"), [])
+        self.assertEqual(protocol_check.raw_changes(b":100644 100644 a b\0docs/agents/claims/1.md\0"), [])
+        self.assertEqual(protocol_check.raw_changes(raw(("A", "000000", "100644", "x"))),
+                         [("A", "000000", "100644", "x")])
+
+    def test_two_arguments_judge_the_head_s_own_claim_file_alone(self):
+        """A consumer written before F31 calls problems_for with two
+        arguments, which names no changed claim file, so it judges no
+        stray: the gap the module's docstring names."""
+        self.assertEqual(protocol_check.problems_for(pull(branch="notes", body="", draft=False), False), [])
+
+
+class TheClaimFolder(unittest.TestCase):
+    """F31's review: a change that makes the claim folder, or a folder
+    above it, anything but a folder, makes a claim file a link or a
+    submodule, or spells the claim folder's path in another case, fails,
+    since a checkout would show claim files git does not hold; deleting
+    any of them passes."""
+
+    def test_a_folder_on_the_way_made_a_link_or_a_file_fails(self):
+        for path in protocol_check.CLAIM_FOLDERS:
+            for status, mode in (("A", "120000"), ("A", "100644"), ("T", "120000"), ("A", "160000")):
+                with self.subTest(path=path, status=status, mode=mode):
+                    problems = protocol_check.claim_folder_problems(raw((status, "000000", mode, path)))
+                    self.assertEqual(len(problems), 1)
+                    self.assertIn(f"{path} is made something other than a folder here (mode {mode})", problems[0])
+        self.assertEqual(protocol_check.CLAIM_FOLDERS, ("docs", "docs/agents", "docs/agents/claims"))
+
+    def test_a_claim_file_made_a_link_fails_and_its_deletion_passes(self):
+        for status, mode in (("A", "120000"), ("T", "120000"), ("M", "160000")):
+            with self.subTest(status=status, mode=mode):
+                problems = protocol_check.claim_folder_problems(raw((status, "100644", mode, "docs/agents/claims/7.md")))
+                self.assertEqual(len(problems), 1)
+                self.assertIn("docs/agents/claims/7.md is made a link or a submodule", problems[0])
+        self.assertEqual(protocol_check.claim_folder_problems(raw(("D", "120000", "000000", "docs/agents/claims"),
+                                                                  ("D", "120000", "000000", "docs/agents/claims/7.md"))),
+                         [])
+
+    def test_a_path_in_another_case_fails(self):
+        for path in ("Docs/Agents/claims/9.md", "docs/AGENTS/claims/README.md", "DOCS", "docs/Agents"):
+            with self.subTest(path=path):
+                problems = protocol_check.claim_folder_problems(raw(("A", "000000", "100644", path)))
+                self.assertEqual(len(problems), 1)
+                self.assertIn("but for the case of its letters", problems[0])
+        for path in ("Docs/guide.md", "docs/README.md", "docs/agents/claims/9.md", "src/docs"):
+            with self.subTest(path=path):
+                self.assertEqual(protocol_check.claim_folder_problems(raw(("A", "000000", "100644", path))), [])
+
+
+def raw(*entries):
+    """`git diff --raw --no-renames -z` output for (status, old mode, new
+    mode, path) entries."""
+    return b"".join(f":{old} {new} {'1' * 7} {'2' * 7} {status}\0{path}\0".encode("ascii")
+                    for status, old, new, path in entries)
 
 
 if __name__ == "__main__":

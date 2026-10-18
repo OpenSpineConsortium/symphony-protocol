@@ -911,12 +911,11 @@ class CheckReadsTheChange(unittest.TestCase):
         self.assertTrue(out.startswith("docs/agents/claims/1.md is added"), out)
         self.assertNotIn("claims/2.md is added", out)
 
-    def test_a_claim_s_own_draft_and_other_work_pass_beside_a_stale_file_on_main(self):
+    def test_a_claim_s_own_draft_passes_beside_a_stale_file_on_main(self):
         stale = {"docs/agents/claims/9.md": "- Worker: old\n"}
         clone, base, head = self.merged("claude/2", {"docs/agents/claims/2.md": "- Worker: b\n"}, stale=stale)
         self.assertEqual(check_in(clone, "claude/2", base, head, draft=True, body="Closes #2")[:2],
                          (0, "protocol ok\n"))
-        self.origin.commit("main", {"docs/agents/claims/9.md": None})
 
     def test_other_work_passes_beside_a_stale_file_on_main(self):
         clone, base, head = self.merged("notes", {"src/x.py": "x\n"},

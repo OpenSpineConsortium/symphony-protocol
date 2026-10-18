@@ -1027,25 +1027,33 @@ def passes_check(model, pull):
 
 
 def claim_files_changed(model, pull):
-    """The issues whose claim file a pull request adds or changes against
-    main, as the protocol check reads the change of the merge GitHub tests
-    (F31): a path docs/agents/claims/<n>.md, n spelled as a claim's number
-    is, that the merge of the head into main holds with a text main's tree
-    does not; a file the merge deletes counts for nothing, so a pull
-    request that takes a stale claim file off main is judged as any
-    other."""
+    """The issues whose claim file a pull request adds or changes, as the
+    protocol check reads its change (F31 and its review): the branch's own
+    change, from where it left main to its head, and the change of the
+    merge GitHub tests against main, either one counting. A path counts
+    where it is docs/agents/claims/<n>.md, n spelled as a claim's number
+    is, and the newer side holds it with a text the older does not; a file
+    deleted counts for nothing, so a pull request that takes a stale claim
+    file off main is judged as any other."""
     head = model.pull_head(pull)
     if not head:
         return ()
     main = model.refs[MAIN]
-    before, after = model.tree(main), merged_tree(model, head, main)
+    left = model.merge_base(head, main)
+    return tuple(sorted(claim_numbers_added(model.tree(left), model.tree(head))
+                        | claim_numbers_added(model.tree(main), merged_tree(model, head, main))))
+
+
+def claim_numbers_added(before, after):
+    """The claim files a tree after holds with a text the tree before does
+    not, by issue."""
     found = set()
     for path, text in after.items():
         folder, _, name = path.rpartition("/")
         if (folder == CLAIM_DIR and name.endswith(".md") and oracle.CLAIM_NUMBER.fullmatch(name[:-len(".md")])
                 and before.get(path) != text):
             found.add(int(name[:-len(".md")]))
-    return tuple(sorted(found))
+    return found
 
 
 def strays_of(model, pull):
