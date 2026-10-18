@@ -1066,7 +1066,7 @@ class CheckReadsTheChange(unittest.TestCase):
         git(path, "merge", "-q", "--no-edit", b2)
         base = o.sha("main")
         git(path, "checkout", "-q", "-b", "claude/8", b2)
-        subprocess.run(["git", "merge", "-q", "--no-edit", "--no-commit", b1], cwd=path, capture_output=True)
+        git(path, "merge", "-q", "--no-edit", "--no-commit", b1)
         git(path, "checkout", a, "--", "docs/agents/claims/7.md")
         git(path, "commit", "-q", "-m", "evil merge")
         (path / "docs/agents/claims/8.md").write_text("- Worker: b\n", encoding="ascii")
