@@ -224,6 +224,14 @@ class RepoModel:
     # template's crowd ruleset, or under no rule; rather than "behind",
     # which it gives only under one that does (F16). Part of the key.
     lenient_rules: bool = False
+    # Whether GitHub refuses the merge of a pull request the required check
+    # fails, as the default branch's ruleset, which no one bypasses, makes
+    # it (verbs.passes_check, F30): on for every search and scenario, and
+    # off only for the two traces written before F30 that merge what the
+    # check fails, their merges standing for ones after the finishing push
+    # their steps leave out (scenarios.Scenario.checked_merges). Part of
+    # the key.
+    checked_merges: bool = True
     # The logins GitHub will not say whether they may write, answering the
     # permission API 403 on every call, as for a token without the right:
     # a pull request such a login opened stays the claim's and a comment it
@@ -623,6 +631,7 @@ class RepoModel:
             self.board_text,
             self.opaque_pulls,
             self.lenient_rules,
+            self.checked_merges,
             tuple(sorted(self.unanswered)),
         )
 
@@ -671,7 +680,8 @@ class RepoModel:
             gone_made=dict(self.gone_made),
             tracking={w: dict(refs) for w, refs in self.tracking.items()}, board_text=self.board_text,
             queued=self.queued, pending=self.pending, running=None, opaque_pulls=self.opaque_pulls,
-            lenient_rules=self.lenient_rules, unanswered=self.unanswered, standings=self.standings,
+            lenient_rules=self.lenient_rules, checked_merges=self.checked_merges, unanswered=self.unanswered,
+            standings=self.standings,
         )
 
 

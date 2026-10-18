@@ -39,7 +39,10 @@ no claim's either, and the claim's holder may close one to open its own
 GitHub then says was reopened, and may merge a pull request in a
 repository that keeps its head branches (F22); where its deletes is on,
 the owner closes a claim's pull request without a merge and deletes its
-branch while the issue stays open (F22's third review).
+branch while the issue stays open (F22's third review). The owner merges
+only a pull request the required check passes, as the default branch's
+ruleset, which no one bypasses, makes GitHub hold it to: one marked ready
+whose claim file is gone and whose body closes its issue (F30).
 
 Two comments a person can write that look like the coordinator's, offered
 where the scope has more than one issue: a worker's comment that quotes
@@ -63,6 +66,7 @@ between them.
 """
 
 import os
+import re
 from typing import NamedTuple
 
 from sdlc_protocol import guard
@@ -950,12 +954,43 @@ def mark_ready(model, number):
     return Outcome(True, "marked ready")
 
 
+def passes_check(model, pull):
+    """Whether the required check passes a pull request ready to merge, as
+    the protocol check it runs reads one (spec, Rules: "the claim file is
+    there while the pull request is a draft, gone once it is ready, the
+    body closes its issue, and the branch lives in this repository"): a
+    claim's branch here, its claim file gone at the head and its body
+    closing the issue; one from a branch that is no claim's passes it
+    where it is ready, since GitHub merges no draft.
+    The default branch takes only a pull request the check passes, with
+    no one to bypass the rule (symphony-template's
+    docs/setup/ruleset-main.json and ruleset-org.json: required_status_
+    checks "check", bypass_actors empty), so GitHub refuses the owner's
+    merge of any other, and a claim file never reaches main by a merge
+    (F30)."""
+    number = oracle.claim_number(pull.head)
+    if number is None:
+        return not pull.draft
+    has_file = model.tree(model.pull_head(pull)).get(f"{CLAIM_DIR}/{number}.md") is not None
+    closes = re.search(oracle.CLOSES % number, pull.body) is not None
+    return not pull.fork and not pull.draft and not has_file and closes
+
+
+# What GitHub does with the merge of a pull request the required check
+# fails: nothing (passes_check; F30).
+REFUSED_MERGE = Outcome(False, "the required check fails, so GitHub refuses the merge")
+
+
 def merge(model, number, keep_head=False):
     """The owner merges a pull request: main gets a merge commit, the issue
     its body closes is closed, and the repository deletes the head, unless
     it keeps head branches (keep_head, F22); GitHub fires the four events
-    at once (DESIGN.md, F12), or three with the head kept."""
+    at once (DESIGN.md, F12), or three with the head kept. GitHub refuses
+    the merge of a pull request the required check fails (passes_check;
+    F30), and nothing changes."""
     pull = model.pulls[number]
+    if model.checked_merges and not passes_check(model, pull):
+        return REFUSED_MERGE
     head, main = model.refs[pull.head], model.refs[MAIN]
     model.refs[MAIN] = model.commit((main, head), OWNER, merged_tree(model, head, main), f"Merge #{number}")
     pull.state, pull.merged_at = "merged", model.now
@@ -1019,7 +1054,13 @@ def delete_claim_branch(model, number):
 
 def rename_back(model, number, released_ref):
     """A person renames the branch back by hand: a branch made and one
-    deleted, as GitHub tells the workflow of a rename."""
+    deleted, as GitHub tells the workflow of a rename. GitHub refuses a
+    rename to the name of a branch that stands, as git refuses to make a
+    second branch of one name, so where claude/<n> stands, as it does where
+    GitHub refused the merge that would have deleted it (F30), nothing
+    changes; the checker offers the verb only where the name is free."""
+    if claim_ref(number) in model.refs:
+        return Outcome(False, "a branch of that name stands, so GitHub refuses the rename")
     model.rename_ref(released_ref, claim_ref(number))
     return Outcome(True, "renamed back", events=((cycle.CREATE, claim_ref(number)), (cycle.DELETE, MAIN)))
 
@@ -1302,7 +1343,7 @@ def others(scope, number):
 def owner_verbs(model, number, pull, scope=Scope()):
     issue, ref = model.issues[number], claim_ref(number)
     found = []
-    if pull is not None and not pull.draft and model.standing(ref) != "dirty":
+    if pull is not None and model.standing(ref) != "dirty" and passes_check(model, pull):
         found.append(Verb("merge", OWNER, (pull.number,)))
         if scope.reopens:
             found.append(Verb("merge-keep", OWNER, (pull.number,)))

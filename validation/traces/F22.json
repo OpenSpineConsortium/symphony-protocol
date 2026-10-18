@@ -3,6 +3,7 @@
   "title": "a reopened issue keeps the labels of the claim that ended with its close",
   "status": "fixed after 0.5.0: the coordinator frees a reopened issue of the labels its ended claim left (DESIGN.md, 13)",
   "breaks": ["G8", "G3"],
+  "checked_merges": false,
   "world": "memory; the git world runs it over real git (build step 6)",
   "issues": {"1": ["todo"]},
   "workers": ["a", "b"],

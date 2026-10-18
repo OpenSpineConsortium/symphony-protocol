@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from validation import cycle, model as M, verbs  # noqa: E402
+from validation import cycle, explore, invariants, model as M, run, verbs  # noqa: E402
 from validation.verbs import Scope, Verb  # noqa: E402
 
 LISTENING = Scope(events=cycle.EVENTS)
@@ -65,9 +65,41 @@ class TheEventsAnActFires(unittest.TestCase):
         self.assertEqual((opened.events, ready.events), ((("pull_request", ""),), ()))
 
     def test_a_merge_fires_the_four_at_once(self):
-        _, outcome = after([CLAIM, Verb("open-draft", "a", (1,)), Verb("mark-ready", "a", (100,)),
-                            Verb("merge", M.OWNER, (100,))])
+        _, outcome = after([CLAIM, Verb("open-draft", "a", (1,)), Verb("drop-claim-file", "a", (1,)),
+                            Verb("mark-ready", "a", (100,)), Verb("merge", M.OWNER, (100,))])
         self.assertEqual(outcome.events, (("push", "main"), ("pull_request", ""), ("issues", ""), ("delete", "main")))
+
+    def test_github_refuses_a_merge_the_required_check_fails_and_a_rename_onto_a_standing_name(self):
+        """A pull request marked ready with its claim file still on its
+        branch fails the protocol check, part of the required check, which
+        the default branch's ruleset holds every merge to, so the merge is
+        refused, fires nothing and is never offered; nor is a rename onto
+        a claim branch that stands, which GitHub refuses (F30)."""
+        steps = [CLAIM, Verb("open-draft", "a", (1,)), Verb("mark-ready", "a", (100,))]
+        model, outcome = after(steps + [Verb("merge", M.OWNER, (100,))], Scope())
+        self.assertEqual((outcome.taken, outcome.events), (False, ()))
+        self.assertEqual((model.pulls[100].state, "claude/1" in model.refs, model.issues[1].state),
+                         ("open", True, "open"))
+        self.assertNotIn("merge owner 100", names(verbs.enabled(model, Scope(reopens=True))))
+        model, _ = after(steps + [Verb("drop-claim-file", "a", (1,))], Scope())
+        self.assertIn("merge owner 100", names(verbs.enabled(model, Scope())))
+        model.pulls[100].body = "Part of #1"
+        self.assertFalse(verbs.passes_check(model, model.pulls[100]))
+        model, _ = after([CLAIM, Verb("open-draft", "a", (1,))])
+        model.refs["released/1-aaaaaaa"] = model.refs["claude/1"]
+        outcome = verbs.apply(model, Verb("rename-back", M.OWNER, (1, "released/1-aaaaaaa")), LISTENING)
+        self.assertEqual((outcome.taken, outcome.events), (False, ()))
+        self.assertIn("released/1-aaaaaaa", model.refs)
+
+    def test_a_merge_the_check_fails_is_made_where_a_trace_written_before_f30_says(self):
+        """F12's and F22's traces set checked_merges off (F30)."""
+        model = M.seeded()
+        model.checked_merges = False
+        cycle.board_run(model)
+        for step in (CLAIM, Verb("open-draft", "a", (1,)), Verb("mark-ready", "a", (100,))):
+            verbs.apply(model, step, LISTENING)
+        self.assertTrue(verbs.apply(model, Verb("merge", M.OWNER, (100,)), LISTENING).taken)
+        self.assertEqual(model.pulls[100].state, "merged")
 
     def test_main_moved_is_a_push_to_main(self):
         _, outcome = after([Verb("move-main", M.OWNER)])
@@ -227,6 +259,55 @@ class TheStrangerVerbs(unittest.TestCase):
     def test_the_default_scope_offers_no_stranger(self):
         model, _ = after([CLAIM], Scope())
         self.assertEqual([v for v in names(verbs.enabled(model, Scope())) if v.startswith("stranger-pull")], [])
+
+
+class ARenameBackGitHubRefuses(unittest.TestCase):
+    """The library never renames a branch back: a person does, after
+    putting the label claimed back (spec, Release), and GitHub refuses the
+    rename while another claim's claude/<n> stands, with a 422, the one
+    validation answer its REST description gives the rename (201, 403, 404
+    and 422; tests/test_validation_fake_github.py holds the fake to it).
+    The refused rename changes nothing and fires no event, so the board
+    sees the repository as it was: the new claim is held and shown as its
+    holder's, and no board run deletes, moves or renames either branch,
+    until the new claim goes idle and its own release takes the name to a
+    released branch of its own, when the rename back may be made (F30)."""
+
+    SCOPE = Scope(workers=("a", "b"), waits=(25,))
+    BOARD = Verb("board", verbs.BOARD, (cycle.SCHEDULE, ""))
+
+    def play(self, model, steps):
+        for step in steps:
+            step = run.concrete(model, step)
+            before = model.clone()
+            outcome = verbs.apply(model, step, self.SCOPE)
+            self.assertEqual(invariants.step_checks(before, model, step, outcome), [], str(step))
+        return outcome
+
+    def test_the_new_claim_holds_and_both_branches_stand(self):
+        model = M.seeded()
+        cycle.board_run(model)
+        self.play(model, [CLAIM, Verb("label-on", "a", (1, "claimed")), Verb("label-on", "a", (1, "worker:a")),
+                          Verb("wait", verbs.CLOCK, (25,)), self.BOARD, Verb("label-on", M.OWNER, (1, "claimed")),
+                          Verb("claim", "b", (1,)), Verb("label-on", "b", (1, "worker:b")), self.BOARD])
+        kept = [name for name in model.refs if name.startswith(M.RELEASED_PREFIX)]
+        self.assertEqual(len(kept), 1)
+        refs = dict(model.refs)
+        back = Verb("rename-back", M.OWNER, (1, kept[0]))
+        self.assertNotIn(str(back), names(verbs.enabled(model, self.SCOPE)))
+        outcome = self.play(model, [back])
+        self.assertEqual((outcome.taken, outcome.events), (False, ()))
+        self.play(model, [self.BOARD])
+        self.assertEqual(model.refs, refs)
+        self.assertEqual(model.creators["claude/1"], "b")
+        self.assertIn("| #1 | claude/1 | b |", model.board_text)
+        self.assertEqual(tuple(explore.explore(model, self.SCOPE, 2).found), ())
+        self.play(model, [Verb("wait", verbs.CLOCK, (25,)), self.BOARD])
+        self.assertNotIn("claude/1", model.refs)
+        self.assertEqual(model.refs[kept[0]], refs[kept[0]])
+        self.assertEqual(len([name for name in model.refs if name.startswith(M.RELEASED_PREFIX)]), 2)
+        self.assertTrue(self.play(model, [back]).taken)
+        self.assertEqual(model.refs["claude/1"], refs[kept[0]])
 
 
 if __name__ == "__main__":

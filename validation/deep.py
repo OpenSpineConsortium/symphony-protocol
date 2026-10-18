@@ -4,7 +4,7 @@ The searches that take too long for the required check, and the checks
 that need git: a depth-first search with a depth-aware digest set, from
 a start the fast lane's searches share (a seeded repository after one
 board run, then a prefix of verbs), over the scopes of DESIGN.md 6.8
-(E-two, E-deep, E-faults and E-activity); the scenarios and the
+(E-two, E-deep, E-faults, E-activity and E-reopen); the scenarios and the
 regression traces played over the git world (git_store.py), held to
 known.json as the memory world's are; conformance, every counterexample
 the searches wrote and sampled paths of the search scopes, each played
@@ -119,6 +119,19 @@ HELD = (CLAIM, Verb("label-on", "a", (1, "claimed")), Verb("label-on", "a", (1, 
 # of F16, F17 and F19 meet.
 ACTIVITY_FAULTS = tuple(name for name, fault in verbs.FAULTS.items() if fault.path == "/activity")
 BOTH_CLAIMED = (CLAIM, Verb("claim", "b", (2,)))
+# a's idle claim on #1 released, #1 closed by hand and reopened, then b's
+# claim on it, announced and marked ready with its claim file still on
+# its branch, as the mutation lane's search of a claim since a reopen
+# starts (mutants.LATER_CLAIM): from here the owner may merge once b has
+# deleted the file, keep the head, close b's pull request and delete its
+# branch, rename a's released branch back and reopen #1 again, which five
+# steps deep met F30 in the harness (the owner's merge of a pull request
+# the required check fails) and nothing in the library since.
+REOPENED = HELD + (Verb("wait", "clock", (25,)), Verb("board", verbs.BOARD, (cycle.SCHEDULE, "")),
+                   Verb("close-issue", OWNER, (1,)), Verb("reopen-issue", OWNER, (1,)), Verb("claim", "b", (1,)),
+                   Verb("label-on", "b", (1, "claimed")), Verb("label-on", "b", (1, "worker:b")),
+                   Verb("label-off", "b", (1, "todo")), Verb("open-draft", "b", (1,)),
+                   Verb("mark-ready", "b", (100,)), Verb("label-on", "b", (1, "in-review")))
 SPACES = {
     "E-two": Space("E-two", Scope(issues=(1, 2), files=((1, SHARED), (2, SHARED))), (), 7),
     "E-deep": Space("E-deep", Scope(), (), 8),
@@ -126,6 +139,7 @@ SPACES = {
                                         skews=(-48, 72)), HELD, 4),
     "E-activity": Space("E-activity", Scope(issues=(1, 2), files=((1, SHARED), (2, SHARED)), faults=ACTIVITY_FAULTS),
                         BOTH_CLAIMED, 5),
+    "E-reopen": Space("E-reopen", Scope(workers=("a", "b"), waits=(25,), reopens=True, deletes=True), REOPENED, 5),
 }
 
 

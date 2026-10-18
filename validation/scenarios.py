@@ -101,6 +101,13 @@ class Scenario(NamedTuple):
     # under a rule that does not require an up-to-date branch or under none
     # (model.RepoModel.lenient_rules, F16).
     lenient_rules: bool = False
+    # Whether GitHub refuses the merge of a pull request the required check
+    # fails (model.RepoModel.checked_merges, F30), as it does: off only for
+    # F12's and F22's traces, written before F30, which merge a pull
+    # request marked ready with its claim file kept, their merges standing
+    # for ones after the finishing push their steps leave out, which
+    # nothing they show turns on (validation/DESIGN.md, F30).
+    checked_merges: bool = True
 
 
 def board(at, event=cycle.SCHEDULE, ref_name="", **expect):

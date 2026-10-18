@@ -3,6 +3,7 @@
   "title": "main moved is lost under the board's concurrency group",
   "status": "fixed after 0.4.1: main moved depends on the state, not on the run's event (DESIGN.md, 13)",
   "breaks": ["G10"],
+  "checked_merges": false,
   "world": "memory",
   "issues": {"1": ["todo"], "2": ["todo"]},
   "workers": ["a", "b"],

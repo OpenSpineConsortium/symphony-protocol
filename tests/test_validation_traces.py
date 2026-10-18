@@ -1,4 +1,4 @@
-"""The regression traces of DESIGN.md 5.3, one per finding, F1 to F28
+"""The regression traces of DESIGN.md 5.3, one per finding, F1 to F28 and F30
 (validation/traces/, played by validation/replay.py), and known.json, the
 record of what is red on purpose: every trace loads and plays with no
 mismatch; its red results are exactly what known.json records, as built
@@ -283,7 +283,9 @@ BUDGET_SECONDS = 10
 # passes once the string's names are read all set or all unset; and,
 # from its third review, at b's lease inside an -S string of seven names
 # with push spelled pu""sh, step 13, taken once push is looked for only as
-# written.
+# written. F30's at b's marking ready, step 5, where #100 keeps its claim
+# file, once the protocol check lets such a pull request through, on
+# which GitHub's refusal of the owner's merge rests.
 UNDONE = {
     "F1": [("the comment before the labels", 5, "G3L")],
     "F2": [("a piece of work named by the number it is shown by", 4, "G7"),
@@ -401,15 +403,18 @@ UNDONE = {
             ("a time the guard cannot tell read as the keyword alone", 11, "G11a"),
             ("every ${NAME} read all set or all unset", 12, "G11a"),
             ("a push env's -S spells read only as written", 13, "G11a")],
+    "F30": [("a ready pull request's claim file let through", 5, "G12")],
 }
 # The findings with a trace, every one settled since F25's fix: F1, F3,
 # F5, F6, F10 and F11 fixed in 0.4.1; F2, F4, F7, F8, F9, F12, F13, F14,
 # F15, F17, F18, F19 and F20 fixed in 0.5.0, and F21, F22, F26, F23, F25,
 # F27, F24 and F28 on main after it (known.json's fixed_after); and F16,
 # fixed in the spec's words, which the library as built already keeps,
-# so known.json names no version for it.
+# so known.json names no version for it; and F30, fixed in the harness,
+# whose model let the owner make a merge GitHub refuses, the library
+# unchanged, so known.json names no version for it either.
 FIXED = ("F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "F15", "F16", "F17",
-         "F18", "F19", "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28")
+         "F18", "F19", "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F30")
 # Findings red as built, which no rule of the library answers: none since
 # F4's fix; the test keeps the case for the next one.
 RED_AS_BUILT = ()
