@@ -41,6 +41,7 @@ search met first, often a comment the run owed or made as a result.
 import contextlib
 import copy
 import dataclasses
+import re
 import sys
 import time
 import urllib.parse
@@ -1717,7 +1718,8 @@ MUTANTS = {
                 "spelled pu\"\"sh in an -S string with more names than the guard reads each mix of, onto a claim "
                 "another worker holds, is refused unread (F28's third review)"),
     "a quote that never closes hiding the command": Mutant(
-        guard, "plain_text", lambda command, lenient=False, spans_run=True: ORIGINAL_PLAIN_TEXT(command),
+        guard, "plain_text",
+        lambda command, lenient=False, spans_run=True, patterns=False: ORIGINAL_PLAIN_TEXT(command),
         "G11a", "a quote that never closes is read as a character of its word, so a lease bash runs before the "
                 "line it cannot read, onto a claim another worker holds, is read and refused (F25)"),
     "no here-document's body told": Mutant(
@@ -1864,7 +1866,7 @@ MUTANTS = {
         "G11a", "a word with holes bash fills may be git, push or a branch the rules name, so git $(echo push) "
                 "origin main and $(which git) push origin main are read and refused (F29)"),
     "every word read set, none unset": Mutant(
-        guard, "unset_value", lambda word: word,
+        guard, "unset_value", lambda word, carried=None: word,
         "G11a", "bash drops an unquoted word that expands to nothing, so $NOPE git push origin main runs the push "
                 "and is read and refused (F29)"),
     "braces read as written": Mutant(
@@ -1896,6 +1898,49 @@ MUTANTS = {
         guard, "expansion_in_word", lambda command, i: None,
         "G11a", "bash reads a $( ) in a here-document's delimiter word as part of the word, so a lease after a "
                 "body <<E$(echo x)F ends, onto a claim another worker holds, is read and refused (F29)"),
+    "a word of expansions alone read as built": Mutant(
+        guard, "expansions_alone",
+        lambda word: guard.is_built(word) and guard.word_pieces(word) == [guard.EXPANSION_HOLE],
+        "G11a", "a name made of expansions alone is a value the guard cannot know, as one expansion is, so git push "
+                "--no-verify origin $(echo HEAD):$(echo claude/)$(echo 7), a push to the session's own claim, "
+                "passes (F29's first review)"),
+    "a refspec of holes read as : where each is nothing": Mutant(
+        guard, "kept_as_written", lambda word, value: False,
+        "G11a", "a refspec bash builds of expansions alone around a colon is read as written, as one expansion "
+                "is, so git push --no-verify origin $(echo HEAD):$(echo claude/)$(echo 7) passes (F29's first "
+                "review)"),
+    "a built option refused after a whole flag": Mutant(
+        guard, "whole_flag", lambda word: False,
+        "G11a", "an option that opens with a whole flag no other extends may be built only into that flag or a "
+                "word git refuses, so git push --no-verify$(true) origin claude/7 passes (F29's first review)"),
+    "the hook's gate read with continuations in": Mutant(
+        guard, "lines_joined", lambda command: command,
+        "G11a", "bash takes a line continuation out before it reads a word, so git pu\\, a newline and sh "
+                "origin main is read by the hook and refused (F29's first review)"),
+    "coproc read as the command": Mutant(
+        guard, "NAMING_WORDS", ("function",),
+        "G11a", "coproc runs the command after it, so coproc git push origin main is read and refused (F29's first "
+                "review)"),
+    "coproc's name read as the command": Mutant(
+        guard, "coproc_named", lambda rest: False,
+        "G11a", "before a compound command coproc takes the next word as the coprocess's name, so coproc X { git "
+                "push origin main ; } is read and refused (F29's first review)"),
+    "a ${ } read as closing at its word's end": Mutant(
+        guard, "unset_words", lambda way: [value for word in way if (value := guard.unset_value(word)) or not word],
+        "G11a", "a ${ } a blank stands in, unquoted, goes on into the words after it, so ${NOPE:-git push} origin "
+                "main runs the push and is read and refused (F29's first review)"),
+    "an array's ${ } read as giving nothing": Mutant(
+        guard, "BRACED_HEAD", re.compile(r"\$\{([!#]?)([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])?(:?[-=+?])?"),
+        "G11a", "an array's subscript stands between the name and the operator, so git push origin "
+                "${NOPE[0]:-main} pushes main and is read and refused (F29's first review)"),
+    "a $'...' in a default read as written": Mutant(
+        guard, "ansi_c_in_braces", lambda word, i: None,
+        "G11a", "bash decodes a $'...' in a ${ } even inside double quotes, so git push origin "
+                "\"${NOPE:-$'\\x6dain'}\" is read and refused (F29's first review)"),
+    "extended patterns left unread": Mutant(
+        guard, "pattern_reading", lambda own: [],
+        "G11a", "with extglob on bash reads @(main) as one word, a pattern a file named main fills, so git push "
+                "origin @(main) is read and refused (F29's first review)"),
     "dealing without its taken set": Mutant(
         team, "deal", deal_without_the_taken_set,
         "G14", "the workers of one run are dealt distinct issues"),

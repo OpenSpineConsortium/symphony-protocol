@@ -246,6 +246,13 @@ and a verb that may be push are read as git and push, an option whose
 name bash builds is refused, since it may be --force, and so is a branch
 name bash may build into the default or the board branch; a word that
 is one expansion whole is still read as a value the guard cannot know.
+Since its first review so is one made of expansions alone, as
+"${PREFIX}${N}", and a refspec of them, as $B:$B; a built option passes
+after a whole flag no other extends, as --no-verify${NOPE}; the hook's
+gate takes line continuations out; coproc runs the command after it; an
+unquoted ${ } a blank stands in goes on into the words after it; a ${ }
+reads an array's subscript and decodes a $'...' in its default; and an
+extended pattern, as @(main), is read as part of its word too.
 A GIT_DIR=x alone, which git sees only where it was exported before, may
 name the repository, so the push after it is judged both ways. The scan
 of here-documents keeps a word's start across a line continuation, so a
@@ -668,6 +675,7 @@ def plain_text(command, lenient=False, spans_run=True, patterns=False):
     word (pattern_group), as bash reads one with extglob on, where without
     it the parentheses end the word (pattern_reading)."""
     out, spans, word_start, i = [], [], True, 0
+    closes = closing_parentheses(command) if patterns else None
     while i < len(command):
         ch = command[i]
         if ch == "$" and command.startswith("$$", i):
@@ -695,7 +703,7 @@ def plain_text(command, lenient=False, spans_run=True, patterns=False):
         elif ch == "#" and word_start:
             end = command.find("\n", i)
             i = len(command) if end == -1 else end
-        elif patterns and (group := pattern_group(command, i)):
+        elif patterns and (group := pattern_group(command, i, closes)):
             out.append(group[0])
             i, word_start = group[1], False
         elif ch == "`" and lenient and (span := backquoted_span(command, i)):
@@ -709,25 +717,39 @@ def plain_text(command, lenient=False, spans_run=True, patterns=False):
     return "".join(out) + "".join(f" ; ( {inner} ) " for inner in spans)
 
 
-def pattern_group(command, i):
+def pattern_group(command, i, closes):
     """The extended pattern that opens at command[i], one of @?*+! and a
     parenthesis not after a $, as the text shlex reads as one part of a
     word, each character that would end it escaped, and where it ends;
     None where none opens there, or its parenthesis does not close on its
-    line."""
+    line. closes is the command's parentheses' (closing_parentheses)."""
     if command[i] not in "@?*+!" or not command.startswith("(", i + 1) or command[i - 1:i] == "$":
         return None
-    depth, j = 0, i + 1
-    while j < len(command) and command[j] != "\n":
-        ch = command[j]
-        if ch == "\\":
-            j += 2
+    end = closes.get(i + 1)
+    if end is None:
+        return None
+    return command[i] + "".join("\\" + ch if ch in ENDS_A_WORD else ch for ch in command[i + 1:end]), end
+
+
+def closing_parentheses(text, escapes=True):
+    """Where the parenthesis that closes each ( of text ends, by the index
+    of the (, read in one pass with a stack, so a run of ( that never close
+    costs no more than one: none closes past a newline, and, where escapes,
+    a backslash takes the character after it out."""
+    closes, stack, i = {}, [], 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and escapes:
+            i += 2
             continue
-        depth += {"(": 1, ")": -1}.get(ch, 0)
-        j += 1
-        if not depth:
-            return command[i] + "".join("\\" + ch if ch in ENDS_A_WORD else ch for ch in command[i + 1:j]), j
-    return None
+        if ch == "(":
+            stack.append(i)
+        elif ch == ")" and stack:
+            closes[stack.pop()] = i + 1
+        elif ch == "\n":
+            stack.clear()
+        i += 1
+    return closes
 
 
 # What ends a word for shlex outside quotes, which an extended pattern keeps
@@ -2421,6 +2443,9 @@ def coproc_named(rest):
     return len(rest) > 1 and bool(PARAMETER_NAME.fullmatch(rest[-1][0])) and rest[-2][0] in COMPOUND_OPENERS
 
 
+# The words before a command that may take a name of their own after them,
+# which run nothing themselves (read_launch).
+NAMING_WORDS = ("function", "coproc")
 # The words that open a compound command, after which coproc's name stands.
 COMPOUND_OPENERS = {"{", "if", "while", "until", "for", "case", "select", "[[", "(("}
 
@@ -2446,7 +2471,7 @@ def read_launch(argv, unset):
         in_time()
         word = rest[-1][0]
         name = program(word)
-        if word in RESERVED or ASSIGNMENT.match(word) or word in ("function", "coproc"):
+        if word in RESERVED or ASSIGNMENT.match(word) or word in NAMING_WORDS:
             read.append(rest.pop()[0])
             if ASSIGNMENT.match(word):
                 assignments.append(word)
@@ -2558,7 +2583,7 @@ def word_pieces(word):
     ? or a bracketed class one character. The guard keeps no quotes, so a
     $ or a * that was quoted reads as one bash fills, which refuses too
     much at worst."""
-    pieces, text, i, no_class_after = [], [], 0, len(word)
+    pieces, text, i, no_class_after, closes = [], [], 0, len(word), None
 
     def hole(kind):
         if text:
@@ -2570,7 +2595,9 @@ def word_pieces(word):
         ch = word[i]
         end = expansion_end(word, i) if ch == "$" else None
         close = word.find("]", i + 2) if ch == "[" and i < no_class_after else -1
-        group = pattern_end(word, i) if ch in "@?*+!" else None
+        if ch in "@?*+!" and closes is None and "(" in word:
+            closes = closing_parentheses(word, escapes=False)
+        group = pattern_end(word, i, closes) if ch in "@?*+!" and closes else None
         if end is not None or ch == SUBSTITUTED:
             hole(EXPANSION_HOLE)
             i = end or i + 1
@@ -2592,18 +2619,14 @@ def word_pieces(word):
     return pieces
 
 
-def pattern_end(word, i):
+def pattern_end(word, i, closes):
     """Where the extended pattern that opens at word[i], as @(main|x), ends,
-    after the parenthesis that closes it; None where none opens there or
-    none closes (word_pieces)."""
+    after the parenthesis that closes it (closes, the word's
+    closing_parentheses); None where none opens there or none closes
+    (word_pieces)."""
     if not word.startswith("(", i + 1) or word[i - 1:i] == "$":
         return None
-    depth = 0
-    for j in range(i + 1, len(word)):
-        depth += {"(": 1, ")": -1}.get(word[j], 0)
-        if not depth:
-            return j + 1
-    return None
+    return closes.get(i + 1)
 
 
 def is_built(word):
@@ -2669,28 +2692,30 @@ def unset_value(word, carried=None):
     push and pu${NOPE}sh push. A world bash may run in, so a push found in
     it is one bash may run. carried, where given, is the ${ }s a word
     before this one left open, which this one goes on with and leaves as
-    it finds them (unset_words)."""
+    it finds them (unset_words), each with whether it gives its word, the
+    braces inside it and how many of those open around it give none."""
     out, stack, i = [], [] if carried is None else carried, 0
-    dropping = sum(not keeps for keeps, _ in stack)
+    dropping = stack[-1][2] if stack else 0
     while i < len(word):
         ch = word[i]
         if ch == "$" and word.startswith("${", i):
             head = BRACED_HEAD.match(word, i)
             keeps = not head.group(1) and head.group(3) in GIVES_ITS_WORD
-            stack.append([keeps, 0])
             dropping += not keeps
+            stack.append([keeps, 0, dropping])
             i = head.end()
             continue
-        if stack and word.startswith("$'", i) and (close := ansi_c_close(word, i + 2)):
-            out += [] if dropping else [ansi_c_text(word[i + 2:close - 1])]
-            i = close
+        if stack and (decoded := ansi_c_in_braces(word, i)):
+            out += [] if dropping else [decoded[0]]
+            i = decoded[1]
             continue
         end = expansion_end(word, i) if ch == "$" else None
         if end is not None or ch == SUBSTITUTED:
             i = end or i + 1
             continue
         if stack and ch == "}" and not stack[-1][1]:
-            dropping -= not stack.pop()[0]
+            stack.pop()
+            dropping = stack[-1][2] if stack else 0
             i += 1
             continue
         if stack and ch in "{}":
@@ -2699,6 +2724,23 @@ def unset_value(word, carried=None):
             out.append(ch)
         i += 1
     return "".join(out)
+
+
+def kept_as_written(word, value):
+    """Whether a word bash builds, whose unset value is only colons and
+    pluses, is read as written in the unset world (unset_words)."""
+    return bool(value) and not value.strip(":+") and is_built(word)
+
+
+def ansi_c_in_braces(word, i):
+    """The $'...' that opens at word[i], inside a ${ }, as the text it
+    decodes to (ansi_c_text) and where it ends; None where none opens there
+    or none closes. bash decodes one there even inside double quotes, where
+    plain_text keeps it as written (unset_value)."""
+    if not word.startswith("$'", i):
+        return None
+    close = ansi_c_close(word, i + 2)
+    return (ansi_c_text(word[i + 2:close - 1]), close) if close else None
 
 
 def unset_words(way):
@@ -2716,8 +2758,9 @@ def unset_words(way):
     first review), and a + in it, as in +$B, still forces."""
     carried, words = [], []
     for word in way:
+        in_time()
         value = unset_value(word, carried)
-        if value and not value.strip(":+") and is_built(word):
+        if kept_as_written(word, value):
             value = word
         if value or not word:
             words.append(value)
@@ -3932,11 +3975,12 @@ def whole_flag(word):
     pushes nothing (F29's first review). A built short bundle is never one,
     since -u${X} may be -uf, and --"$opt" is none, since it may be --force,
     nor is --force$X, which may be --force-with-lease."""
-    head = word_pieces(word)[0]
+    head = next(iter(word_pieces(word)), "")
     if not isinstance(head, str) or not head.startswith("--"):
         return False
     name = head[2:]
-    return name in FLAG_NAMES and not any(other != name and other.startswith(name) for other in FLAG_NAMES | VALUE_NAMES)
+    return name in FLAG_NAMES and not any(other != name and other.startswith(name)
+                                          for other in FLAG_NAMES | VALUE_NAMES)
 
 
 def built_target(name, default_branch):
@@ -4089,6 +4133,13 @@ def where_to_ask(payload, cwd):
     return (session if isinstance(session, str) and session else None) or cwd or "."
 
 
+def may_push(command):
+    """Whether the hook reads the command at all (run): its text, each line
+    continuation out, may spell push (holds_push), or bash may build a part
+    of a word of it (BUILDS_WORDS)."""
+    return holds_push([lines_joined(command)]) or not BUILDS_WORDS.isdisjoint(command)
+
+
 def lines_joined(command):
     """The command with each line continuation taken out, as bash takes it
     out before it reads a word (run)."""
@@ -4122,7 +4173,7 @@ def run(payload, cwd=None):
     continuation is taken out first, as bash takes it out, so git p\\, a
     newline and ush is read as the push it runs (F29's first review)."""
     command = command_of(payload)
-    if not holds_push([lines_joined(command)]) and BUILDS_WORDS.isdisjoint(command):
+    if not may_push(command):
         return PASS, ""
     reason = refused_push(command, where_to_ask(payload, cwd))
     return (REFUSE, reason) if reason else (PASS, "")

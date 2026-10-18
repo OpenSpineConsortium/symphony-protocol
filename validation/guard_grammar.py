@@ -132,6 +132,10 @@ ANSI_C_SPLIT = "env -S $'{}'"
 CONTINUED_COMMENT = "echo \\\n#'\n{}\n'"
 ARITHMETIC_BODY = "echo $(( '$(echo \"$(cat <<'E'\n\"\nE\n{})\")' ))"
 QUOTED_ARITHMETIC_BODY = '"'.join(("echo ", ARITHMETIC_BODY[len("echo "):], ""))
+# Since F29's first review: coproc before the command, and before a
+# compound command with the coprocess's name.
+COPROCS = ("coproc ",)
+NAMED_COPROC = "coproc X {{ {} ; }}"
 
 
 class Spelling(NamedTuple):
@@ -146,16 +150,31 @@ class Spelling(NamedTuple):
 
 
 AS_WRITTEN = Spelling()
+# The spellings since F29's first review, after the first twelve: the verb
+# split by a line continuation, which the hook's own gate read as no push;
+# git and its verb inside one ${ } that a blank stands in, which bash
+# splits; the default branch as an array's default, as a $'...' in a
+# default inside double quotes, and as an extended pattern a file named
+# main fills; and two the guard must let through, a refspec of
+# substitutions alone, which reads as : where each is nothing, beside a
+# whole option no other extends, and that option with a substitution after
+# it.
 BUILT_WORDS = (tuple(Spelling(verb=verb) for verb in ("$'pu\\x73h'", '$"push"', "pu$(true)sh", "pu``sh",
                                                       "$(echo push)", "${NOPE:-push}", "{push,}"))
                + (Spelling(git="$(which git)"), Spelling(option=(" -f", " -$(echo f)")),
                   Spelling(name=("main", "ma$(echo i)n")), Spelling(name=("board", "bo$(echo a)rd")),
-                  Spelling(name=("main", '$"main"'))))
+                  Spelling(name=("main", '$"main"')))
+               + (Spelling(verb="pu\\\nsh"), Spelling(git="${NOPE:-git", verb="push}"),
+                  Spelling(name=("main", "${NOPE[0]:-main}")), Spelling(name=("main", "\"${NOPE:-$'\\x6dain'}\"")),
+                  Spelling(git="shopt -s extglob\ngit", name=("main", "@(main)")),
+                  Spelling(option=(" --no-verify", " --no-verify"),
+                           name=("HEAD:claude/7", "$(echo HEAD):$(echo claude/)$(echo 7)")),
+                  Spelling(option=(" --no-verify", " --no-verify$(true)"))))
 # The prefixes and wrappers taken with the command alone, no wrapper or
 # global option around it.
-ALONE = (tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED + EMPTY_WORDS)
+ALONE = (tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED + EMPTY_WORDS + COPROCS)
          + tuple(("", wrapper) for wrapper in (SPLIT, SPLIT_UNSET, SPLIT_MIXED, ANSI_C_SPLIT, CONTINUED_COMMENT,
-                                                 ARITHMETIC_BODY, QUOTED_ARITHMETIC_BODY)))
+                                                 ARITHMETIC_BODY, QUOTED_ARITHMETIC_BODY, NAMED_COPROC)))
 UNREADABLE = "bash -c '{}'"
 # git's own options before the verb: a directory, the empty one git -C
 # takes as no change, a setting, a setting from the environment, whose
@@ -260,9 +279,10 @@ def guard_refuses(text):
     (guard.refused_push) from the scratch world's clone, which is on
     CURRENT, with DEFAULT its default branch, wherever the command's -C
     takes it, since every directory it names is that clone, and with no
-    claim-file reader; the grammar makes no cd."""
-    return guard.refused_push(text, HERE, lambda place: (CURRENT, DEFAULT), lambda place: None,
-                              lambda place: True) is not None
+    claim-file reader; the grammar makes no cd. A command the hook does
+    not read at all (guard.may_push) passes, as guard.run lets it pass."""
+    return guard.may_push(text) and guard.refused_push(text, HERE, lambda place: (CURRENT, DEFAULT),
+                                                       lambda place: None, lambda place: True) is not None
 
 
 class Disagreement(NamedTuple):

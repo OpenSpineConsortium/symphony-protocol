@@ -563,7 +563,11 @@ def guard_says(command, here, branches_of, reader_of, is_directory=None):
     or None when it passes: guard.refused_push judges each push in the
     clone it runs in, by that clone's current and default branch
     (branches_of) and its claim files (reader_of), the shell reaching the
-    directories is_directory takes for directories."""
+    directories is_directory takes for directories; a command the hook
+    does not read at all (guard.may_push) passes unread, as guard.run lets
+    it pass (F29's first review)."""
+    if not guard.may_push(command):
+        return None
     return guard.refused_push(command, here, branches_of, reader_of, is_directory)
 
 

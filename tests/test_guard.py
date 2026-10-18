@@ -1421,7 +1421,10 @@ class BuiltWordsTest(unittest.TestCase):
                         full("", "$NOPE ", "git push origin main;"), full("git push origin ", "ma?n ", ""),
                         full("echo ", "a \\\n", ""), full("echo $(( ", "1+", "1 ))"), full("echo ", "$(( ", "1"),
                         full("git push origin ", "$a$b$c", ""), full("git push origin ma", "$(x)", "in"),
-                        full("", "cat <<E$(x)F\nE$(x)F\n", "")):
+                        full("", "cat <<E$(x)F\nE$(x)F\n", ""), full("git push origin ", "@(", ""),
+                        full("echo ", "?(", ")"), full("", "${NOPE:-a ", ""), full("${NOPE:-", "git push x ", "}"),
+                        full("git push origin ", "$B:$B ", ""), full("git push ", "--no-verify$X ", "origin"),
+                        full("git push origin ", "${A[@]:-b} ", "")):
             with self.subTest(command=command[:40]):
                 started = time.monotonic()
                 self.assertIsNotNone(refused(command + "\ngit push origin main"))

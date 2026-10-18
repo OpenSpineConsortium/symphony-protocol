@@ -186,6 +186,16 @@ TRACES = {
     "arithmetic jumped over by the scan": "the regression traces",
     "a lone assignment read as naming the repository for good": "the regression traces",
     "a here-document's delimiter cut at a substitution": "the regression traces",
+    "a word of expansions alone read as built": "the regression traces",
+    "a refspec of holes read as : where each is nothing": "the regression traces",
+    "a built option refused after a whole flag": "the regression traces",
+    "the hook's gate read with continuations in": "the regression traces",
+    "coproc read as the command": "the regression traces",
+    "coproc's name read as the command": "the regression traces",
+    "a ${ } read as closing at its word's end": "the regression traces",
+    "an array's ${ } read as giving nothing": "the regression traces",
+    "a $'...' in a default read as written": "the regression traces",
+    "extended patterns left unread": "the regression traces",
     "an epic gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "epic"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocker gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocker"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocked task gets no todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocked"))] + HELD + [WAIT, BOARD],
@@ -460,12 +470,19 @@ class TheLane(unittest.TestCase):
         written, a line continuation read as ending a word's start,
         arithmetic jumped over by the scan, a lone assignment read as naming
         the repository for good and a here-document's delimiter cut at a
-        substitution, 206. That passes 200, so the bound is widened to 250,
+        substitution, 206; and its first review ten: a word of expansions
+        alone read as built, a refspec of holes read as : where each is
+        nothing, a built option refused after a whole flag, the hook's gate
+        read with continuations in, coproc read as the command, coproc's
+        name read as the command, a ${ } read as closing at its word's end,
+        an array's ${ } read as giving nothing, a $'...' in a default read
+        as written and extended patterns left unread, 216. 206 passed 200,
+        so the bound was widened to 250 with F29's fix,
         as F23's fix widened it from 150: the lane grows by a mutant for each
         rule a fix adds, and the guard's reading of bash is the part of the
         library that grows most."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
-        self.assertEqual(len(mutants.MUTANTS), 206)
+        self.assertEqual(len(mutants.MUTANTS), 216)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
