@@ -188,6 +188,11 @@ TRACES = {
     "a here-document's delimiter cut at a substitution": "the regression traces",
     "a word of expansions alone read as built": "the regression traces",
     "a refspec of holes read as : where each is nothing": "the regression traces",
+    "a default read as a hole alone": "the regression traces",
+    "a word that may open with a dash read as no option": "the regression traces",
+    "a pattern read as giving no +": "the regression traces",
+    "a colon a pattern gives read as none": "the regression traces",
+    "a colon beside one hole kept as written": "the regression traces",
     "a built option refused after a whole flag": "the regression traces",
     "the hook's gate read with continuations in": "the regression traces",
     "coproc read as the command": "the regression traces",
@@ -476,13 +481,17 @@ class TheLane(unittest.TestCase):
         read with continuations in, coproc read as the command, coproc's
         name read as the command, a ${ } read as closing at its word's end,
         an array's ${ } read as giving nothing, a $'...' in a default read
-        as written and extended patterns left unread, 216. 206 passed 200,
-        so the bound was widened to 250 with F29's fix,
+        as written and extended patterns left unread, 216; and its second
+        review five: a default read as a hole alone, a word that may open
+        with a dash read as no option, a pattern read as giving no +, a
+        colon a pattern gives read as none and a colon beside one hole
+        kept as written, 221. 206 passed 200, so the bound was widened to
+        250 with F29's fix,
         as F23's fix widened it from 150: the lane grows by a mutant for each
         rule a fix adds, and the guard's reading of bash is the part of the
         library that grows most."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
-        self.assertEqual(len(mutants.MUTANTS), 216)
+        self.assertEqual(len(mutants.MUTANTS), 221)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

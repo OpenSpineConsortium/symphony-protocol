@@ -291,7 +291,7 @@ BUDGET_SECONDS = 10
 # with the reading of the command's own text off, which reads the words
 # around a misread span as bash does whatever the rule made of the span.
 # F29's at its first guard step, step 1, git $'pu\x73h', its second, step
-# 2, env -S $'git push ...', and b's lease onto claude/$'1', step 24, each
+# 2, env -S $'git push ...', and b's lease onto claude/$'1', step 29, each
 # passing once a $'...' is read as a $ and a quoted span; step 3, a push to
 # $"main", once a $"..." is read so; step 4, git pu$(true)sh, once the
 # command's own text is not read; steps 5 and 6, git $(echo push) and
@@ -302,8 +302,8 @@ BUDGET_SECONDS = 10
 # once a name bash builds is; step 11, the push after echo \, a newline and
 # #', once a continuation ends a word's start; steps 12 and 13, the push in
 # a here-document's substitution in $(( )), once the scan jumps over
-# arithmetic; step 23, b's lease after GIT_DIR=x alone, taken once that
-# assignment is read as naming the repository for good; and step 25, b's
+# arithmetic; step 28, b's lease after GIT_DIR=x alone, taken once that
+# assignment is read as naming the repository for good; and step 30, b's
 # lease after a body whose delimiter is E$(echo x)F, taken once the
 # delimiter is cut at the substitution. From its first review: step 14, a
 # push by --no-verify to $(echo HEAD):$(echo claude/)$(echo 7), refused
@@ -316,7 +316,13 @@ BUDGET_SECONDS = 10
 # once a ${ } closes at its word's end; step 20, ${NOPE[0]:-main}, once a
 # subscript is not read; step 21, a $'...' in a quoted default, once it is
 # read as written; and step 22, @(main) after shopt -s extglob, once
-# extended patterns are left unread.
+# extended patterns are left unread. From its second review: step 23,
+# ${A:-ma}$(echo in), once a default is read as a hole alone; step 24,
+# $(echo -)f, once only a word that opens with - is read as an option;
+# step 25, ?claude/7 beside a file +claude/7, once no pattern gives a +;
+# step 26, [:]main beside a file :main, once no pattern gives a colon; and
+# step 27, :$X after X=main, once every built word whose unset value is only colons is kept
+# as written.
 UNDONE = {
     "F1": [("the comment before the labels", 5, "G3L")],
     "F2": [("a piece of work named by the number it is shown by", 4, "G7"),
@@ -448,10 +454,13 @@ UNDONE = {
             ("the hook's gate read with continuations in", 16, "G11a"), ("coproc read as the command", 17, "G11a"),
             ("coproc's name read as the command", 18, "G11a"), ("a ${ } read as closing at its word's end", 19, "G11a"),
             ("an array's ${ } read as giving nothing", 20, "G11a"), ("a $'...' in a default read as written", 21, "G11a"),
-            ("extended patterns left unread", 22, "G11a"),
-            ("a lone assignment read as naming the repository for good", 23, "G11a"),
-            ("a $'...' read as a $ and a quoted span", 24, "G11a"),
-            ("a here-document's delimiter cut at a substitution", 25, "G11a")],
+            ("extended patterns left unread", 22, "G11a"), ("a default read as a hole alone", 23, "G11a"),
+            ("a word that may open with a dash read as no option", 24, "G11a"),
+            ("a pattern read as giving no +", 25, "G11a"), ("a colon a pattern gives read as none", 26, "G11a"),
+            ("a colon beside one hole kept as written", 27, "G11a"),
+            ("a lone assignment read as naming the repository for good", 28, "G11a"),
+            ("a $'...' read as a $ and a quoted span", 29, "G11a"),
+            ("a here-document's delimiter cut at a substitution", 30, "G11a")],
 }
 # The findings with a trace, every one settled since F25's fix: F1, F3,
 # F5, F6, F10 and F11 fixed in 0.4.1; F2, F4, F7, F8, F9, F12, F13, F14,

@@ -48,15 +48,18 @@ class TheGrammar(unittest.TestCase):
                       "${NOPE:-git push} origin main", "git push origin ${NOPE[0]:-main}",
                       "git push origin \"${NOPE:-$'\\x6dain'}\"", "shopt -s extglob\ngit push origin @(main)",
                       "git push --no-verify origin $(echo HEAD):$(echo claude/)$(echo 7)",
-                      "git push --no-verify$(true) origin claude/7"):
+                      "git push --no-verify$(true) origin claude/7", "git push origin ${A:-ma}$(echo in)",
+                      "git push $(echo -)f origin claude/7", "mkdir +claude; touch +claude/7; git push origin ?claude/7",
+                      "touch :main; git push origin [:]main", "X=main; git push origin :$X"):
             with self.subTest(shape=shape):
                 self.assertIn(shape, texts)
         self.assertEqual(len(set(texts)), len(texts))
         self.assertEqual(len(g.argument_lists()), 1398, "a prefix changes what the guard reads, never git's words")
-        self.assertEqual(len(texts), 74922, "since F28's fix and its reviews env's assignments and its -S, 1,631 "
+        self.assertEqual(len(texts), 75034, "since F28's fix and its reviews env's assignments and its -S, 1,631 "
                                             "more, since F24's a seventh and an eighth wrapper, a quoted and a "
                                             "process substitution, 16,776, since F29's the words bash builds, "
-                                            "4,129, and since its first review coproc and seven spellings, 1,126")
+                                            "4,129, since its first review coproc and seven spellings, 1,126, and "
+                                            "since its second five spellings, 112")
         self.assertFalse(any(c.prefix in g.ABBREVIATED + g.ENV_ASSIGNED and (c.wrapper != "{}" or c.argv.startswith("-"))
                              for c in g.commands()), "an abbreviated wrapper is taken with the command alone")
         self.assertFalse(any(c.wrapper in (g.SPLIT, g.SPLIT_UNSET, g.SPLIT_MIXED) and (c.prefix or c.argv.startswith("-")) for c in g.commands()),
@@ -114,7 +117,7 @@ class TheGuardJudged(unittest.TestCase):
         self.assertLess(time.perf_counter() - began, BUDGET_SECONDS)
         self.assertEqual(judgement.missing, ())
         self.assertEqual(judgement.failures, {}, g.report(judgement))
-        self.assertEqual(judgement.commands, 74922)
+        self.assertEqual(judgement.commands, 75034)
         let_through = {d.why for d in judgement.classes if d.kind == "let through"}
         self.assertTrue(let_through)
         self.assertTrue(all("G11b" in why for why in let_through), let_through)
@@ -235,7 +238,7 @@ class TheGuardJudged(unittest.TestCase):
                     self.assertGreater(sum(g.judge(commands=commands).failures.values()), 0)
 
     def test_the_lane_bites_on_a_guard_without_the_first_review_s_rules(self):
-        """F29's first review: under each mutant that undoes one of its
+        """F29's first and second reviews: under each mutant that undoes one of its
         rules, the rows of the grammar that rule reads let a forbidden push
         through, or refuse an allowed one, and none on the fix."""
         from validation import mutants
@@ -256,7 +259,13 @@ class TheGuardJudged(unittest.TestCase):
                 "extended patterns left unread": spelled("name", "@("),
                 "a word of expansions alone read as built": spelled("name", "$(echo HEAD)"),
                 "a refspec of holes read as : where each is nothing": spelled("name", "$(echo HEAD)"),
-                "a built option refused after a whole flag": spelled("option", "$(true)")}
+                "a built option refused after a whole flag": spelled("option", "$(true)"),
+                # F29's second review.
+                "a default read as a hole alone": spelled("name", "${A:-ma}"),
+                "a word that may open with a dash read as no option": spelled("option", "$(echo -)f"),
+                "a pattern read as giving no +": spelled("name", "?claude/7"),
+                "a colon a pattern gives read as none": spelled("name", "[:]main"),
+                "a colon beside one hole kept as written": spelled("name", ":$X")}
         for name, row in rows.items():
             with self.subTest(mutant=name):
                 commands = [c for c in g.commands() if row(c)]

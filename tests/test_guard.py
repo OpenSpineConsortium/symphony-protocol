@@ -1282,6 +1282,19 @@ BUILT_PUSHES = (
     "git push origin ${NOPE[0]:-main}", "git push origin \"${NOPE:-$'\\x6dain'}\"",
     "shopt -s extglob\ntouch main; git push origin @(main)", "shopt -s extglob\ngit push origin @(main|x)",
     "shopt -s extglob\ngit push origin ma?(x)in", "shopt -s extglob\ngit pu@(s)h origin main",
+    # F29's second review: a default's own text beside a hole, a word that
+    # may open with a - it builds, a pattern a file named +main or : fills,
+    # and a colon beside one hole.
+    "git push origin ${A:-ma}$(echo in)", "git push origin ${A:-b}$(echo oard)", "git push origin $(echo ma)${A:-in}",
+    "git push origin HEAD:${A:-ma}$(echo in)", "git push origin ${A:-:}$(echo main)",
+    "git push ${A:--}$(echo f) origin claude/7", "git push ${A:---for}$(echo ce) origin claude/7",
+    "B=main; git push origin ${A:-+}$B", 'B=main; git push origin "${A:-+}$B"', "B=main; git push origin ${A:-:}$B",
+    "git push origin ${A=ma}$(echo in)", "git push origin ${A:=ma}$(echo in)", "git push origin ${A-ma}$(echo in)",
+    "A=x; git push origin ${A:+ma}$(echo in)", "A=x; git push origin ${A+ma}$(echo in)",
+    "git push origin ${A:-$'\\x6d'a}$(echo in)", "git push $(echo -)f origin claude/7",
+    "touch -- -f; git push * origin claude/7", "touch +main; git push origin ?main",
+    "touch +main; git push origin [+]main", "touch : ; git push origin ?", "touch : ; git push origin [:]",
+    "git push origin :$X", "git push origin $D:", 'git push origin ":$X"',
 )
 # What sessions write most that bash runs no forbidden push of: a branch
 # or a lease's value by a substitution whole, a commit message in ANSI-C
@@ -1305,6 +1318,12 @@ BUILT_TEXTS = (
     'git push origin "${PREFIX}${N}"', 'git push origin HEAD:"$PREFIX$N"', "git push origin $A$B:$C$D",
     "git push -u origin claude/7 --no-verify${NOPE}", "git push --no-verify$(true) origin claude/7",
     'echo "${X:-git push origin main}"; git push origin claude/7',
+    # F29's second review: a default that names the session's own claim, a
+    # refspec with a hole on each side of its colon, and a pattern whose
+    # class gives neither a +, a colon nor a dash.
+    "git push origin $S:$D", "git push origin ${A:-claude/7}", "git push origin ${A:-claude/}$(echo 7)",
+    "git push origin HEAD:${B:-claude/7}", "git push origin claude/[7]", "git push origin [c]laude/7", 'git push origin "${BRANCH:-$(git branch '
+    '--show-current)}"', "git push -u origin ${1:-claude/7}",
 )
 
 
@@ -1369,11 +1388,78 @@ class BuiltWordsTest(unittest.TestCase):
         refspec :, which pushes every branch both sides have; the guard
         reads it as written, a name it cannot know read twice, as it reads
         $B, while a + in it still forces, and a written name beside it is
-        still judged."""
+        still judged. Since F29's second review only a word that opens and
+        ends with a hole is kept so, and +$B is read as the + it is where B
+        is nothing."""
         self.assertEqual(guard.unset_words(["git", "push", "origin", "$B:$B", "+$B", "$B:main"]),
-                         ["git", "push", "origin", "$B:$B", "+$B", ":main"])
+                         ["git", "push", "origin", "$B:$B", "+", ":main"])
         self.assertIsNotNone(refused("git push origin +$B"))
         self.assertIsNotNone(refused("git push origin $B:main"))
+
+    def test_a_default_s_own_text_is_read_where_its_operator_gives_it(self):
+        """F29's second review: a ${NAME<op>word} whose operator gives its
+        word, -, :-, = and := where the name is unset and + and :+ where it
+        is set, gives the command's own text, so ${A:-ma}$(echo in) reads as
+        ma$(echo in), which bash makes main, while the name's own value
+        stays one the guard cannot know (guard.defaults_given)."""
+        for op in (":-", "-", ":=", "=", ":+", "+"):
+            with self.subTest(op=op):
+                self.assertEqual(guard.defaults_given("${A" + op + "ma}" + guard.SUBSTITUTED), "ma" + guard.SUBSTITUTED)
+                self.assertIsNotNone(refused("git push origin ${A" + op + "ma}$(echo in)"))
+        self.assertEqual(guard.defaults_given("${A:?ma}x${#B}${C}"), "${A:?ma}x${#B}${C}")
+        self.assertEqual(guard.defaults_way(["${A:-git", "push}", "origin"]), ["git", "push", "origin"])
+        self.assertIsNone(refused("git push origin ${A:-claude/7}"))
+        self.assertIsNone(refused("git push origin ${A:?unset}"))
+
+    def test_a_word_that_may_open_with_a_dash_is_read_as_a_built_option(self):
+        """F29's second review: $(echo -)f gives -f, and so does a * where a
+        file is named -f, so a built word that does not open with - as
+        written but may be --force or a short bundle holding f is a built
+        option (guard.may_force); one made of expansions alone, as
+        "$BRANCH", is a value the guard cannot know, as before."""
+        sub = guard.SUBSTITUTED
+        for word in (sub + "f", "*", "?f", sub + "uf", sub + "orce", "[-]f", "[-]" + sub):
+            with self.subTest(word=word):
+                self.assertTrue(guard.may_force(word))
+        for word in ("$B", sub, sub + sub, "claude/" + sub, sub + "x:y", "[!-]f", sub + "/u", "?", "origin"):
+            with self.subTest(word=word):
+                self.assertFalse(guard.may_force(word))
+
+    def test_a_pattern_may_give_a_plus_or_a_colon_where_its_class_holds_one(self):
+        """F29's second review: a file's name may hold a + or a colon, so ?main
+        and [+]main may be the forcing refspec +main, and ? and [:] the
+        refspec :, while a class that holds neither gives neither, and an
+        expansion's hole is read where it is nothing by the unset world
+        (guard.hole_allows, may_open_with_plus, colon_given); and [:]main
+        may be :main where a file is so named, which deletes main."""
+        for spec in ("?main", "[+]main", "*main", "[^a]main"):
+            with self.subTest(spec=spec):
+                self.assertTrue(guard.may_open_with_plus(spec))
+        for spec in ("[!+]main", "[ab]main", "m?in", "$B", "main"):
+            with self.subTest(spec=spec):
+                self.assertFalse(guard.may_open_with_plus(spec))
+        for spec, given in (("?", ":"), ("[:]", ":"), ("*", ":"), (":*", ":"), ("[:]main", "main"),
+                            ("*main", "main"), ("?refs/heads/main", "main"), ("*ard", "board"), ("[:]boa?d", "board")):
+            with self.subTest(spec=spec):
+                self.assertEqual(guard.colon_given(spec, ("main", "board")), given)
+        for spec in ("[a]", "??", "$B", "$B?", ":", "[:]feature", "[a]main", "x:?main", "$X[:]main"):
+            with self.subTest(spec=spec):
+                self.assertIsNone(guard.colon_given(spec, ("main", "board")))
+        self.assertIsNotNone(refused("touch :main; git push origin [:]main"))
+        self.assertFalse(guard.may_be("[xy]ain", "main"))
+        self.assertTrue(guard.may_be("[lm]ain", "main"))
+        self.assertIsNone(refused("git push --delete origin ?"))
+
+    def test_a_colon_beside_one_hole_is_read_as_the_colon_bash_makes(self):
+        """F29's second review: only a refspec that opens and ends with a
+        hole, as $S:$D, is kept as written; :$X, $D: and ${A:-:}$B are the
+        refspec : where the hole is nothing, which bash then pushes."""
+        self.assertEqual(guard.unset_words(["git", "push", "origin", ":$X", "$D:", "${A:-:}$B", "$S:$D"]),
+                         ["git", "push", "origin", ":", ":", ":", "$S:$D"])
+        for command in ("git push origin :$X", "git push origin $D:", 'git push origin ":$X"'):
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+        self.assertIsNone(refused("git push origin $S:$D"))
 
     def test_an_unquoted_default_with_blanks_goes_on_into_the_words_after_it(self):
         """shlex splits a ${ } at a blank inside it, as bash splits what it
@@ -1389,7 +1475,8 @@ class BuiltWordsTest(unittest.TestCase):
         spells no push still passes unread."""
         for command in ("git p\\\nush origin main", "git pu\\\nsh origin main", "git push\\\n origin main"):
             with self.subTest(command=command):
-                self.assertEqual(guard.run({"tool_input": {"command": command}, "cwd": "/"})[0], guard.REFUSE)
+                self.assertEqual(guard.run({"tool_input": {"command": command + "\ngit push origin main"},
+                                            "cwd": "/"})[0], guard.REFUSE)
         self.assertEqual(guard.run({"tool_input": {"command": "git p\\\null origin main"}, "cwd": "/"}),
                          (guard.PASS, ""))
         self.assertEqual(guard.lines_joined("a \\\nb"), "a b")
@@ -1424,10 +1511,22 @@ class BuiltWordsTest(unittest.TestCase):
                         full("", "cat <<E$(x)F\nE$(x)F\n", ""), full("git push origin ", "@(", ""),
                         full("echo ", "?(", ")"), full("", "${NOPE:-a ", ""), full("${NOPE:-", "git push x ", "}"),
                         full("git push origin ", "$B:$B ", ""), full("git push ", "--no-verify$X ", "origin"),
-                        full("git push origin ", "${A[@]:-b} ", "")):
+                        full("git push origin ", "${A[@]:-b} ", ""),
+                        # F29's second review: a subscript that never
+                        # closes, a run of parentheses after @, defaults
+                        # beside holes, and patterns a file may fill.
+                        full("git push origin ", "${A[", ""), full("git push origin ", "${#A[x", ""),
+                        full("git push origin @", "(", ""), full("git push origin ", "${A:-ma}$(x)", ""),
+                        full("git push origin ", "${A:-", ""), full("git push ", "$(echo -)f ", ""),
+                        full("git push origin ", "*", ""), full("git push origin ", "[+]", ""),
+                        full("git push origin ", "? ", ""), full("git push origin ", ":$X ", "")):
             with self.subTest(command=command[:40]):
                 started = time.monotonic()
                 self.assertIsNotNone(refused(command + "\ngit push origin main"))
+                self.assertLess(time.monotonic() - started, 3.0)
+                started = time.monotonic()
+                self.assertEqual(guard.run({"tool_input": {"command": command + "\ngit push origin main"},
+                                            "cwd": "/"})[0], guard.REFUSE)
                 self.assertLess(time.monotonic() - started, 3.0)
 
 

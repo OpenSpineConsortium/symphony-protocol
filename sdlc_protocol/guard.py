@@ -280,6 +280,8 @@ $BRANCH does; a hole is never read as giving more than one word, a : or a
 
 import bisect
 import contextvars
+import fnmatch
+import functools
 import itertools
 import os
 import re
@@ -895,6 +897,11 @@ PATTERN_OPERATORS = "#%^,/"
 # The reserved words after which a word is still a command's first, so a
 # case there is a case command.
 BEFORE_A_COMMAND = ("then", "do", "else", "elif", "if", "while", "until", "!", "{", "time")
+# The characters those words open with, so the scan looks for one only
+# where a word may be one: a run of parentheses, each a word's start, was
+# read against every word (F29's second review: @ and 262,000 of them took
+# 3.5 seconds).
+BEFORE_A_COMMAND_OPENS = frozenset(word[0] for word in BEFORE_A_COMMAND)
 
 
 class Context:
@@ -1427,7 +1434,7 @@ def unquoted_step(command, i, contexts, word_start, command_start, memo):
         return Step(i + 1, Context("(", contexts), True, True)
     if ch == ")" and contexts is not None:
         return Step(i + 1, contexts.outer, True, False)
-    if word_start and command_start:
+    if word_start and command_start and ch in BEFORE_A_COMMAND_OPENS:
         word = next((word for word in BEFORE_A_COMMAND if is_word(command, i, word)), None)
         if word:
             return Step(i + len(word), contexts, False, True)
@@ -2544,11 +2551,14 @@ BUILT = frozenset("$*?[(" + SUBSTITUTED)
 
 class Hole(NamedTuple):
     """A part of a word bash fills (word_pieces): any text, or one
-    character, as a pattern's ?; and whether it is an expansion, which may
-    give nothing, or a pattern."""
+    character, as a pattern's ?; whether it is an expansion, which may
+    give nothing, or a pattern; and, for a bracketed class, what stands
+    between its brackets, which says the characters it may give
+    (hole_allows), None for any."""
 
     any: bool
     expansion: bool
+    allows: str = None
 
 
 EXPANSION_HOLE, PATTERN_HOLE, CHARACTER_HOLE = Hole(True, True), Hole(True, False), Hole(False, False)
@@ -2582,7 +2592,16 @@ def word_pieces(word):
     each expansion, any text, and each part of a pattern, * any text and
     ? or a bracketed class one character. The guard keeps no quotes, so a
     $ or a * that was quoted reads as one bash fills, which refuses too
-    much at worst."""
+    much at worst. The last few words' pieces are kept (pieces_of), since
+    each rule that judges a word asks for them again, and a word of
+    MAX_COMMAND characters took a second each time (F29's second
+    review)."""
+    return list(pieces_of(word))
+
+
+@functools.lru_cache(maxsize=16)
+def pieces_of(word):
+    """word_pieces's reading of a word, as a tuple."""
     pieces, text, i, no_class_after, closes = [], [], 0, len(word), None
 
     def hole(kind):
@@ -2608,7 +2627,7 @@ def word_pieces(word):
             hole(PATTERN_HOLE if ch == "*" else CHARACTER_HOLE)
             i += 1
         elif close != -1:
-            hole(CHARACTER_HOLE)
+            hole(Hole(False, False, word[i + 1:close]))
             i = close + 1
         else:
             no_class_after = i if ch == "[" else no_class_after
@@ -2616,7 +2635,7 @@ def word_pieces(word):
             i += 1
     if text:
         pieces.append("".join(text))
-    return pieces
+    return tuple(pieces)
 
 
 def pattern_end(word, i, closes):
@@ -2627,6 +2646,18 @@ def pattern_end(word, i, closes):
     if not word.startswith("(", i + 1) or word[i - 1:i] == "$":
         return None
     return closes.get(i + 1)
+
+
+def hole_allows(hole, ch):
+    """Whether a hole may give the character ch: any but a bracketed
+    class, which gives what its brackets hold, as [+] gives + and [!a] any
+    but a, a file's name filling it (F29's second review). A class that
+    names a character class, as [[:punct:]], is read as allowing any,
+    which refuses too much at worst."""
+    if hole.allows is None or "[:" in hole.allows:
+        return True
+    body = "!" + hole.allows[1:] if hole.allows.startswith("^") else hole.allows
+    return fnmatch.fnmatchcase(ch, "[" + body + "]")
 
 
 def is_built(word):
@@ -2641,12 +2672,22 @@ def may_be(word, text):
     """Whether bash may build the word into text: its own characters, in
     order, around holes each filled as it may be (word_pieces), as
     git pu$(true)sh and git $(echo push) run git push, and a push to
-    ma$(true)in, m${V:-ai}n or mai? one to main (F29). Each hole is read as
-    giving part of a name, never a space between words, a colon or a +,
-    which a variable's value or a command's output may hold too."""
+    ma$(true)in, m${V:-ai}n or mai? one to main (F29). Each hole may give
+    any text but a bracketed class, which gives one of the characters it
+    holds (hole_allows); a hole is never read as a space between words,
+    which a variable's value or a command's output may hold too. Where a
+    hole of a pattern may give a + or a colon, as a file's name may hold
+    one, the refspec it makes is judged by may_open_with_plus and
+    colon_given."""
     if not is_built(word):
         return word == text
-    pieces = word_pieces(word)
+    return pieces_may_be(word_pieces(word), text)
+
+
+def pieces_may_be(pieces, text):
+    """may_be's reading of a word's pieces (word_pieces)."""
+    if not pieces:
+        return not text
     if sum(len(piece) for piece in pieces if isinstance(piece, str)) > len(text):
         return False
     places = {0}
@@ -2656,7 +2697,7 @@ def may_be(word, text):
         elif piece.any:
             places = set(range(min(places), len(text) + 1))
         else:
-            places = {at + 1 for at in places if at < len(text)}
+            places = {at + 1 for at in places if at < len(text) and hole_allows(piece, text[at])}
         if not places:
             return False
     return len(text) in places
@@ -2677,9 +2718,16 @@ def expansions_alone(word):
 # A ${ } as unset_value reads its start: an indirection ! or a length #,
 # the parameter, an array's subscript after it, and the operator after
 # that, of which -, :-, = and := give their word where the parameter is
-# unset, as ${NOPE[@]:-main} gives main (F29's first review).
-BRACED_HEAD = re.compile(r"\$\{([!#]?)([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?|[0-9]+|[@*#?$!-])?(:?[-=+?])?")
+# unset, as ${NOPE[@]:-main} gives main (F29's first review), and + and :+
+# where it is set (defaults_given). The subscript stops at a }, a newline
+# or its bound, MOST_SUBSCRIPT characters: read to the next ] however far,
+# ${A[ written again and again was read in a time that grew as the square
+# of the command, 10.8 seconds at MAX_COMMAND (F29's second review).
+MOST_SUBSCRIPT = 64
+BRACED_HEAD = re.compile(r"\$\{([!#]?)([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]}\n]{0,%d}\])?|[0-9]+|[@*#?$!-])?(:?[-=+?])?"
+                         % MOST_SUBSCRIPT)
 GIVES_ITS_WORD = ("-", ":-", "=", ":=")
+GIVES_ITS_WORD_SET = ("+", ":+")
 
 
 def unset_value(word, carried=None):
@@ -2726,10 +2774,70 @@ def unset_value(word, carried=None):
     return "".join(out)
 
 
+def defaults_given(word, carried=None):
+    """The word as bash builds it where each ${NAME<op>word} whose operator
+    gives its word, -, :-, = and := where the parameter is unset and + and
+    :+ where it is set, gives it, a $'...' in it as the text it decodes to,
+    and every other expansion stands as written, a hole (F29's second
+    review). A default is the command's own text, so ${A:-ma}$(echo in),
+    which bash makes main where A is unset, reads as ma$(echo in) does,
+    and ${A:-+}$B as +$B. carried, where given, is the ${ }s a word before
+    this one left open, each the count of braces open inside it, which
+    this one goes on with (defaults_way)."""
+    out, stack, i = [], [] if carried is None else carried, 0
+    while i < len(word):
+        ch = word[i]
+        if word.startswith("${", i):
+            head = BRACED_HEAD.match(word, i)
+            if not head.group(1) and head.group(3) in GIVES_ITS_WORD + GIVES_ITS_WORD_SET:
+                stack.append(0)
+                i = head.end()
+                continue
+            end = expansion_end(word, i)
+            out.append(word[i:end])
+            i = end
+            continue
+        if stack and (decoded := ansi_c_in_braces(word, i)):
+            out.append(decoded[0])
+            i = decoded[1]
+            continue
+        if stack and ch == "}" and not stack[-1]:
+            stack.pop()
+            i += 1
+            continue
+        if stack and ch in "{}":
+            stack[-1] += 1 if ch == "{" else -1
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def defaults_way(way):
+    """A simple command's words with each default given (defaults_given),
+    a ${ } left open at a word's end going on into the words after it, as
+    unset_words reads it, and a word that is then nothing dropped; the
+    words themselves where none holds a ${ }."""
+    if not any("${" in word for word in way):
+        return list(way)
+    carried, words = [], []
+    for word in way:
+        in_time()
+        value = defaults_given(word, carried)
+        if value or not word:
+            words.append(value)
+    return words
+
+
 def kept_as_written(word, value):
     """Whether a word bash builds, whose unset value is only colons and
-    pluses, is read as written in the unset world (unset_words)."""
-    return bool(value) and not value.strip(":+") and is_built(word)
+    pluses, is read as written in the unset world (unset_words): only one
+    that opens and ends with a hole, its defaults given (defaults_given),
+    as $S:$D does, so :$X, $D: and ${A:-:}$B are read as the : bash makes
+    of them where the hole is nothing (F29's second review)."""
+    if not value or value.strip(":+") or not is_built(word):
+        return False
+    pieces = word_pieces(defaults_given(word))
+    return isinstance(pieces[0], Hole) and isinstance(pieces[-1], Hole)
 
 
 def ansi_c_in_braces(word, i):
@@ -2918,6 +3026,9 @@ def built_ways(argv):
             too_many = True
         else:
             ways += [braced] if braced != ways[0] else []
+    for way in list(ways):
+        given = defaults_way(way)
+        ways += [given] if given not in ways else []
     for way in list(ways):
         if any(not BUILT.isdisjoint(word) for word in way):
             unset = unset_words(way)
@@ -3493,9 +3604,11 @@ def placed_commands(command, here, is_directory=os.path.isdir):
     change nothing after it. A cd or pushd to what is_directory does not
     take for a directory, by default what is not one as the hook runs,
     leaves the shell where it stood. A directory this module cannot tell
-    is None."""
+    is None. A reading whose text another before it has is read once,
+    since it places the same commands (F29's second review: the reading
+    of extended patterns is often the whole reading again)."""
     placed = []
-    for text in readings(command):
+    for text in dict.fromkeys(readings(command)):
         known = {(tuple(argv), shell) for argv, shell in placed}
         placed += [(argv, shell) for argv, shell in placed_parts(parts_of(text), here, is_directory)
                    if (tuple(argv), shell) not in known]
@@ -3957,24 +4070,122 @@ def as_shown(word):
 def built_option(args):
     """The first of a push's option words whose name, before any =, bash
     builds (is_built), as -$(echo f), --for${X}ce or --"$opt", else None,
-    unless it opens with a whole option no other extends (whole_flag);
-    words after a -- are no options."""
+    unless it opens with a whole option no other extends (whole_flag); and
+    the first word that does not open with - as written but that bash may
+    build into a forcing option (may_force), as $(echo -)f or a * a file
+    named -f fills (F29's second review); words after a -- are no
+    options."""
     for word in args:
         if word == "--":
             return None
         if word.startswith("-") and is_built(word.partition("=")[0]) and not whole_flag(word):
             return word
+        if not word.startswith("-") and may_force(word):
+            return word
     return None
+
+
+# How may_force reads a word: nothing yet, then a - read with no f after
+# it, then a short bundle that holds an f.
+NOTHING_YET, DASHED, FORCING = 0, 1, 2
+
+
+def may_force(word):
+    """Whether bash may build a word, which is built and not made of
+    expansions alone (expansions_alone), into --force or a short bundle
+    that holds f, as -f and -uf are: its own characters, in order, around
+    holes filled as they may be (word_pieces, hole_allows). A word of
+    expansions alone, as "$BRANCH", is a value the guard cannot know, read
+    as before."""
+    if not is_built(word) or expansions_alone(word):
+        return False
+    if may_be(word, "--force"):
+        return True
+    states = {NOTHING_YET}
+    for piece in word_pieces(word):
+        if isinstance(piece, str):
+            for ch in piece:
+                states = {state for state in map(lambda at: bundle_step(at, ch), states) if state is not None}
+        elif piece.any:
+            states |= {DASHED, FORCING}
+        else:
+            states = {state for at in states for ch in "-fv" if hole_allows(piece, ch)
+                      for state in [bundle_step(at, ch)] if state is not None}
+        if not states:
+            return False
+    return FORCING in states
+
+
+def bundle_step(state, ch):
+    """Where may_force stands after the character ch: a - opens a bundle,
+    a letter goes on with one, an f makes it force; None where the word can
+    no longer be one."""
+    if state == NOTHING_YET:
+        return DASHED if ch == "-" else None
+    if not ch.isascii() or not ch.isalpha():
+        return None
+    return FORCING if ch == "f" or state == FORCING else DASHED
+
+
+def may_open_with_plus(spec):
+    """Whether a refspec's first part is a hole of a pattern that may give
+    a +, as ?main and [+]main do where a file is named +main (F29's second
+    review): a + forces that ref. An expansion's hole is a value the guard
+    cannot know, as $B is, read where it is nothing by the unset world."""
+    pieces = word_pieces(spec) if is_built(spec) else []
+    return bool(pieces) and isinstance(pieces[0], Hole) and not pieces[0].expansion and hole_allows(pieces[0], "+")
+
+
+def colon_given(spec, branches):
+    """What a refspec with no colon of its own may be where a hole of a
+    pattern in it gives one, as a file's name may hold one (F29's second
+    review): the refspec :, which moves every branch both sides have, as ?
+    and [:] are where a file is named :, or one that writes or deletes a
+    branch of branches, as [:]main is where a file is named :main; else
+    None. One with an expansion in it is read where the expansion is
+    nothing by the unset world."""
+    if not is_built(spec):
+        return None
+    pieces = word_pieces(spec)
+    if any(isinstance(piece, Hole) and piece.expansion for piece in pieces):
+        return None
+    if pieces_may_be(pieces, ":"):
+        return ":"
+    if any(isinstance(piece, str) and ":" in piece for piece in pieces):
+        return None
+    for at, piece in enumerate(pieces):
+        if isinstance(piece, Hole) and hole_allows(piece, ":"):
+            meant = next((branch for branch in branches if branch and colon_then(piece, pieces[at + 1:], branch)), None)
+            if meant:
+                return meant
+    return None
+
+
+def colon_then(hole, after, branch):
+    """Whether the hole may give a colon and the pieces after it the name
+    of branch, as git resolves it (branch_named): a * may give the start of
+    the name with the colon, a ? or a class the colon alone."""
+    for name in (branch, "heads/" + branch, "refs/heads/" + branch):
+        starts = range(len(name) + 1) if hole.any else (0,)
+        if any(pieces_may_be(after, name[start:]) for start in starts):
+            return True
+    return False
 
 
 def whole_flag(word):
     """Whether a long option word opens, before the first part bash builds,
     with the whole name of an option of git push that takes no value and
-    that no other option's name extends, as --no-verify${NOPE} does: bash
-    may build it only into that option, or into a word git refuses, which
-    pushes nothing (F29's first review). A built short bundle is never one,
-    since -u${X} may be -uf, and --"$opt" is none, since it may be --force,
-    nor is --force$X, which may be --force-with-lease."""
+    that no other option's name extends, as --no-verify${NOPE} does (F29's
+    first review). An unquoted hole may split into more words, so bash may
+    build more than that option; but where the hole's text opens with a
+    blank, what it makes is what it makes of the option followed by the
+    hole written as a word of its own, --no-verify $NOPE, which already
+    passes, an expansion whole being a value the guard cannot know, and
+    where it does not, the option's name runs on into a name no option of
+    git push has, since none extends it, and git refuses the push (F29's
+    second review). A built short bundle is never one, since -u${X} may be
+    -uf, and --"$opt" is none, since it may be --force, nor is --force$X,
+    which may be --force-with-lease."""
     head = next(iter(word_pieces(word)), "")
     if not isinstance(head, str) or not head.startswith("--"):
         return False
@@ -4015,7 +4226,8 @@ def refusal(args, current_branch, default_branch, claim_file_at=None):
     if wholesale:
         return (f"a push with --{wholesale[-1]} moves branches wholesale; "
                 "push your own claim branch alone (.claude/rules/board.md)")
-    many = [spec for spec in refspecs if moves_many(spec)]
+    colons = {} if deleting else {spec: colon_given(spec, (default_branch, "board")) for spec in refspecs}
+    many = [spec for spec in refspecs if moves_many(spec) or colons.get(spec) == ":"]
     if many:
         return (f"a push with the refspec {many[0]} moves branches wholesale; "
                 "push your own claim branch alone (.claude/rules/board.md)")
@@ -4027,10 +4239,13 @@ def refusal(args, current_branch, default_branch, claim_file_at=None):
     # and git lets it override --force-with-lease; the first word is the
     # remote, never a refspec, and under --delete each refspec is a name to
     # delete, the + in it part of the name.
-    if not deleting and any(spec.startswith("+") for spec in refspecs):
+    if not deleting and any(spec.startswith("+") or may_open_with_plus(spec) for spec in refspecs):
         return ("a + before a refspec forces that ref as --force does, and git lets it override "
                 "--force-with-lease; the one forced push the protocol allows is --force-with-lease "
                 "on your own claude/ branch after a rebase, with no + (.claude/rules/board.md)")
+    given = next((spec for spec in refspecs if colons.get(spec)), None)
+    if given:
+        return BUILT_TARGET.format(word=as_shown(given), meant=colons[given])
     targets = targets_of(refspecs, current_branch, deleting)
     for name, deleted in targets:
         if name == default_branch:

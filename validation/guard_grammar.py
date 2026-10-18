@@ -159,6 +159,10 @@ AS_WRITTEN = Spelling()
 # substitutions alone, which reads as : where each is nothing, beside a
 # whole option no other extends, and that option with a substitution after
 # it.
+# Since its second review: the default branch built from a default's own
+# text and a substitution; -f from a substitution that prints the dash; a
+# + and a colon that a file's name gives a pattern, a file being made for
+# each; and a colon beside one variable, set to main.
 BUILT_WORDS = (tuple(Spelling(verb=verb) for verb in ("$'pu\\x73h'", '$"push"', "pu$(true)sh", "pu``sh",
                                                       "$(echo push)", "${NOPE:-push}", "{push,}"))
                + (Spelling(git="$(which git)"), Spelling(option=(" -f", " -$(echo f)")),
@@ -169,7 +173,11 @@ BUILT_WORDS = (tuple(Spelling(verb=verb) for verb in ("$'pu\\x73h'", '$"push"', 
                   Spelling(git="shopt -s extglob\ngit", name=("main", "@(main)")),
                   Spelling(option=(" --no-verify", " --no-verify"),
                            name=("HEAD:claude/7", "$(echo HEAD):$(echo claude/)$(echo 7)")),
-                  Spelling(option=(" --no-verify", " --no-verify$(true)"))))
+                  Spelling(option=(" --no-verify", " --no-verify$(true)")))
+               + (Spelling(name=("main", "${A:-ma}$(echo in)")), Spelling(option=(" -f", " $(echo -)f")),
+                  Spelling(git="mkdir +claude; touch +claude/7; git", name=("+claude/7", "?claude/7")),
+                  Spelling(git="touch :main; git", name=(" :main", " [:]main")),
+                  Spelling(git="X=main; git", name=(" :main", " :$X"))))
 # The prefixes and wrappers taken with the command alone, no wrapper or
 # global option around it.
 ALONE = (tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED + EMPTY_WORDS + COPROCS)

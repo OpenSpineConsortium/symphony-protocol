@@ -1928,7 +1928,10 @@ MUTANTS = {
     "a ${ } read as closing at its word's end": Mutant(
         guard, "unset_words", lambda way: [value for word in way if (value := guard.unset_value(word)) or not word],
         "G11a", "a ${ } a blank stands in, unquoted, goes on into the words after it, so ${NOPE:-git push} origin "
-                "main runs the push and is read and refused (F29's first review)"),
+                "main runs the push and is read and refused (F29's first review), with the defaults given closing "
+                "at their word's end too (F29's second review)",
+        also=((guard, "defaults_way",
+               lambda way: [value for word in way if (value := guard.defaults_given(word)) or not word]),)),
     "an array's ${ } read as giving nothing": Mutant(
         guard, "BRACED_HEAD", re.compile(r"\$\{([!#]?)([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])?(:?[-=+?])?"),
         "G11a", "an array's subscript stands between the name and the operator, so git push origin "
@@ -1941,6 +1944,27 @@ MUTANTS = {
         guard, "pattern_reading", lambda own: [],
         "G11a", "with extglob on bash reads @(main) as one word, a pattern a file named main fills, so git push "
                 "origin @(main) is read and refused (F29's first review)"),
+    "a default read as a hole alone": Mutant(
+        guard, "defaults_way", lambda way: list(way),
+        "G11a", "a ${NAME:-word} gives its word, the command's own text, where the name is unset, so git push "
+                "origin ${A:-ma}$(echo in), which bash makes a push to main, is read and refused (F29's second "
+                "review)"),
+    "a word that may open with a dash read as no option": Mutant(
+        guard, "may_force", lambda word: False,
+        "G11a", "a built word that does not open with - as written may still be -f, so git push $(echo -)f origin "
+                "claude/7 is refused (F29's second review)"),
+    "a pattern read as giving no +": Mutant(
+        guard, "may_open_with_plus", lambda spec: False,
+        "G11a", "a file's name may hold a +, so ?main, which a file named +main fills, is a forcing refspec and is "
+                "refused (F29's second review)"),
+    "a colon a pattern gives read as none": Mutant(
+        guard, "colon_given", lambda spec, branches: None,
+        "G11a", "a file's name may hold a colon, so [:]main, which a file named :main fills, deletes main and is "
+                "refused, and so is ?, the refspec : where a file is named : (F29's second review)"),
+    "a colon beside one hole kept as written": Mutant(
+        guard, "kept_as_written", lambda word, value: bool(value) and not value.strip(":+") and guard.is_built(word),
+        "G11a", "only a refspec with a hole on each side of its colon is kept as written, so :$X, which bash makes "
+                "the refspec : where X is unset, is refused (F29's second review)"),
     "dealing without its taken set": Mutant(
         team, "deal", deal_without_the_taken_set,
         "G14", "the workers of one run are dealt distinct issues"),
