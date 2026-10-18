@@ -578,13 +578,15 @@ class ReadingTest(unittest.TestCase):
     def test_an_expanded_body_runs_its_substitutions_and_nothing_else(self):
         """A body whose word nothing quotes is expanded, so the shell runs
         its command substitutions, and those alone are read where the body
-        is cut out; a quoted word's body runs nothing."""
+        is cut out, apart, after the reading (substituted; since F24's first
+        review not in the body's place too, where they were read again); a
+        quoted word's body runs nothing."""
         runs = [body.runs for body in guard.here_document_bodies(
             "cat <<EOF\nIt's $(git push origin main) done, isn't it, $(echo \"a\" ')') \\$(no) $((1+2))\nEOF")]
         self.assertEqual(runs, [("$(git push origin main)", "$(echo \"a\" ')')")])
         self.assertEqual([body.runs for body in guard.here_document_bodies("cat <<'EOF'\n$(git push)\nEOF")], [()])
         self.assertEqual(guard.readings("cat <<EOF\nIt's $(git push origin main) done\nEOF\nls")[1],
-                         "cat <<EOF ; $(git push origin main) ; ls ; ( git push origin main ) ")
+                         "cat <<EOF ; ls ; ( git push origin main ) ")
 
     def test_an_expanded_body_joins_a_line_that_ends_in_a_backslash(self):
         """bash takes a backslash-newline out of a body it expands before it
@@ -661,7 +663,7 @@ class ReadingTest(unittest.TestCase):
             [("$(cat <<'X'\n)", "$(cat <<X\n$(git push origin main)\n)")])
         command = "cat <<EOF\n$(cat <<'X'\nDon't\nX\n)\nEOF\ngit push origin main\ncat <<'EOF'\nIt's\nEOF"
         self.assertEqual(guard.readings(command)[1],
-                         "cat <<EOF ; $(cat <<'X' ; ) ; git push origin main ; cat <<'EOF' ;  ; ( cat <<'X' ;  ) ")
+                         "cat <<EOF ; git push origin main ; cat <<'EOF' ;  ; ( cat <<'X' ;  ) ")
         self.assertEqual(self.run_guard(command), (2, MAIN))
 
     def test_bodies_nested_deeper_than_the_guard_reads_are_refused_unread(self):
@@ -1049,6 +1051,44 @@ SUBSTITUTED_TEXTS = (
 )
 
 
+# F24's first review, each finding's pushes, which bash 5.2 runs, by the
+# finding's number: a single quote in a double-quoted ${ } after an operator
+# such as :-, which pairs but quotes nothing (1); a $'...' in a ${ } outside
+# double quotes (2); a single quote in arithmetic (3); arithmetic on a line
+# of an expanded body (4); a $'...' before a here-document, which the scan
+# of here-documents read as a quote closed early (5); and what the review's
+# fuzz found besides: a here-document a backquoted span's backslashes hid,
+# and two substitutions whose own texts read alike.
+REVIEWED_PUSHES = {
+    1: ("echo \"${v:-'`git push origin main`'}\"", "echo \"${v:-'$(git push origin main)'}\"",
+        "echo \"${v:-${w:-'$(git push origin main)'}}\"", "echo \"${v:-'}'$(git push origin main)}\"",
+        "x=\"${v:='$(git push origin main)'}\""),
+    2: (": ${v:-$'a\\'b'} `git push origin main`", "echo ${v:-$'\\''} \"$(git push origin main)\""),
+    3: ("echo $(( '$(git push origin main)' ))", "echo $[ '$(git push origin main)' ]",
+        "echo \"$(( '$(git push origin main)' ))\"", "echo \"$[ '$(git push origin main)' ]\"",
+        "(( '$(git push origin main)' ))", "echo $(( 1 + '`git push origin main`' ))"),
+    4: ("cat <<EOF\necho \"$(( $(git push origin main) ))\"\nEOF",
+        "cat <<-EOF\n\techo \"$(( $(git push origin main) ))\"\n\tEOF"),
+    5: ("echo $'\\'' \"$(cat <<'E'\n\"\nE\ngit push origin main)\"",
+        "echo $'it\\'s' \"$(cat <<'E'\n\"\nE\ngit push origin main)\""),
+    6: ("echo `echo \"\\$(cat <<'E'\n\"\nE\ngit push origin main)\"`",
+        "echo \"$(echo $(true))\" \"$(echo $(git push origin main))\"",
+        "while false; do :; done; echo `echo $(cat <<E\nhi\nE\ngit push origin main)`",
+        "x=`\\$(cat <<'E'\n)'\nE\ngit push origin main)`"),
+}
+# Where bash runs none of those pushes: a single quote quotes inside a
+# double-quoted ${ } after an operator that removes or replaces a pattern,
+# and anywhere in a ${ } outside double quotes; a quoted body's arithmetic
+# is text; and a $'...' in double quotes is no ANSI-C quoting.
+REVIEWED_TEXTS = (
+    "echo \"${v#'$(git push origin main)'}\"", "echo \"${v%'$(git push origin main)'}\"",
+    "echo \"${v/'$(git push origin main)'/x}\"", "echo \"${v/a/'$(git push origin main)'}\"",
+    "echo ${v:-'$(git push origin main)'}", "echo ${v:-'`git push origin main`'}",
+    "cat <<'EOF'\necho \"$(( $(git push origin main) ))\"\nEOF",
+    "echo \"$'\" '$(git push origin main)'", "echo \"${v:-'it'}\" \"${v:-it}\"",
+)
+
+
 class SubstitutionTest(unittest.TestCase):
     """What the shell runs of a command's substitutions (F24): bash runs
     the text of a $( ), a backquoted span, a <( ) and a >( ) as commands
@@ -1078,6 +1118,45 @@ class SubstitutionTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.run_guard(command + " && git push origin claude/7"), (0, ""))
 
+    def test_what_f24_s_first_review_found_is_refused(self):
+        """Each push F24's first review found passing while bash ran it is
+        refused, and what bash runs no push of beside it passes."""
+        for finding, commands in REVIEWED_PUSHES.items():
+            for command in commands:
+                with self.subTest(finding=finding, command=command):
+                    self.assertEqual(self.run_guard(command), (2, MAIN))
+        for command in REVIEWED_TEXTS:
+            with self.subTest(command=command):
+                self.assertEqual(self.run_guard(command + " && git push origin claude/7"), (0, ""))
+
+    def test_a_single_quote_in_a_double_quoted_brace_quotes_by_its_operator(self):
+        """bash's parse_matched_pair keeps a state through a ${ }: after a
+        pattern's operator a single quote quotes, after any other it pairs
+        with the next and quotes nothing inside double quotes."""
+        for text, quotes in (("${v:-'", False), ("${v#'", True), ("${v%%'", True), ("${v/'", True),
+                             ("${v^'", True), ("${#v'", False), ("${v-'", False), ("${v:+'", False),
+                             ("${v:-a#'", False)):
+            with self.subTest(text=text):
+                contexts = guard.Context("${", guard.Context('"'), 2)
+                self.assertTrue(contexts.quoted)
+                self.assertEqual(guard.brace_state(text, len(text) - 1, contexts) == "quote", quotes)
+        self.assertFalse(guard.Context("${", None, 2).quoted, "outside double quotes a single quote quotes")
+        self.assertTrue(guard.Context("${", guard.Context("'", guard.Context("${", guard.Context('"'))), 2).quoted)
+
+    def test_arithmetic_is_read_apart_to_its_closing_parentheses(self):
+        self.assertEqual(guard.substituted("echo $(( '$(git push)' + 1 ))"), " ; (  '$x' + 1  ; ( git push )  ) ")
+        self.assertEqual(guard.substituted("(( x = $(a) ))"), " ; (  x = $x  ; ( a )  ) ")
+        self.assertEqual([body.runs for body in guard.here_document_bodies("cat <<E\n$(( $(a) )) $((1))\nE")],
+                         [("$(( $(a) ))",)], "a body's arithmetic is kept where a substitution stands in it")
+
+    def test_substitutions_that_read_alike_are_read_once(self):
+        """Each substitution is read in a subshell of its own where the
+        shell stands after the text around it, so two that read alike, with
+        those nested in them alike too, are judged alike and read once."""
+        self.assertEqual(guard.substituted("$(a) $(a) `a` $(b) $(a)"), " ; ( a )  ; ( b ) ")
+        self.assertEqual(guard.substituted("$(c $(a)) $(c $(b))"), " ; ( c $x ; ( a )  )  ; ( c $x ; ( b )  ) ")
+        self.assertEqual(guard.substituted('"$("$(a)")"'), " ; ( a ) ", "a text with no word reads its nested")
+
     def test_each_substitution_is_read_apart_after_the_command(self):
         self.assertEqual(guard.substituted('a "$(b "$(c)" `d`)" <(e) x'),
                          " ; ( b \"$x\" $x ; ( c )  ; ( d )  )  ; ( e ) ")
@@ -1099,7 +1178,10 @@ class SubstitutionTest(unittest.TestCase):
     def test_the_reading_of_substitutions_takes_time_in_proportion_to_the_command(self):
         """Substitutions nested deep or many in a row, each in double
         quotes, a parameter expansion, arithmetic or a backquoted span, at
-        the longest command the guard reads: each well under the bound."""
+        the longest command the guard reads: each well under the bound,
+        here-documents full of substitutions and single quotes where they
+        quote nothing among them (F24's first review: a body of 52,000 $(a)
+        in a substitution took 3.4 to 4 seconds, and echo "$(( repeated 2.4)."""
         full = ReadingTest.at_full_size
         for command in (full("", '"$(', ""), full("", "$(", ""), full("", "<(", ""), full("", ">( ", ""),
                         full("", '"$(x)" ', ""), full('echo "', "`x`", '"'), full('echo "', "$((", ""),
@@ -1107,7 +1189,11 @@ class SubstitutionTest(unittest.TestCase):
                         full("", "$(()", ""), full("", 'x="$(echo `a` <(b) ${c:-$(d)}) " ; ', ""),
                         full("git commit -m \"$(cat <<'EOF'\n", "it's $(x) `y` \"z\n", "EOF\n)\""),
                         full("cat <<EOF\n", "it's $(x \"$(y)\") `z`\n", "EOF"),
-                        full("", "$(echo $'\\'' ", ""), full('echo "$(', "$'a\\'b' ", "")):
+                        full("", "$(echo $'\\'' ", ""), full('echo "$(', "$'a\\'b' ", ""),
+                        full('x="$(cat <<E\n', "$(a)\n", 'E\n)"'), full('x="$(cat <<E\n', "$(a) ", '\nE\n)"'),
+                        full("cat <<E\n", "$(a)$(b) ", "\nE"), full('echo "', "${v:-'", ""), full("", "$[ '", ""),
+                        full("", "$(( '$(a)' )) ", ""), full("", "\"${v:-'$(a)'}\" ", ""),
+                        full("", "${v:-$'\\''} `a` ", ""), full("cat <<E\n", "$(( $(a) )) ", "\nE")):
             with self.subTest(command=command[:40]):
                 started = time.monotonic()
                 self.assertEqual(self.run_guard(command + "\ngit push origin main")[0], 2)

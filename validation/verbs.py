@@ -140,7 +140,7 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "subshells": ("((cd .); cat <<'EOF'\nDon't\nEOF\n)\ngit {push}\n"
                            "((cd .); cat <<'EOF'\nIt's\nEOF\n)"),
              "closed-substitution": "x=$(cat <<'EOF')\nDon't\nEOF\ngit {push}\ny=$(cat <<'EOF')\nIt's\nEOF",
-             "nested-body": "cat <<EOF\n$(cat <<'X'\nDon't\nX\n)\nEOF\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
+             "nested-body": "cat <<EOF\n$(cat <<'X'\nDon't\nX\ngit {push})\nEOF\ncat <<'EOF'\nIt's\nEOF",
              "case-pattern": ('x="$(case a in a) cat <<\'EOF\'\nSay "hi\nEOF\n;; esac)"\ngit {push}\n'
                               'y="$(case a in a) cat <<\'EOF\'\nSay "bye\nEOF\n;; esac)"'),
              "quoted-arithmetic": "((echo \"))\"); cat <<'EOF'\nDon't\nEOF\n)\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
@@ -158,14 +158,24 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "nested-substitutions": 'echo "$(echo "$(echo "$(git {push})")")"',
              "backquote-in-substitution": 'echo "$(echo `git {push}`)"',
              "arithmetic-substitution": '(( "$(git {push})" ))',
-             "ansi-c-in-substitution": 'echo "$(echo $\'it\\\'s\') $(git {push})" # it\'s'}
+             "ansi-c-in-substitution": 'echo "$(echo $\'it\\\'s\') $(git {push})" # it\'s',
+             "braced-apostrophe": "echo \"${{v:-'$(git {push})'}}\"",
+             "braced-ansi-c": ": ${{v:-$'a\\'b'}} `git {push}`",
+             "arithmetic-apostrophe": "echo $(( '$(git {push})' ))",
+             "bracket-apostrophe": "echo $[ '$(git {push})' ]",
+             "body-arithmetic": "cat <<EOF\necho \"$(( $(git {push}) ))\"\nEOF",
+             "body-after-ansi-c": "echo $'\\'' \"$(cat <<'E'\n\"\nE\ngit {push})\"",
+             "alike-substitutions": "echo \"$(echo $(true))\" \"$(echo $(git {push}))\"",
+             "hidden-body": "echo `echo \"\\$(cat <<'E'\n\"\nE\ngit {push})\"`"}
 # The ways whose push runs in the worker's own clone (leasing_clone).
 FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
                   "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",
                   "closed-substitution", "nested-body", "case-pattern", "quoted-arithmetic", "braced",
                   "backquoted", "pid-brace", "old-arithmetic", "backquoted-quote", "substituted", "process",
                   "nested-substitutions", "backquote-in-substitution", "arithmetic-substitution",
-                  "ansi-c-in-substitution")
+                  "ansi-c-in-substitution", "braced-apostrophe", "braced-ansi-c", "arithmetic-apostrophe",
+                  "bracket-apostrophe", "body-arithmetic", "body-after-ansi-c", "alike-substitutions",
+                  "hidden-body")
 
 # A read of the activity with no type named: the read of the push that set
 # a claim's head (github.read_push), told from the reads of a

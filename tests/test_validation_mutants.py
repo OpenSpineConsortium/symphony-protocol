@@ -147,6 +147,12 @@ TRACES = {
     "a backquoted span in a substitution read as text": "the regression traces",
     "arithmetic read as no substitution": "the regression traces",
     "a $'...' read as a quoted span": "the regression traces",
+    "a single quote in a double-quoted ${ } read as a quote": "the regression traces",
+    "arithmetic read as commands": "the regression traces",
+    "a single quote in $[ ] read as a quote": "the regression traces",
+    "a body's arithmetic left out of what it runs": "the regression traces",
+    "substitutions told alike by their own texts alone": "the regression traces",
+    "a backquoted span's hidden bodies left in": "the regression traces",
     "dealing without its taken set": "dealing at every look",
     "each leg dealt from its own look": "the regression traces",
     "given to workers needing the label todo": "the regression traces",
@@ -409,9 +415,14 @@ class TheLane(unittest.TestCase):
         double quotes read as part of its word, a process substitution read
         as a redirection, a nested substitution left unread, a backquoted
         span in a substitution read as text, arithmetic read as no
-        substitution and a $'...' read as a quoted span, 178."""
+        substitution and a $'...' read as a quoted span, 178; and its first
+        review six: a single quote in a double-quoted ${ } read as a
+        quote, arithmetic read as commands, a single quote in $[ ] read as
+        a quote, a body's arithmetic left out of what it runs, substitutions
+        told alike by their own texts alone and a backquoted span's hidden
+        bodies left in, 184."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 178)
+        self.assertEqual(len(mutants.MUTANTS), 184)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

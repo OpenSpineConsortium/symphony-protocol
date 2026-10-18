@@ -244,8 +244,19 @@ BUDGET_SECONDS = 10
 # process substitution is read as a redirection; step 3, in a $( )
 # three deep in double quotes, taken once a nested substitution is left
 # unread; step 4, in a backquoted span in a double-quoted $( ), taken
-# once such a span is read as text; and step 5, in a double-quoted $( )
-# inside arithmetic, taken once arithmetic is read as no substitution.
+# once such a span is read as text; step 5, in a double-quoted $( )
+# inside arithmetic, taken once arithmetic is read as no substitution;
+# step 6, after a $'...' that holds an escaped apostrophe, taken once
+# such a span is read as an ordinary quoted one; and, from its first
+# review, step 7, in a single quote in a double-quoted ${ }, taken once
+# such a quote quotes; step 9, in a single quote in $(( )), taken once
+# arithmetic is read as commands; step 10, the same in $[ ], taken once
+# a quote there quotes; step 11, in arithmetic on a line of an expanded
+# body, taken once a body's arithmetic is left out of what it runs; and
+# step 13, in the second of two substitutions whose own texts read
+# alike, taken once they are told apart by their own texts alone; and
+# step 14, after a here-document a backquoted span's backslash hid, taken
+# once such a span's bodies are left in.
 # F27's at its first release, step 16, where GitHub takes claimed off
 # a's issue and answers 502, once a label whose removal failed is never
 # put back, at its third, step 20, where GitHub refuses to take claimed
@@ -353,7 +364,13 @@ UNDONE = {
             ("a nested substitution left unread", 3, "G11a"),
             ("a backquoted span in a substitution read as text", 4, "G11a"),
             ("arithmetic read as no substitution", 5, "G11a"),
-            ("a $'...' read as a quoted span", 6, "G11a")],
+            ("a $'...' read as a quoted span", 6, "G11a"),
+            ("a single quote in a double-quoted ${ } read as a quote", 7, "G11a"),
+            ("arithmetic read as commands", 9, "G11a"),
+            ("a single quote in $[ ] read as a quote", 10, "G11a"),
+            ("a body's arithmetic left out of what it runs", 11, "G11a"),
+            ("substitutions told alike by their own texts alone", 13, "G11a"),
+            ("a backquoted span's hidden bodies left in", 14, "G11a")],
     "F27": [("a label taken off and lost stays off", 16, "G3L"),
             ("a label refused its removal put back", 20, "G3L"),
             ("a 404 after a rate limit read as never on", 22, "G3L")],
