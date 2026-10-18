@@ -1,5 +1,5 @@
-"""The regression traces of DESIGN.md 5.3, one per finding, F1 to F23 and
-F25 to F28 (validation/traces/, played by validation/replay.py), and known.json, the
+"""The regression traces of DESIGN.md 5.3, one per finding, F1 to F28
+(validation/traces/, played by validation/replay.py), and known.json, the
 record of what is red on purpose: every trace loads and plays with no
 mismatch; its red results are exactly what known.json records, as built
 and with each open finding's switch off in the oracle; a trace of a
@@ -238,7 +238,25 @@ BUDGET_SECONDS = 10
 # read as text, and step 17, after x=`echo "`, taken once a backquoted
 # span's quotes are read as the quoting around it. Its step 1, after a
 # body with an apostrophe, is the finding's first shape, which both of
-# the fix's readings read, so no one mutant takes it.
+# the fix's readings read, so no one mutant takes it. F24's at b's
+# leases from its own clone: step 1, in out="$(...)", taken once no
+# substitution is read apart; step 2, in cat <(...), taken once a
+# process substitution is read as a redirection; step 3, in a $( )
+# three deep in double quotes, taken once a nested substitution is left
+# unread; step 4, in a backquoted span in a double-quoted $( ), taken
+# once such a span is read as text; step 5, in a double-quoted $( )
+# inside arithmetic, taken once arithmetic is read as no substitution;
+# step 6, after a $'...' that holds an escaped apostrophe, taken once
+# such a span is read as an ordinary quoted one; and, from its first
+# review, step 7, in a single quote in a double-quoted ${ }, taken once
+# such a quote quotes; step 9, in a single quote in $(( )), taken once
+# arithmetic is read as commands; step 10, the same in $[ ], taken once
+# a quote there quotes; step 11, in arithmetic on a line of an expanded
+# body, taken once a body's arithmetic is left out of what it runs; and
+# step 13, in the second of two substitutions whose own texts read
+# alike, taken once they are told apart by their own texts alone; and
+# step 14, after a here-document a backquoted span's backslash hid, taken
+# once such a span's bodies are left in.
 # F27's at its first release, step 16, where GitHub takes claimed off
 # a's issue and answers 502, once a label whose removal failed is never
 # put back, at its third, step 20, where GitHub refuses to take claimed
@@ -360,6 +378,18 @@ UNDONE = {
             ("$$ read as a $ before what follows", 15, "G11a"),
             ("old-style arithmetic read as text", 16, "G11a"),
             ("a backquoted span's quotes read as the quoting around it", 17, "G11a")],
+    "F24": [("a substitution in double quotes read as part of its word", 1, "G11a"),
+            ("a process substitution read as a redirection", 2, "G11a"),
+            ("a nested substitution left unread", 3, "G11a"),
+            ("a backquoted span in a substitution read as text", 4, "G11a"),
+            ("arithmetic read as no substitution", 5, "G11a"),
+            ("a $'...' read as a quoted span", 6, "G11a"),
+            ("a single quote in a double-quoted ${ } read as a quote", 7, "G11a"),
+            ("arithmetic read as commands", 9, "G11a"),
+            ("a single quote in $[ ] read as a quote", 10, "G11a"),
+            ("a body's arithmetic left out of what it runs", 11, "G11a"),
+            ("substitutions told alike by their own texts alone", 13, "G11a"),
+            ("a backquoted span's hidden bodies left in", 14, "G11a")],
     "F27": [("a label taken off and lost stays off", 16, "G3L"),
             ("a label refused its removal put back", 20, "G3L"),
             ("a 404 after a rate limit read as never on", 22, "G3L")],
@@ -375,11 +405,11 @@ UNDONE = {
 # The findings with a trace, every one settled since F25's fix: F1, F3,
 # F5, F6, F10 and F11 fixed in 0.4.1; F2, F4, F7, F8, F9, F12, F13, F14,
 # F15, F17, F18, F19 and F20 fixed in 0.5.0, and F21, F22, F26, F23, F25,
-# F27 and F28 on main after it (known.json's fixed_after); and F16, fixed in the spec's
-# words, which the library as built already keeps, so known.json names no
-# version for it.
+# F27, F24 and F28 on main after it (known.json's fixed_after); and F16,
+# fixed in the spec's words, which the library as built already keeps,
+# so known.json names no version for it.
 FIXED = ("F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "F15", "F16", "F17",
-         "F18", "F19", "F20", "F21", "F22", "F23", "F25", "F26", "F27", "F28")
+         "F18", "F19", "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28")
 # Findings red as built, which no rule of the library answers: none since
 # F4's fix; the test keeps the case for the next one.
 RED_AS_BUILT = ()
@@ -562,8 +592,8 @@ class KnownJson(unittest.TestCase):
         self.assertEqual(known.FIXED_AFTER,
                          {"F2": "0.4.1", "F4": "0.4.1", "F7": "0.4.1", "F8": "0.4.1", "F9": "0.4.1", "F12": "0.4.1",
                           "F13": "0.4.1", "F14": "0.4.1", "F15": "0.4.1", "F17": "0.4.1", "F18": "0.4.1",
-                          "F19": "0.4.1", "F20": "0.4.1", "F21": "0.5.0", "F22": "0.5.0", "F23": "0.5.0", "F25": "0.5.0",
-                          "F26": "0.5.0", "F27": "0.5.0", "F28": "0.5.0"})
+                          "F19": "0.4.1", "F20": "0.4.1", "F21": "0.5.0", "F22": "0.5.0", "F23": "0.5.0", "F24": "0.5.0",
+                          "F25": "0.5.0", "F26": "0.5.0", "F27": "0.5.0", "F28": "0.5.0"})
         current = known.version_key(sdlc_protocol.__version__)
         for finding, version in known.FIXED_AFTER.items():
             with self.subTest(finding=finding):
@@ -573,14 +603,15 @@ class KnownJson(unittest.TestCase):
                 self.assertLessEqual(known.version_key(version), current,
                                      "the last version with a finding is one main has stated, never a later one")
         fixed_in_0_5_0 = {"F2", "F4", "F7", "F8", "F9", "F12", "F13", "F14", "F15", "F17", "F18", "F19", "F20"}
-        fixed_after_0_5_0 = {"F21", "F22", "F23", "F25", "F26", "F27", "F28"}
+        fixed_after_0_5_0 = {"F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28"}
         self.assertEqual(known.as_built_for("0.4.1"), known.AS_BUILT | fixed_in_0_5_0 | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.4.0"), known.AS_BUILT | fixed_in_0_5_0 | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.4.2"), known.AS_BUILT | fixed_after_0_5_0,
                          "the next release carries the fixes")
         self.assertEqual(known.as_built_for("0.5.0"), known.AS_BUILT | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.5.1"), known.AS_BUILT,
-                         "the release after 0.5.0 carries F21's, F22's, F23's, F25's, F26's, F27's and F28's fixes")
+                         "the release after 0.5.0 carries F21's, F22's, F23's, F24's, F25's, F26's, F27's "
+                         "and F28's fixes")
         self.assertEqual(known.as_built_for("1.0.0"), known.AS_BUILT)
         for none in (None, "", "unknown", "0.4", "0.4.1-dirty", "1" * 10 + ".0.0"):
             self.assertEqual(known.as_built_for(none), known.AS_BUILT, none)

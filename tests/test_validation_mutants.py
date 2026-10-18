@@ -141,6 +141,18 @@ TRACES = {
     "$$ read as a $ before what follows": "the regression traces",
     "old-style arithmetic read as text": "the regression traces",
     "a backquoted span's quotes read as the quoting around it": "the regression traces",
+    "a substitution in double quotes read as part of its word": "the regression traces",
+    "a process substitution read as a redirection": "the regression traces",
+    "a nested substitution left unread": "the regression traces",
+    "a backquoted span in a substitution read as text": "the regression traces",
+    "arithmetic read as no substitution": "the regression traces",
+    "a $'...' read as a quoted span": "the regression traces",
+    "a single quote in a double-quoted ${ } read as a quote": "the regression traces",
+    "arithmetic read as commands": "the regression traces",
+    "a single quote in $[ ] read as a quote": "the regression traces",
+    "a body's arithmetic left out of what it runs": "the regression traces",
+    "substitutions told alike by their own texts alone": "the regression traces",
+    "a backquoted span's hidden bodies left in": "the regression traces",
     "dealing without its taken set": "dealing at every look",
     "each leg dealt from its own look": "the regression traces",
     "given to workers needing the label todo": "the regression traces",
@@ -416,7 +428,7 @@ class TheLane(unittest.TestCase):
         404 after a rate limit read as never on, 172. That passes 150, so
         the bound is widened to 200: the lane grows by a few mutants for
         each finding it fixes, and 0.5.1 carries several findings, F22,
-        F23, F25, F26, F27 and F28 among them, with F24 still to come. F28's
+        F23, F24, F25, F26, F27 and F28 among them. F28's
         fix four, one for each rule of env's words: env's assignments read
         as the shell's, env's lone - not read, env's -S string not split
         and env's lone assignment read as the shell's, 176; and its review
@@ -425,13 +437,22 @@ class TheLane(unittest.TestCase):
         name and a time the guard cannot tell read as the keyword alone,
         180; and its second review one, every ${NAME} read all set or all
         unset, 181; and its third review one, a push env's -S spells read
-        only as written, 182; and the dependencies two, the clerk dealing
-        an issue an open issue blocks and the board listing a goal in the
-        Queue, 184; and their review's two, the rows saying nothing of an
-        issue an open issue blocks and the Dependencies section never
-        drawn, 186."""
+        only as written, 182; and F24's fix six,
+        one for each rule of its reading: a substitution in double quotes
+        read as part of its word, a process substitution read as a
+        redirection, a nested substitution left unread, a backquoted span
+        in a substitution read as text, arithmetic read as no substitution
+        and a $'...' read as a quoted span, 188; and its first review six:
+        a single quote in a double-quoted ${ } read as a quote, arithmetic
+        read as commands, a single quote in $[ ] read as a quote, a body's
+        arithmetic left out of what it runs, substitutions told alike by
+        their own texts alone and a backquoted span's hidden bodies left
+        in, 194; and the dependencies two, the clerk dealing an issue an
+        open issue blocks and the board listing a goal in the Queue, 196;
+        and their review's two, the rows saying nothing of an issue an
+        open issue blocks and the Dependencies section never drawn, 198."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 186)
+        self.assertEqual(len(mutants.MUTANTS), 198)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
