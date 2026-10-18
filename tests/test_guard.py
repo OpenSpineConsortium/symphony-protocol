@@ -3,6 +3,7 @@ everything else through, including a push it cannot read, as one inside
 quoting it misreads: the hook is the first fence, branch protection the
 second, so it fails open."""
 
+import ast
 import os
 import random
 import re
@@ -432,12 +433,16 @@ class ParsingTest(unittest.TestCase):
 
 def plain_shell_before_f25(command):
     """guard.plain_shell as it was until F25's fix, word for word, which the
-    pass must still give: the template's shim and its profile read it."""
+    pass must still give: the template's shim and its profile read it; but
+    for \\$ and \\` inside double quotes, handed to shlex since F28's second
+    review as $ and `, as bash hands them on (as_quoted)."""
     out, quote, word_start, i = [], None, True, 0
     while i < len(command):
         ch = command[i]
         if ch == "\\" and quote != "'":
-            if command[i + 1:i + 2] != "\n":
+            if quote == '"' and command[i + 1:i + 2] in ("$", "`"):
+                out.append(command[i + 1])
+            elif command[i + 1:i + 2] != "\n":
                 out.append(command[i:i + 2])
             i, word_start = i + 2, False
         elif quote:
@@ -1155,6 +1160,430 @@ class WrapperTest(unittest.TestCase):
                     self.assertEqual(read, done.stdout == "ran", done.stderr)
 
 
+# env's words before a command as F28 reads them, each run by the GNU env
+# installed here with printf after it (EnvAssignmentTest): a word that
+# holds a = but no name the shell takes, a lone - after the options, and
+# a string -S splits.
+ENV_WORDS = (
+    ["env", "1x=2"], ["env", "A-B=1"], ["env", "=x"], ["env", "-i", "--", "A.B=1"], ["env", "--", "-"],
+    ["env", "-", "1x=2"], ["env", "--uns", "FOO", "1x=2"], ["env", "-S", "1x=2"], ["env", "-S", "-i 1x=2 -"],
+    ["env", "-iS", "A.B=1"], ["env", "-S1x=2"], ["env", "--sp=-u X 1x=2"], ["env", "--split-string", "-C / x-y=1"],
+    ["env", "-S", "-S 1x=2"], ["env", "FOO=1", "-"], ["env", "-S", "'unclosed"], ["env", "-S", "$HOME"],
+    ["env", "-S", "a\\qb"], ["env", "-S", "\"\\c\""], ["env", "-S", "#"], ["env", "-S", "\\c 1x=2"],
+    ["env", "-S"], ["env", "-u"],
+)
+# Strings for -S, each split by split_string as GNU env splits it.
+SPLIT_STRINGS = (
+    "a b", "  a\t\tb  ", "'a b' c", '"a b" c', "a'b c'd", "'' x", '"" x', "a\\_b", '"a\\_b"', "'a\\_b'",
+    "a\\nb", "'a\\nb'", '"a\\tb"', "a\\\\b", "'a\\\\b'", "'a\\'b'", '"a\\"b"', "a\\$b", "a\\#b", "#a b", "a #b",
+    "a#b c", "a \\c b", "'x' \\c", "x\\ y",
+)
+
+
+def env_split(text):
+    """The words the env installed here splits text into with -S, run
+    with python after them, or None where it refuses the string."""
+    shown = f"{sys.executable} -c 'import sys;print(repr(sys.argv[1:]))' "
+    done = subprocess.run(["env", "-S", shown + text], capture_output=True, text=True, timeout=30,
+                          stdin=subprocess.DEVNULL)
+    return None if done.returncode == CANCELED else ast.literal_eval(done.stdout.strip())
+
+
+class EnvAssignmentTest(unittest.TestCase):
+    """F28: GNU env reads every word after its options that holds a = as an
+    assignment, not only one the shell would (env.c's loop on strchr), a
+    lone - after its options as -i, and the string -S gives it as the
+    words it splits it into, so the guard, which read 1x=2, the - and the
+    string as the command env runs, let the push behind each pass."""
+
+    def test_each_word_env_reads_before_its_command_is_read_so(self):
+        for command in ("env 1x=2 git push origin main", "env A-B=1 git push origin main",
+                        "env =x git push origin main", "env -i -- A.B=1 git push origin main",
+                        "nice env x-y=1 git push origin main", "env --uns FOO 1x=2 git push origin main",
+                        "env 1x=2 A=1 a.b=c git push origin main", "env -- - git push origin main",
+                        "env - 1x=2 git push origin main", "env -C / 1x=2 git push origin main",
+                        "env 1x=2 nice git push origin main", "env 1x=2 env A-B=1 git push origin main",
+                        "env -S 'git push origin main'", "env -S'git push origin main'",
+                        "env '-S git push origin main'", "env --split-string='git push origin main'",
+                        "env --sp 'git push origin main'", "env -iS 'git push origin main'",
+                        "env -S '-i 1x=2 git push origin main'", "env -S 'env -S \"git push origin main\"'",
+                        "env -S 'git push\\_origin main'", "env -S 'git push origin main #comment'",
+                        "env -S 'git push origin main \\c rest'", "env -S \"git 'push' origin main\"",
+                        "env -S 'git' push origin main", "env -S '-u HOME' git push origin main"):
+            with self.subTest(command=command):
+                self.assertEqual([guard.push_arguments(argv) for argv in guard.simple_commands(command)],
+                                 [["origin", "main"]])
+
+    def test_harmless_forms_pass(self):
+        """A command env runs that is no push, an assignment only after env
+        (bash runs 1x=2 as a command, which fails), a - that follows an
+        assignment, which env runs as the command, and a string env refuses
+        and runs nothing, left one word as before the fix."""
+        for command in ("env FOO=bar make", "env -u X ls", "env 1x=2 printf ran", "1x=2 git push origin main",
+                        "env FOO=1 - git push origin main", "env -S 'printf git push origin main'",
+                        "env -S 'echo push' main", "env -S '$x git push origin main'"):
+            with self.subTest(command=command):
+                self.assertEqual([guard.push_arguments(argv) for argv in guard.simple_commands(command)
+                                  if guard.push_arguments(argv) is not None], [])
+        self.assertEqual(guard.launch(["env", "-S", "'x", "git", "push"]).argv, ["env", "-S", "'x", "git", "push"])
+
+    def test_an_assignment_after_env_names_the_repository_as_one_before_it_does(self):
+        """GIT_DIR set by env, after any word env takes as an assignment,
+        sends the push where the guard does not look, as one set by the
+        shell before the command does, so its clone is not told."""
+        for command in ("env 1x=2 GIT_DIR=/r git -C /x push", "env -S 'GIT_DIR=/r' git push",
+                        "GIT_DIR=/r env git -C /x push", "env --uns A 1x=2 GIT_REFERENCE_BACKEND=files:///r git push"):
+            with self.subTest(command=command):
+                self.assertEqual(push_places(command), [None])
+        self.assertEqual(push_places("env 1x=2 git -C /x push"), ["/x"])
+        self.assertEqual(push_places("env -S '-C /x' 1x=2 git push"), ["/x"])
+
+    def test_env_alone_sets_no_variable_of_the_shell(self):
+        """env GIT_DIR=x with no command prints its environment and sets
+        nothing in the shell, so the push after it is judged where its -C
+        names; a lone assignment sets the shell's own (F28: until the fix
+        the push after env GIT_DIR=x was judged by its words and in the
+        session's own clone alone); one after time is read both ways
+        (EnvReviewTest)."""
+        self.assertEqual(push_places("env GIT_DIR=/r; git -C /x push"), ["/x"])
+        self.assertEqual(push_places("env 1x=2 GIT_DIR=/r; git -C /x push"), ["/x"])
+        self.assertEqual(push_places("nice env GIT_DIR=/r; git -C /x push"), ["/x"])
+        self.assertEqual(push_places("GIT_DIR=/r; git -C /x push"), [None])
+        with self.subTest(shell="bash"):
+            shown = subprocess.run(["bash", "-c", "env GIT_DIR=/r > /dev/null; echo \"[$GIT_DIR]\""],
+                                   capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+            self.assertEqual(shown.stdout, "[]\n")
+
+    def test_split_string_splits_as_gnu_env_does(self):
+        cases = {"a b": ["a", "b"], "'a b' c": ["a b", "c"], "a\\_b": ["a", "b"], '"a\\_b"': ["a b"],
+                 "'a\\_b'": ["a\\_b"], "#a b": [], "a#b c": ["a#b", "c"], "a \\c b": ["a"], "'' x": ["", "x"],
+                 "${HOME} x": ["${HOME}", "x"], "'${HOME}'": ["${HOME}"], "": []}
+        for text, words in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(guard.split_string(text), words)
+        for text in ("'a", '"a', "$HOME", "${1x}", "a\\", "a\\q", '"\\c"'):
+            with self.subTest(refused=text):
+                self.assertIsNone(guard.split_string(text))
+
+    def test_split_string_agrees_with_the_installed_gnu_env(self):
+        if not gnu_coreutils("env") or subprocess.run(["env", "-S", "true"]).returncode != 0:
+            self.skipTest("no GNU env that takes -S")
+        for text in SPLIT_STRINGS + ("'a", "$HOME", "a\\q", '"\\c"', "a\\"):
+            with self.subTest(text=text):
+                self.assertEqual(guard.split_string(text), env_split(text))
+
+    def test_the_guard_reads_the_command_the_installed_gnu_env_runs(self):
+        """Run with printf after its words, env runs printf where the guard
+        reads printf as the command, and something else where the guard
+        reads something else; where env refuses its words and runs
+        nothing, the guard reads on to printf."""
+        if not gnu_coreutils("env"):
+            self.skipTest("no GNU env")
+        for words in ENV_WORDS:
+            argv = words + ["printf", "%s", "ran"]
+            with self.subTest(argv=argv):
+                done = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+                found = guard.launch(argv)
+                read = found.start is not None and found.argv[found.start] == "printf"
+                if done.returncode == CANCELED:
+                    self.assertTrue(read, "words env refuses are read as running what follows")
+                else:
+                    self.assertEqual(read, done.stdout == "ran", done.stderr)
+
+    def test_a_mutant_for_each_rule_lets_its_shape_through(self):
+        """Each part of the fix undone lets the push of its shape pass, as
+        before it."""
+        for name, replacement, command in (
+                ("env_assigns", lambda word: bool(guard.ASSIGNMENT.match(word)), "env 1x=2 git push origin main"),
+                ("past_lone_dash", lambda rest, read: None, "env -- - git push origin main"),
+                ("split_string", lambda text, unset=False: None, "env -S 'git push origin main'")):
+            with self.subTest(name=name), mock.patch.object(guard, name, replacement):
+                self.assertEqual([guard.push_arguments(argv) for argv in guard.simple_commands(command)], [None])
+        with mock.patch.object(guard, "sets_the_shells_own", lambda found: True):
+            self.assertEqual(push_places("env GIT_DIR=/r; git -C /x push"), [None])
+
+
+
+class EnvReviewTest(unittest.TestCase):
+    """F28's review: a lone - ends env's options, as getopt ends them, the
+    words after it read as env reads them; many -S strings are read in a
+    time in proportion to the command; only the word time is bash's
+    keyword; and a ${NAME} env may drop is read both ways."""
+
+    def test_a_lone_dash_ends_env_s_options(self):
+        """GNU env takes the lone - as -i, and every later word that holds a
+        = as an assignment, so --split-string=x is no -S and --chdir=/tmp no
+        move, as fcbe822 read them."""
+        for command in ("env - --split-string=x git push origin main", "env - --sp=x git push origin main",
+                        "env -i - --sp=x git push origin main"):
+            with self.subTest(command=command):
+                self.assertEqual([guard.push_arguments(argv) for argv in guard.simple_commands(command)],
+                                 [["origin", "main"]])
+        self.assertEqual(push_places("env - --chdir=/tmp git push --force-with-lease origin claude/7", "/w/d"),
+                         ["/w/d"])
+        self.assertEqual(push_places("env - '--split-string=-C a' git push", "/w/d"), ["/w/d"])
+        self.assertEqual(push_places("env -C a - git push", "/w/d"), ["/w/d/a"], "options before it still count")
+        with mock.patch.object(guard, "ends_options", lambda word: False):
+            self.assertEqual([guard.push_arguments(argv) for argv in
+                              guard.simple_commands("env - --sp=x git push origin main")], [None],
+                             "read past the -, --sp=x splits into x, read as the command")
+        for words in (["env", "-", "--split-string=x"], ["env", "-", "--chdir=/"], ["env", "-", "-u", "X"]):
+            if not gnu_coreutils("env"):
+                break
+            argv = words + ["printf", "%s", "ran"]
+            with self.subTest(argv=argv):
+                done = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+                found = guard.launch(argv)
+                read = found.start is not None and found.argv[found.start] == "printf"
+                self.assertEqual(read, done.stdout == "ran", done.stderr)
+
+    def test_many_split_strings_are_read_by_their_content_within_the_budget(self):
+        """Each word is moved once, so a command near MAX_COMMAND of -S
+        strings, side by side, one holding many words, or nested to the
+        bound, is read and refused for its push, never TOO_SLOW; one nested
+        deeper is refused unread, as here-documents nested too deep are."""
+        push = "git push origin main"
+        commands = {"side by side": "env " + "-S-i " * ((guard.MAX_COMMAND - 30) // 5) + push,
+                    "with a value": "env " + "-S'-u X' " * ((guard.MAX_COMMAND - 30) // 9) + push,
+                    "many words": "env -S '" + "-i " * ((guard.MAX_COMMAND - 40) // 3) + push + "'",
+                    "nested to the bound": "env " + "-S" * guard.MAX_NESTING + "-i " * 80000 + push}
+        for name, command in commands.items():
+            self.assertLessEqual(len(command), guard.MAX_COMMAND)
+            with self.subTest(shape=name):
+                started = time.monotonic()
+                self.assertEqual(guard.refused_push(command, "/w", lambda place: ("claude/7", "main"),
+                                                    lambda place: None, lambda place: True), MAIN)
+                self.assertLess(time.monotonic() - started, 3.0)
+        deep = "env " + "-S" * 120000 + "x " + push
+        started = time.monotonic()
+        self.assertEqual(guard.refused_push(deep, "/w", lambda place: ("claude/7", "main"), lambda place: None,
+                                            lambda place: True), guard.SPLIT_TOO_DEEP)
+        self.assertLess(time.monotonic() - started, 3.0)
+        word = "a" * 200000
+        started = time.monotonic()
+        self.assertEqual(guard.split_string(word + " b"), [word, "b"])
+        self.assertLess(time.monotonic() - started, 1.0, "one long word is joined once")
+
+    def test_only_the_word_time_is_bash_s_keyword(self):
+        """/usr/bin/time GIT_DIR=/r runs the assignment as a command and
+        sets nothing, so the push after it is judged where its -C names
+        alone; "time" and \\time, which bash runs as the program too, read
+        as time once the quotes are gone, so the push after them is judged
+        both ways, there and as though GIT_DIR were set; a bare time sets it,
+        and is judged both ways for the same reason."""
+        self.assertEqual(push_places("/usr/bin/time GIT_DIR=/r; git -C /x push"), ["/x"])
+        for command in ('"time" GIT_DIR=/r; git -C /x push', "\\time GIT_DIR=/r; git -C /x push",
+                        "time GIT_DIR=/r; git -C /x push", "time -p GIT_DIR=/r; cd /y; git -C /x push"):
+            with self.subTest(command=command):
+                readings = [reading.place for argv, shell in guard.placed_commands(command, "/w/s", lambda p: True)
+                            if guard.push_arguments(argv) is not None
+                            for reading in guard.push_places(argv, shell, "/w/s")]
+                self.assertEqual(sorted(readings, key=str), sorted(["/x", "/w/s", None], key=str))
+        shown = subprocess.run(["bash", "-c", '"time" GIT_DIR=/r 2>/dev/null; echo "[$GIT_DIR]"'],
+                               capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+        self.assertEqual(shown.stdout, "[]\n", "bash runs a quoted time as the program")
+        with mock.patch.object(guard, "sets_the_shells_own",
+                               lambda found: all(name == "time" for name, _ in found.wrappers)):
+            self.assertEqual(push_places("/usr/bin/time GIT_DIR=/r; git -C /x push"), [None])
+
+    def test_a_variable_env_may_drop_is_read_both_ways(self):
+        """env expands a ${NAME} that is not set to nothing, dropping a word
+        that is nothing else, so the push behind ${NOPE} or ${NOPE}git is
+        judged; where the variable is set, the word as written is read
+        too."""
+        for command in ("env -S '${NOPE} git push origin main'", "env -S '${NOPE}git push origin main'",
+                        "env -S 'git ${NOPE} push origin main'", "env -S '${A}${B} git push origin main'",
+                        "env -S '-i ${NOPE} git push origin main'"):
+            with self.subTest(command=command):
+                self.assertEqual(guard.refused_push(command, "/w", lambda place: ("claude/7", "main"),
+                                                    lambda place: None, lambda place: True), MAIN)
+        self.assertEqual(guard.env_readings(["env", "-S", "${X} git push"]),
+                         [["env", "${X}", "git", "push"], ["env", "git", "push"]])
+        self.assertEqual(guard.env_readings(["env", "-S", "git push"]), [["env", "git", "push"]])
+        self.assertEqual(guard.split_string("${X}a ${Y} b", unset=True), ["a", "b"])
+        self.assertEqual(guard.split_string("'${X}'", unset=True), ["${X}"], "not expanded in single quotes")
+        self.assertEqual(guard.split_string('"${X}"', unset=True), [""], "the quotes make a word")
+        if gnu_coreutils("env"):
+            self.assertEqual(subprocess.run(["env", "-u", "NOPE", "-S", "${NOPE} printf %s ran"],
+                                            capture_output=True, text=True).stdout, "ran")
+        with mock.patch.object(guard, "readings_of", lambda argv: [guard.launch(argv)]):
+            self.assertIsNone(guard.refused_push("env -S '${NOPE} git push origin main'", "/w",
+                                                 lambda place: ("claude/7", "main"), lambda place: None,
+                                                 lambda place: True))
+
+
+def template_hook(command, current="claude/7", default="main"):
+    """The template's hook as it stands before it calls refused_push, its
+    tools/guard_push.py's main copied: simple_commands, push_arguments and
+    refusal, under no length or time limit; an exception out of it exits
+    1, which Claude Code reads as no objection, so the command runs."""
+    if "push" not in command:
+        return None
+    pushes = [args for argv in guard.simple_commands(command)
+              if (args := guard.push_arguments(argv)) is not None]
+    for args in pushes:
+        reason = guard.refusal(args, current, default, files_at({}))
+        if reason:
+            return reason
+    return None
+
+
+def refused(command):
+    return guard.refused_push(command, "/w", lambda place: ("claude/7", "main"), lambda place: None,
+                              lambda place: True)
+
+
+class EnvSecondReviewTest(unittest.TestCase):
+    """F28's second review: the template's hook, which calls the public
+    helpers itself, meets every reading and every bound; a backslash in
+    double quotes hands $ and ` on as bash does; set and unset names are
+    read in every mix; nested strings and flat chains of -S are read in a
+    time in proportion to the command."""
+
+    def test_the_template_s_hook_refuses_what_the_guard_refuses(self):
+        """17 attached -S raised TooDeep out of push_arguments, and the
+        hook never saw the unset reading, so each of these ran there where
+        fcbe822 refused them through the same hook."""
+        commands = {"env " + "-S" * 17 + "git push origin main": guard.SPLIT_TOO_DEEP,
+                    "env -S '${NOPE}' git push origin main": MAIN,
+                    "env -S'-S${A}' git push origin main": MAIN,
+                    "env -S '${NOPE} -' git push origin main": MAIN,
+                    "env -S '${A}${B}' git push origin main": MAIN}
+        for command, reason in commands.items():
+            with self.subTest(command=command):
+                self.assertEqual(template_hook(command), reason)
+                self.assertEqual(refused(command), reason)
+                for argv, shell in guard.placed_commands(command, "/w", lambda place: True):
+                    guard.launch(argv), guard.command_start(argv), guard.chdir_paths(argv)
+                    guard.env_readings(argv), guard.moved_to(argv, shell, lambda place: True)
+        self.assertIsNone(template_hook("env -S '${NOPE}' git push origin claude/7"))
+        with mock.patch.object(guard, "readings_of", lambda argv: [guard.launch(argv)]):
+            self.assertIsNone(template_hook("env -S '${NOPE}' git push origin main"),
+                              "the reading as written alone: ${NOPE} run as the command")
+
+    def test_a_backslash_in_double_quotes_hands_on_the_dollar(self):
+        """bash turns \\$ and \\` inside double quotes into $ and `, so env
+        sees ${NOPE} and drops it where NOPE is not set."""
+        for command in ('env -S "\\${NOPE}git push origin main"',
+                        'env -S "-S\'\\${NOPE}git push origin main\'"',
+                        'env "-S\\${NOPE}git push origin main"'):
+            with self.subTest(command=command):
+                self.assertEqual(refused(command), MAIN)
+                self.assertEqual(template_hook(command), MAIN)
+        self.assertEqual(guard.simple_commands('env -S "\\${X} \\`y\\` \\a"'), [["env", "-S", "${X} `y` \\a"]])
+        shown = subprocess.run(["bash", "-c", 'printf %s "\\${X}\\`"'], capture_output=True, text=True)
+        self.assertEqual(shown.stdout, "${X}`")
+        with mock.patch.object(guard, "QUOTED_PAIRS", {"\n": ""}):
+            self.assertIsNone(refused('env -S "\\${NOPE}git push origin main"'))
+
+    def test_set_and_unset_names_are_read_in_every_mix(self):
+        """Up to MOST_NAMES names, one reading for each set of them unset;
+        past it a command that holds a push is refused unread."""
+        for command in ("env -S '${NOPE} -C ${HOME} git push origin main'",
+                        "env -S '${NOPE}-u ${HOME} git push origin main'",
+                        "env -S '${A} ${B} -C ${C} git push origin main'"):
+            with self.subTest(command=command):
+                self.assertEqual(refused(command), MAIN)
+                self.assertEqual(template_hook(command), MAIN)
+        self.assertIsNone(refused("env -S '${A} ${B} -C ${C} git push origin claude/7'"))
+        many = "env -S '${A}${B}${C}${D}${E}${F}${G} git push origin claude/7'"
+        self.assertEqual(refused(many), guard.SPLIT_TOO_MANY_NAMES)
+        self.assertEqual(template_hook(many), guard.SPLIT_TOO_MANY_NAMES)
+        self.assertEqual([reading.argv for reading in guard.readings_of(["env", "-S", "${A}${B}${C}${D}${E}${F}${G} ls"])],
+                         [["env", "${A}${B}${C}${D}${E}${F}${G}", "ls"]], "no push: read as written alone")
+        self.assertEqual(len(guard.unset_subsets(["${A}", "${B}", "${C}"])), 8)
+        with mock.patch.object(guard, "unset_subsets",
+                               lambda names: [frozenset(), frozenset(name[2:-1] for name in names)]):
+            self.assertIsNone(refused("env -S '${NOPE} -C ${HOME} git push origin main'"),
+                              "all set or all unset alone: -C takes git, or ${NOPE} runs")
+
+    def test_a_push_env_spells_is_refused_unread_where_the_guard_cannot_read_it(self):
+        """F28's third review: the refusals unread looked for push in the
+        words as written, so pu""sh and pu${NOPE}sh, which env's -S makes
+        push, passed both; a string nested too deep is refused unread
+        whatever its words, and past the names the guard reads each mix of,
+        a command is refused where its words may spell push once quotes,
+        backslashes and ${NAME}s are out (holds_push)."""
+        for command in ("env -S '${A}${B}${C}${D} git pu\"\"sh origin main'; echo push",
+                        "env '" + "-S" * 17 + "git pu\"\"sh origin main'; echo push",
+                        "env -S '${A}${B}${C} git pu${NOPE}sh origin main'; echo push",
+                        "env -S '${A}${B}${C}${D}${E}${F}${G} git pu\"\"sh origin main'; echo push",
+                        "env -S '${A}${B}${C}${D}${E}${F}${G} -S\"git pu'\"''\"'sh origin main\"'; echo push"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+                self.assertIsNotNone(template_hook(command))
+        self.assertEqual(guard.run({"tool_input": {"command": 'env -S \'git pu""sh origin main\''}, "cwd": "/"})[0],
+                         guard.REFUSE, "the library's own hook asks of a text that spells push")
+        self.assertEqual(guard.run({"tool_input": {"command": 'git pu""sh origin main'}, "cwd": "/"})[0], guard.REFUSE)
+        self.assertTrue(guard.holds_push(["pu\\${A}s\"\"h"]))
+        self.assertFalse(guard.holds_push(["pu\\_sh", "pu sh", "pul"]))
+        self.assertIsNotNone(refused("env " + "-S" * 17 + "ls; git push origin claude/7"),
+                             "nested too deep: the words env runs are not read")
+        with mock.patch.object(guard, "holds_push", lambda argv: any("push" in word for word in argv)):
+            self.assertIsNone(refused("env -S '${A}${B}${C}${D}${E}${F}${G} git pu\"\"sh origin main'; echo push"))
+
+    def test_every_mix_is_read_up_to_the_bound(self):
+        """F28's third review: past three names the guard refused every
+        command that held push as written, though env runs no push in
+        these, or only the owner's own; up to MOST_NAMES every mix is read,
+        since a push one mix alone runs is found by no other, as here where
+        B alone is set, and the readings spend the budget at most once."""
+        for command in ("env -S 'echo ${A} ${B} ${C} ${D} push'", "env -S 'printf %s ${A}${B}${C}${D}' push",
+                        "env -S 'git commit -m \"push ${A} ${B} ${C} ${D}\"'",
+                        "env -S '${A} ${B} ${C} ${D}' git push -u origin claude/7",
+                        "env -S '${A} ${B} ${C} ${D} ${E} ${F}' git push -u origin claude/7"):
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+                self.assertIsNone(template_hook(command))
+        mix = "env -S '${A}-u ${B} ${C}-u ${D}' x git push origin main"
+        self.assertEqual(refused(mix), MAIN)
+        self.assertEqual(template_hook(mix), MAIN)
+        if gnu_coreutils("env"):
+            done = subprocess.run(["env", "-u", "A", "-u", "C", "-u", "D", "B=1", "env", "-S", "${A}-u ${B} ${C}-u ${D}",
+                                   "x", "printf", "%s", "ran"], capture_output=True, text=True)
+            self.assertEqual(done.stdout, "ran", "B alone set: -u 1 -u x, then the command")
+        with mock.patch.object(guard, "unset_subsets",
+                               lambda names: [frozenset(), frozenset(name[2:-1] for name in names)]):
+            self.assertIsNone(refused(mix), "all kept: ${A}-u runs; all unset: -u -u, then x runs")
+        wide = "env -S '${A}${B}${C}${D}${E}${F} " + "-i " * 30000 + "git push origin claude/7'"
+        started = time.monotonic()
+        self.assertEqual(refused(wide), guard.SPLIT_TOO_MANY_NAMES)
+        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertIsNone(refused("env -S '${A}${B}${C}${D}${E}${F} " + "-i " * 30000 + "ls'"))
+
+    def test_nested_strings_and_flat_chains_are_read_in_time(self):
+        """A string nested in quoted -S strings is split once a level, so a
+        wide one nested 14 to 16 deep spends the budget and is refused
+        unread, quickly; a narrow one is read by its content; and -S taking
+        the next word as its value starts from that word's depth, so a flat
+        chain of any length is read by its content."""
+        def nested(levels, inner):
+            for _ in range(levels - 1):
+                inner = "-S '" + inner.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            return "env -S " + shlex.quote(inner)
+        for levels in (14, 15, 16):
+            head = len(nested(levels, ""))
+            command = nested(levels, "-i " * ((guard.MAX_COMMAND - 2 * head - 400) // 3 // 2) + "git push origin main")
+            self.assertLessEqual(len(command), guard.MAX_COMMAND)
+            with self.subTest(levels=levels):
+                started = time.monotonic()
+                self.assertEqual(refused(command), guard.SPLIT_TOO_DEEP)
+                self.assertEqual(template_hook(command), guard.SPLIT_TOO_DEEP)
+                self.assertLess(time.monotonic() - started, 3.0)
+        self.assertEqual(refused(nested(16, "-i git push origin main")), MAIN)
+        self.assertIsNone(refused(nested(16, "-i git push origin claude/7")))
+        self.assertEqual(refused(nested(17, "-i git push origin claude/7")), guard.SPLIT_TOO_DEEP)
+        for count in (17, 40):
+            with self.subTest(count=count):
+                self.assertIsNone(refused("env " + "-S " * count + "git push origin claude/7"))
+                self.assertEqual(refused("env " + "-S " * count + "git push origin main"), MAIN)
+                self.assertEqual(template_hook("env " + "-S " * count + "git push origin main"), MAIN)
+        chain = "env " + "-S " * ((guard.MAX_COMMAND - 40) // 3) + "git push origin main"
+        started = time.monotonic()
+        self.assertEqual(refused(chain), MAIN)
+        self.assertLess(time.monotonic() - started, 3.0)
+
+
 HOME = os.path.expanduser("~")
 
 
@@ -1661,11 +2090,12 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.run_guard("git push -u origin heads/claude/7"), (0, ""))
 
     def test_a_command_handed_to_another_shell_as_text_is_out_of_reach(self):
-        """The trade the docstring states: what bash -c, eval or env -S runs
-        is text to this module, and a wrapper it does not name is no git, so
-        each passes, and branch protection stands behind it."""
+        """The trade the docstring states: what bash -c or eval runs is text
+        to this module, and a wrapper it does not name is no git, so each
+        passes, and branch protection stands behind it. env -S, which env
+        splits itself, is read since F28's fix (EnvAssignmentTest)."""
         for command in ("bash -c 'git push origin main'", "eval 'git push origin main'",
-                        "env -S 'git push origin main'", "sudo git push origin main"):
+                        "sudo git push origin main"):
             self.assertEqual(self.run_guard(command), (0, ""), command)
 
     def test_command_without_push_passes_without_git(self):
@@ -1912,6 +2342,34 @@ class OtherCloneTest(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assertEqual(self.hook(command), (guard.PASS, ""),
                                      "--c= and --ch read as no move: judged in s, on its own claim")
+
+    def test_a_push_behind_env_s_assignments_and_split_string_is_judged_in_the_clone_it_runs_in(self):
+        """From s, env runs git in other behind a word it reads as an
+        assignment, as 1x=2, and behind a string -S splits, and env
+        GIT_DIR=x alone sets nothing in the shell, so the lease after it
+        runs in other too; until F28's fix the hook read 1x=2 and the
+        string as the command env runs and passed both, and judged the
+        lease after env GIT_DIR=x in s alone, which never fetched a's
+        claim."""
+        main = "env 1x=2 git -C ../other push origin HEAD"
+        self.assertIn("refs/heads/main", dry_run(main, self.session), "env runs git in other")
+        self.assertEqual(self.hook(main), (guard.REFUSE, MAIN))
+        self.claim_of_b_in_other()
+        leases = ("env A-B=1 git -C ../other push --force-with-lease origin claude/7",
+                  "env -S 'git -C ../other push --force-with-lease origin claude/7'",
+                  "env GIT_DIR=x; git -C ../other push --force-with-lease origin claude/7")
+        for lease in leases:
+            with self.subTest(lease=lease):
+                self.assertIn("(forced update)", dry_run(lease, self.session), "git would take a's claim")
+                code, reason = self.hook(lease)
+                self.assertEqual(code, guard.REFUSE)
+                self.assertIn("claude/7 on origin is a's claim", reason)
+        for name, replacement, command in (
+                ("env_assigns", lambda word: bool(guard.ASSIGNMENT.match(word)), leases[0]),
+                ("split_string", lambda text, unset=False: None, leases[1]),
+                ("sets_the_shells_own", lambda found: True, leases[2])):
+            with self.subTest(mutant=name), mock.patch.object(guard, name, replacement):
+                self.assertEqual(self.hook(command), (guard.PASS, ""), "as built until F28's fix")
 
     def test_a_lease_after_a_cd_that_fails_is_judged_where_the_shell_stood(self):
         """From s, the shell's cd into other is made and the cd into nowhere

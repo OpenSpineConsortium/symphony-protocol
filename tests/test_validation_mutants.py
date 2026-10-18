@@ -152,6 +152,16 @@ TRACES = {
     "a label taken off and lost stays off": "the regression traces",
     "a label refused its removal put back": "the regression traces",
     "a 404 after a rate limit read as never on": "the regression traces",
+    "env's assignments read as the shell's": "the regression traces",
+    "env's lone - not read": "the regression traces",
+    "env's -S string not split": "the regression traces",
+    "env's lone assignment read as the shell's": "the regression traces",
+    "a lone - read past as one of env's options": "the regression traces",
+    "an -S string's variables read only as written": "the regression traces",
+    "time matched by its program's name": "the regression traces",
+    "a time the guard cannot tell read as the keyword alone": "the regression traces",
+    "every ${NAME} read all set or all unset": "the regression traces",
+    "a push env's -S spells read only as written": "the regression traces",
     "an epic gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "epic"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocker gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocker"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocked task gets no todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocked"))] + HELD + [WAIT, BOARD],
@@ -396,12 +406,21 @@ class TheLane(unittest.TestCase):
         as text and a backquoted span's quotes read as the quoting around
         it, 169; and F27's fix two, a label taken off and lost stays off
         and a label refused its removal put back, 171, and its review one, a
-        404 after a rate limit read as never on, 172. That passes 150, so the bound is widened to 200: the lane
-        grows by a few mutants for each finding it fixes, and 0.5.1 carries
-        several findings, F22, F23, F25, F26 and F27 among them, with F24
-        still to come."""
+        404 after a rate limit read as never on, 172. That passes 150, so
+        the bound is widened to 200: the lane grows by a few mutants for
+        each finding it fixes, and 0.5.1 carries several findings, F22,
+        F23, F25, F26, F27 and F28 among them, with F24 still to come. F28's
+        fix four, one for each rule of env's words: env's assignments read
+        as the shell's, env's lone - not read, env's -S string not split
+        and env's lone assignment read as the shell's, 176; and its review
+        four, a lone - read past as one of env's options, an -S string's
+        variables read only as written, time matched by its program's
+        name and a time the guard cannot tell read as the keyword alone,
+        180; and its second review one, every ${NAME} read all set or all
+        unset, 181; and its third review one, a push env's -S spells read
+        only as written, 182."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 172)
+        self.assertEqual(len(mutants.MUTANTS), 182)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
