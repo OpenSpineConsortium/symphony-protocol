@@ -1961,6 +1961,138 @@ def refused(command):
                               lambda place: True)
 
 
+# Pushes a command hands to a shell to run (F32): bash 5.2.21 ran each, by
+# -c with a git on PATH that records its arguments and runs nothing, and
+# the guard of f6ac177 passed each.
+HANDED_PUSHES = (
+    "bash -c 'git push origin main'",
+    "bash -lc 'git push origin main'",
+    "bash -c -- 'git push origin main'",
+    "bash -o pipefail -c 'git push origin main'",
+    "bash --norc -c 'git push origin main'",
+    "sh -ec 'git push origin main'",
+    "nohup bash -c 'git push origin main'",
+    "env bash -c 'git push origin main'",
+    "/bin/bash -c 'git push origin main'",
+    "eval 'git push origin main'",
+    'eval -- git push origin main',
+    'eval git push origin main',
+    "sh -c 'git push origin main'",
+    "bash <<<'git push origin main'",
+    "bash -s <<<'git push origin main'",
+    "bash /dev/stdin <<<'git push origin main'",
+    'sh <<< "git push origin main"',
+    "echo 'git push origin main' | bash",
+    'echo git push origin main | sh',
+    "echo -e 'git push origin ma\\x69n' | bash",
+    "printf 'git push origin main\\n' | sh",
+    "printf '%s %s\\n' 'git push' 'origin main' | bash",
+    "echo 'git push origin main' | cat | bash",
+    "cat <<<'git push origin main' | bash",
+    "trap 'git push origin main' EXIT",
+    "trap -- 'git push origin main' EXIT",
+    "source /dev/stdin <<<'git push origin main'",
+    ". /dev/stdin <<<'git push origin main'",
+    "echo 'git push origin main' | source /dev/stdin",
+    'bash -c \'eval "git push origin main"\'',
+    'bash -c "bash -c \'git push origin main\'"',
+    "bash -c 'cd /tmp && git push origin HEAD:main'",
+    "bash -c 'git push --force origin claude/7'",
+    "true && bash -c 'git push origin main'",
+    "x=$(bash -c 'git push origin main')",
+)
+# Commands that hand a shell no forbidden push, or hand it nothing: bash
+# ran none of their forbidden pushes, and the guard passes each.
+HANDED_TEXTS = (
+    "bash -c 'git push -u origin claude/7'",
+    "bash script.sh <<<'git push origin main'",
+    "echo 'git push origin main' > notes.md",
+    "echo 'git push origin main' | grep push",
+    'trap - EXIT',
+    "trap 'git push origin main'",
+    "printf -v x 'git push origin main' | bash",
+    "bash -c 'echo git push origin main'",
+    "echo 'git push origin main' | tee notes.md",
+    'sh -c \'git push origin "$(git branch --show-current)"\'',
+)
+
+
+class HandedTextTest(unittest.TestCase):
+    """What a command hands to a shell to run (F32): a shell's -c string,
+    eval's words, trap's action, and a here-string or what echo, printf or
+    cat prints into a shell or source of standard input, each read as a
+    command of its own from the shell that runs it."""
+
+    def test_each_push_handed_to_a_shell_is_refused(self):
+        for command in HANDED_PUSHES:
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+                with mock.patch.object(guard, "handed_texts", lambda argv, fed=(): []):
+                    self.assertIsNone(refused(command), "with no handed text read")
+
+    def test_what_hands_no_forbidden_push_passes(self):
+        for command in HANDED_TEXTS:
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+
+    def test_the_hook_refuses_them_too(self):
+        payload = {"tool_input": {"command": "bash -c 'git push origin main'"}, "cwd": str(ROOT)}
+        with mock.patch.object(guard, "branches", return_value=("claude/7", "main")):
+            self.assertEqual(guard.run(payload, str(ROOT)), (2, MAIN))
+
+    def test_what_the_fix_leaves(self):
+        """A text the command does not spell, a substitution's output, a
+        file or a variable, is a value the guard does not know and passes,
+        as a wrapper it does not name does."""
+        for command in ('eval "$(echo git push origin main)"', "cat push.sh | bash", "bash push.sh",
+                        'bash -c "$CMD"', "sudo bash -c 'git push origin main'"):
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+
+    def test_a_handing_is_read_from_the_shell_that_runs_it(self):
+        """A move inside the text is followed from where it starts and
+        changes nothing after it, as the shell bash -c starts ends with it."""
+        seen = []
+
+        def branches_of(place):
+            seen.append(place)
+            return ("claude/7", "main")
+
+        guard.refused_push("cd /w/a && bash -c 'cd b && git push origin HEAD'; git push origin HEAD", "/w",
+                           branches_of, lambda place: None, lambda place: True)
+        self.assertIn("/w/a/b", seen)
+        self.assertIn("/w", seen)
+
+    def test_texts_handed_on_too_deep_or_too_many_are_refused_unread(self):
+        self.assertEqual(refused("eval " * guard.MAX_NESTING + "'git push origin main'"), MAIN)
+        self.assertEqual(refused("eval " * (guard.MAX_NESTING + 1) + "'git push origin claude/7'"),
+                         guard.HANDED_TOO_DEEP)
+        many = "".join(f"bash -c 'echo {i}'; " for i in range(guard.MOST_HANDED))
+        self.assertIsNone(refused(many + "git push origin claude/7"))
+        self.assertEqual(refused(many + "bash -c 'echo last'"), guard.HANDED_TOO_DEEP)
+
+    def test_the_reading_takes_time_in_proportion_to_the_command(self):
+        """Each handed text is read once per shell, and the placed commands
+        are kept in a set, so a command near MAX_COMMAND of handings is read
+        and refused in a few seconds; until the set, it took ten."""
+        for form in ("bash -c 'echo {i}'; ", "echo 'x{i}' | sh; ", "bash <<<'x{i}'\n", "trap 'x{i}' EXIT; ",
+                     "eval x{i}; ", "eval eval 'x{i}'; "):
+            command, i = "", 0
+            while len(command) < guard.MAX_COMMAND - 40:
+                command += form.format(i=i)
+                i += 1
+            with self.subTest(form=form):
+                began = time.monotonic()
+                self.assertEqual(refused(command), guard.HANDED_TOO_DEEP)
+                self.assertLess(time.monotonic() - began, 3)
+
+    def test_the_template_s_helpers_still_give_lists(self):
+        """parts_of keeps a here-string on the words it feeds (Words), a
+        list the template's hook reads as before."""
+        self.assertEqual(guard.simple_commands("bash <<<'git push origin main'"), [["bash"]])
+        self.assertEqual(guard.parts_of("bash <<<'git push origin main'")[0].fed, "git push origin main")
+
+
 class EnvSecondReviewTest(unittest.TestCase):
     """F28's second review: the template's hook, which calls the public
     helpers itself, meets every reading and every bound; a backslash in
@@ -2620,13 +2752,12 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.run_guard("git push origin :heads/board"), (2, BOARD))
         self.assertEqual(self.run_guard("git push -u origin heads/claude/7"), (0, ""))
 
-    def test_a_command_handed_to_another_shell_as_text_is_out_of_reach(self):
-        """The trade the docstring states: what bash -c or eval runs is text
-        to this module, and a wrapper it does not name is no git, so each
-        passes, and branch protection stands behind it. env -S, which env
-        splits itself, is read since F28's fix (EnvAssignmentTest)."""
-        for command in ("bash -c 'git push origin main'", "eval 'git push origin main'",
-                        "sudo git push origin main"):
+    def test_a_wrapper_this_module_does_not_name_is_out_of_reach(self):
+        """The trade the docstring states: a wrapper this module does not name
+        is no git, so the push behind it passes, and branch protection stands
+        behind it. What bash -c and eval run is read since F32's fix
+        (HandedTextTest), as env -S is since F28's (EnvAssignmentTest)."""
+        for command in ("sudo git push origin main", "echo main | xargs git push origin"):
             self.assertEqual(self.run_guard(command), (0, ""), command)
 
     def test_command_without_push_passes_without_git(self):

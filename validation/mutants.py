@@ -1967,6 +1967,37 @@ MUTANTS = {
         guard, "kept_as_written", lambda word, value: bool(value) and not value.strip(":+") and guard.is_built(word),
         "G11a", "only a refspec with a hole on each side of its colon is kept as written, so :$X, which bash makes "
                 "the refspec : where X is unset, is refused (F29's second review)"),
+    "text handed to a shell left unread": Mutant(
+        guard, "handed_texts", lambda argv, fed=(): [],
+        "G11a", "a command may hand a shell text to run, so bash -c 'git push origin main', eval, trap and a "
+                "here-string or a pipe into a shell are read and refused (F32)"),
+    "a shell's -c string read as a script's name": Mutant(
+        guard, "takes_command_string", lambda letters: False,
+        "G11a", "a shell runs its -c string as commands, so bash -c 'git push origin main' and sh -c's like it "
+                "are read and refused (F32)"),
+    "eval's words left unread": Mutant(
+        guard, "EVALS", frozenset(),
+        "G11a", "eval runs its words joined as commands, so eval 'git push origin main' is read and refused (F32)"),
+    "trap's action left unread": Mutant(
+        guard, "TRAPS", frozenset(),
+        "G11a", "trap runs its action when its signal comes, so trap 'git push origin main' EXIT is read and "
+                "refused (F32)"),
+    "a shell's standard input left unread": Mutant(
+        guard, "shell_input", lambda operands, stdin, fed: [],
+        "G11a", "a shell with no script runs what reaches its standard input, so bash <<<'git push origin main' "
+                "and echo 'git push origin main' | bash are read and refused (F32)"),
+    "a here-string left off standard input": Mutant(
+        guard, "standard_input", lambda part, piped: tuple(piped),
+        "G11a", "a <<< here-string is the text on its command's standard input, so bash <<<'git push origin main' "
+                "and source /dev/stdin <<<'...' are read and refused (F32)"),
+    "what a pipe carries left unread": Mutant(
+        guard, "printed_texts", lambda argv, fed=(): (),
+        "G11a", "what echo or printf prints reaches the shell at the far end of a pipe, so echo 'git push origin "
+                "main' | bash is read and refused (F32)"),
+    "source of standard input read as a file's": Mutant(
+        guard, "STANDARD_INPUT", frozenset(),
+        "G11a", "source /dev/stdin runs the text on its standard input, so source /dev/stdin <<<'git push origin "
+                "main' is read and refused (F32)"),
     "dealing without its taken set": Mutant(
         team, "deal", deal_without_the_taken_set,
         "G14", "the workers of one run are dealt distinct issues"),

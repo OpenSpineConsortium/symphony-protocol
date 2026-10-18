@@ -178,12 +178,21 @@ BUILT_WORDS = (tuple(Spelling(verb=verb) for verb in ("$'pu\\x73h'", '$"push"', 
                   Spelling(git="mkdir +claude; touch +claude/7; git", name=("+claude/7", "?claude/7")),
                   Spelling(git="touch :main; git", name=(" :main", " [:]main")),
                   Spelling(git="X=main; git", name=(" :main", " :$X"))))
+# Since F32's fix the guard reads what a command hands to a shell to run,
+# so no wrapper of the grammar is one it cannot read; bash -c was until
+# then (G11b). The wrappers that hand the command over in the other ways,
+# taken with the command alone: eval, another shell's -c, a here-string
+# into a shell, a pipe from echo and from printf into one, trap's action
+# and source of standard input.
+UNREADABLE = ()
+HANDED = ("eval '{}'", "sh -c '{}'", "bash <<<'{}'", "echo '{}' | bash", "printf '%s\\n' '{}' | sh",
+          "trap '{}' EXIT", "source /dev/stdin <<<'{}'")
 # The prefixes and wrappers taken with the command alone, no wrapper or
 # global option around it.
 ALONE = (tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED + EMPTY_WORDS + COPROCS)
          + tuple(("", wrapper) for wrapper in (SPLIT, SPLIT_UNSET, SPLIT_MIXED, ANSI_C_SPLIT, CONTINUED_COMMENT,
-                                                 ARITHMETIC_BODY, QUOTED_ARITHMETIC_BODY, NAMED_COPROC)))
-UNREADABLE = "bash -c '{}'"
+                                                 ARITHMETIC_BODY, QUOTED_ARITHMETIC_BODY, NAMED_COPROC)
+                                                 + HANDED))
 # git's own options before the verb: a directory, the empty one git -C
 # takes as no change, a setting, a setting from the environment, whose
 # value is the next word (F21's review), and a shallow file, whose value
@@ -218,7 +227,7 @@ class Command(NamedTuple):
 
     @property
     def readable(self):
-        return self.wrapper != UNREADABLE
+        return self.wrapper not in UNREADABLE
 
     @property
     def allowed_shape(self):

@@ -192,7 +192,9 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "env-names": "env -S '${{A}}${{B}}${{C}}${{D}}${{E}}${{F}} -u ${{G}} git -C ../{clone} pu\"\"sh{rest}'",
              "set-alone": "GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
              "ansi-c-name": "git -C ../{clone} push --force-with-lease origin claude/$'{number}'",
-             "delimiter-substitution": "cat <<E$(echo x)F\nDon't\nE$(echo x)F\ngit {push}\ncat <<'EOF'\nIt's\nEOF"}
+             "delimiter-substitution": "cat <<E$(echo x)F\nDon't\nE$(echo x)F\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
+             "shell-string": "bash -c 'git -C ../{clone} {push}'",
+             "piped-shell": "echo 'git -C ../{clone} {push}' | sh"}
 # The ways whose push runs in the worker's own clone (leasing_clone).
 FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
                   "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",

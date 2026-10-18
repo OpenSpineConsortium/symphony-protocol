@@ -20,8 +20,10 @@ from validation import guard_grammar as g  # noqa: E402
 # each command is read in up to three more ways, its own text with each
 # substitution a hole, every word unset and its braces expanded, which on 4
 # processors took the judge from 11 s to 15 s; the 1,126 its first review
-# added keep it near 16 s.
-BUDGET_SECONDS = 20
+# added keep it near 16 s. Raised to 24 with F32's fix: its seven wrappers,
+# 1,631 commands, and the bash -c wrapper's commands, now read twice, the
+# second time as the text bash runs, took it to about 17 s.
+BUDGET_SECONDS = 24
 
 
 class TheGrammar(unittest.TestCase):
@@ -50,16 +52,20 @@ class TheGrammar(unittest.TestCase):
                       "git push --no-verify origin $(echo HEAD):$(echo claude/)$(echo 7)",
                       "git push --no-verify$(true) origin claude/7", "git push origin ${A:-ma}$(echo in)",
                       "git push $(echo -)f origin claude/7", "mkdir +claude; touch +claude/7; git push origin ?claude/7",
-                      "touch :main; git push origin [:]main", "X=main; git push origin :$X"):
+                      "touch :main; git push origin [:]main", "X=main; git push origin :$X",
+                      "eval 'git push origin main'", "sh -c 'git push origin main'", "bash <<<'git push origin main'",
+                      "echo 'git push origin main' | bash", "printf '%s\\n' 'git push origin main' | sh",
+                      "trap 'git push origin main' EXIT", "source /dev/stdin <<<'git push origin main'"):
             with self.subTest(shape=shape):
                 self.assertIn(shape, texts)
         self.assertEqual(len(set(texts)), len(texts))
         self.assertEqual(len(g.argument_lists()), 1398, "a prefix changes what the guard reads, never git's words")
-        self.assertEqual(len(texts), 75034, "since F28's fix and its reviews env's assignments and its -S, 1,631 "
+        self.assertEqual(len(texts), 76665, "since F28's fix and its reviews env's assignments and its -S, 1,631 "
                                             "more, since F24's a seventh and an eighth wrapper, a quoted and a "
                                             "process substitution, 16,776, since F29's the words bash builds, "
                                             "4,129, since its first review coproc and seven spellings, 1,126, and "
-                                            "since its second five spellings, 112")
+                                            "since its second five spellings, 112, and since F32's seven "
+                                            "wrappers that hand a shell the command, 1,631")
         self.assertFalse(any(c.prefix in g.ABBREVIATED + g.ENV_ASSIGNED and (c.wrapper != "{}" or c.argv.startswith("-"))
                              for c in g.commands()), "an abbreviated wrapper is taken with the command alone")
         self.assertFalse(any(c.wrapper in (g.SPLIT, g.SPLIT_UNSET, g.SPLIT_MIXED) and (c.prefix or c.argv.startswith("-")) for c in g.commands()),
@@ -117,9 +123,8 @@ class TheGuardJudged(unittest.TestCase):
         self.assertLess(time.perf_counter() - began, BUDGET_SECONDS)
         self.assertEqual(judgement.missing, ())
         self.assertEqual(judgement.failures, {}, g.report(judgement))
-        self.assertEqual(judgement.commands, 75034)
+        self.assertEqual(judgement.commands, 76665)
         let_through = {d.why for d in judgement.classes if d.kind == "let through"}
-        self.assertTrue(let_through)
         self.assertTrue(all("G11b" in why for why in let_through), let_through)
 
     def test_a_missing_answer_fails_the_lane(self):

@@ -112,12 +112,16 @@ see the remote's branches and reads heads/X as X wherever it stands: that
 is exact for the default branch and board, which are always there, and a
 name the remote lacks becomes heads/X, a branch no rule names, so the
 module at worst refuses a push git would have let make one, as
-HEAD:heads/claude/03. What a command hands to another shell or command as
-text, as bash -c 'git push ...' and eval do, is one word to this module
-and passes, as do a wrapper not named here (sudo, xargs), a git alias
-for push, and a push git's configuration sends where its words do
-not say. With push.default=upstream, or its old name tracking, git 2.43
-sends a branch named alone, as in "git push origin claude/7" and "git
+HEAD:heads/claude/03. What a command hands to a shell to run as text it
+spells is read as a command of its own, from the shell that runs it
+(handed_texts; F32): a shell's -c string, as in bash -c 'git push ...',
+eval's words, trap's action, and a <<< here-string or what echo, printf
+or cat prints into a pipe that a shell, or source /dev/stdin, reads. A
+text it does not spell, from a file, a variable or a substitution, is a
+value this module does not know and passes, as do a wrapper not named
+here (sudo, xargs), a git alias for push, and a push git's configuration
+sends where its words do not say. With push.default=upstream, or its old
+name tracking, git 2.43 sends a branch named alone, as in "git push origin claude/7" and "git
 push -u origin claude/7", and the current branch on a bare "git push", to
 the branch it tracks: a claim branch made with "git switch -c claude/7
 origin/main", which tracks main, went to main on each of the three, where
@@ -2099,7 +2103,7 @@ def parts_of(text):
             tokens.append(token)
     except ValueError:
         return []
-    parts, current, eat_next, held = [], [], False, ""
+    parts, current, eat_next, held, fed = [], Words(), False, "", None
     for token in tokens:
         # An empty word, '' or "", is a word and no operator: read as one, it
         # ended the command, so "git -C '' push origin main" read as no push
@@ -2108,14 +2112,16 @@ def parts_of(text):
         if operator and (">" in token or "<" in token):
             if current and current[-1].isdigit():
                 current.pop()
-            eat_next = True
+            eat_next = "<<<" if token.endswith("<<<") else True
             held += "".join(ch for ch in token if ch in "()")
         elif operator:
             if current:
                 parts.append(current)
             parts.append(held + token)
-            current, eat_next, held = [], False, ""
+            current, eat_next, held = Words(), False, ""
         elif eat_next:
+            if eat_next == "<<<":
+                current.fed = token
             eat_next = False
         else:
             current.append(token)
@@ -2124,6 +2130,14 @@ def parts_of(text):
     if held:
         parts.append(held)
     return parts
+
+
+class Words(list):
+    """A simple command's words (parts_of), with the text a <<< here-string
+    feeds it on its standard input, or None (fed): a shell reads that text
+    as commands, as bash <<<'git push origin main' runs the push (F32)."""
+
+    fed = None
 
 
 def simple_commands(command):
@@ -3607,33 +3621,71 @@ def placed_commands(command, here, is_directory=os.path.isdir):
     is None. A reading whose text another before it has is read once,
     since it places the same commands (F29's second review: the reading
     of extended patterns is often the whole reading again)."""
-    placed = []
+    return placed_in(command, Shell(here), is_directory, 0)
+
+
+def placed_in(command, start, is_directory, depth):
+    """placed_commands's reading of a command from the shell start, at
+    depth handings deep: the simple commands of each reading, then those of
+    each text the command hands to a shell to run (handed_texts; F32), each
+    read once, from the shell that runs it, one level deeper; a handing
+    nested past MAX_NESTING is refused unread (HANDED_TOO_DEEP)."""
+    placed, handed, known = [], [], set()
+
+    def place(found):
+        new = [(argv, shell) for argv, shell in found if (tuple(argv), shell) not in known]
+        placed.extend(new)
+        known.update((tuple(argv), shell) for argv, shell in new)
+
     for text in dict.fromkeys(readings(command)):
-        known = {(tuple(argv), shell) for argv, shell in placed}
-        placed += [(argv, shell) for argv, shell in placed_parts(parts_of(text), here, is_directory)
-                   if (tuple(argv), shell) not in known]
+        place(placed_parts(parts_of(text), start, is_directory, handed))
+    for text, shell in dict.fromkeys(handed):
+        if depth >= MAX_NESTING or too_many_handed(text, shell):
+            raise TooDeep(HANDED_TOO_DEEP)
+        place(placed_in(text, shell, is_directory, depth + 1))
     return placed
 
 
-def placed_parts(parts, here, is_directory):
+def too_many_handed(text, shell):
+    """Whether the text handed to a shell, counted once with the others of
+    the run under way (HANDED), passes MOST_HANDED."""
+    seen = HANDED.get()
+    if seen is None:
+        return False
+    seen.add((text, shell))
+    return len(seen) > MOST_HANDED
+
+
+def placed_parts(parts, start, is_directory, handed=None):
     """Each simple command among the parts of one reading of a command
-    (parts_of), with the shell that runs it, from here (placed_commands);
-    the shell after each simple command found once for its words and the
-    shell before it."""
-    placed, shell, opened, piped, moves = [], Shell(here), [], False, {}
+    (parts_of), with the shell that runs it, from the shell start
+    (placed_commands); the shell after each simple command found once for
+    its words and the shell before it. Each text a simple command hands to
+    a shell to run is added to handed, with the shell it runs from
+    (handed_texts): what a <<< here-string feeds it, and, at the far end of
+    a pipe, what the command before the pipe prints (printed_text)."""
+    placed, shell, opened, piped, moves = [], start, [], False, {}
     list_start = pipe_start = shell
+    handed = [] if handed is None else handed
+    printed, after_pipe = (), False
     for count, part in enumerate(parts):
         if not count % CHECKS_EVERY:
             in_time()
         if isinstance(part, list):
-            placed += [(argv, shell) for argv in env_readings(part)]
+            fed = standard_input(part, printed if after_pipe else ())
+            for argv in env_readings(part):
+                placed.append((argv, shell))
+                handed += [(text, shell) for text in handed_texts(argv, fed)]
+            printed = printed_texts(part, fed)
             key = (tuple(part), shell)
             if key not in moves:
                 moves[key] = moved_to(part, shell, is_directory)
             shell = moves[key]
+            after_pipe = False
             continue
         for operator in operators(part):
-            if operator in ("|", "|&"):
+            after_pipe = operator in ("|", "|&") or after_pipe and operator == "("
+            if after_pipe:
                 shell, piped = pipe_start, True
                 continue
             if piped:
@@ -3648,6 +3700,173 @@ def placed_parts(parts, here, is_directory):
                 list_start = shell
             pipe_start = shell
     return placed
+
+
+# The shells a command may hand text to as commands, by name: a -c
+# string, or what they read on standard input (handed_texts; F32).
+SHELLS = frozenset({"sh", "bash", "rbash", "dash", "ash", "zsh", "ksh", "ksh93", "mksh", "pdksh", "posh", "yash"})
+# The options of those shells that take the next word as their value, and
+# the long ones; every other option is a flag.
+SHELL_VALUE_LETTERS = "oO"
+SHELL_VALUE_OPTIONS = {"--rcfile", "--init-file"}
+# The files a shell or source reads its standard input by.
+STANDARD_INPUT = {"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
+# The builtins that run their words as commands in the shell: eval its
+# words joined, trap its action when a signal comes; and those that run a
+# file, read here only where it is standard input.
+EVALS = frozenset({"eval"})
+TRAPS = frozenset({"trap"})
+SOURCES = frozenset({"source", "."})
+# The most texts one command may hand to shells to run, all levels
+# counted, before the guard refuses it unread: each is read whole, and a
+# command near MAX_COMMAND of distinct handings would take the guard past
+# its deadline (F32).
+MOST_HANDED = 256
+HANDED_TOO_DEEP = (f"a command that hands text to a shell to run (bash -c, eval, trap, a here-string or a pipe "
+                   f"into a shell) more than {MAX_NESTING} deep, or more than {MOST_HANDED} texts in all, is "
+                   "refused: the guard cannot read it in time to tell which of its commands run; write the text to "
+                   "a file first (.claude/rules/board.md)")
+# The texts handed to shells in the guard's run under way (placed_in),
+# None outside a run.
+HANDED = contextvars.ContextVar("HANDED", default=None)
+
+
+def handed_texts(argv, fed=()):
+    """The texts one reading of a simple command (env_readings) hands to a
+    shell to run as commands, each a command of its own (F32): a shell's -c
+    string, as in bash -c 'git push origin main'; the words eval joins, and
+    trap's action; and, for a shell that reads its standard input, or
+    source or . of /dev/stdin, each of fed, the texts that reach its
+    standard input, a here-string's or what the command before a pipe
+    prints (placed_parts). Until F32 each was one word to the guard, so the
+    push in it passed, though a push in a here-document a shell reads was
+    refused, since the whole reading reads every body as commands."""
+    name, rest = command_words(argv)
+    if name in EVALS:
+        words = rest[1:] if rest[:1] == ["--"] else rest
+        return [" ".join(words)] if words else []
+    if name in TRAPS:
+        return trap_action(rest)
+    if name in SOURCES:
+        return list(fed) if rest[:1] and rest[0] in STANDARD_INPUT else []
+    if name in SHELLS:
+        return shell_texts(rest, fed)
+    return []
+
+
+def command_words(argv):
+    """The name of the command a simple command runs, past its assignments
+    and wrappers (launch), and the words after it; None and no words where
+    it runs none."""
+    found = launch(argv)
+    if found.start is None or found.start >= len(found.argv):
+        return None, []
+    return program(found.argv[found.start]), list(found.argv[found.start + 1:])
+
+
+def trap_action(rest):
+    """The action trap sets for its signals, where the words after its
+    options set one: trap ACTION SIGNAL..., not trap - SIGNAL..., which
+    resets them, nor trap SIGNAL, which resets the one."""
+    while rest and rest[0].startswith("-") and rest[0] != "-":
+        if rest[0] == "--":
+            rest = rest[1:]
+            break
+        rest = rest[1:]
+    return [rest[0]] if len(rest) > 1 and rest[0] != "-" else []
+
+
+def shell_texts(rest, fed):
+    """What a shell given the words rest runs as commands: with -c, its
+    first word that is no option; else, where it names no script, or names
+    /dev/stdin, or reads its standard input by -s, each of fed. A word of -
+    or -- ends the options, as bash reads them; -o and -O take the next
+    word, as --rcfile and --init-file do."""
+    command, stdin, i = False, False, 0
+    while i < len(rest):
+        word = rest[i]
+        if word in ("-", "--"):
+            i += 1
+            break
+        if word in SHELL_VALUE_OPTIONS:
+            i += 2
+            continue
+        if word.startswith("--") or not word[:1] in ("-", "+") or len(word) < 2:
+            if word.startswith("--"):
+                i += 1
+                continue
+            break
+        letters = word[1:]
+        command = command or (word[0] == "-" and takes_command_string(letters))
+        stdin = stdin or (word[0] == "-" and "s" in letters)
+        i += 1 + sum(1 for letter in letters if letter in SHELL_VALUE_LETTERS)
+    operands = rest[i:]
+    if command:
+        return operands[:1]
+    return shell_input(operands, stdin, fed)
+
+
+def takes_command_string(letters):
+    """Whether a shell's option letters hold -c, which makes its first
+    operand the text it runs as commands."""
+    return "c" in letters
+
+
+def shell_input(operands, stdin, fed):
+    """What a shell with no -c runs: each of fed, the texts on its
+    standard input, where it names no script, names /dev/stdin, or reads
+    standard input by -s; nothing where it runs a script, whose text this
+    module does not read."""
+    if stdin or not operands or operands[0] in STANDARD_INPUT:
+        return list(fed)
+    return []
+
+
+def printed_texts(argv, fed=()):
+    """What a simple command prints, where this module can tell, for a
+    shell at the far end of a pipe (placed_parts): echo's words joined by
+    blanks, as written and with its backslash escapes read as $'...' reads
+    them (ansi_c_text), since bash's echo reads them only with -e and sh's
+    always; printf's format with each %s or %b given the next word, its
+    escapes read so, as printf always reads them; and what cat with no file prints,
+    its standard input (fed). Nothing for any other command, whose output
+    this module does not know."""
+    name, rest = command_words(argv)
+    if name == "cat" and not [word for word in rest if not word.startswith("-") or word == "-"]:
+        return tuple(fed)
+    if name == "echo":
+        while rest and ECHO_OPTIONS.fullmatch(rest[0]):
+            rest = rest[1:]
+        text = " ".join(rest)
+    elif name == "printf":
+        if rest[:1] == ["--"]:
+            rest = rest[1:]
+        if not rest or rest[0].startswith("-v"):
+            return ()
+        return (ansi_c_text(printf_text(rest[0], rest[1:])),)
+    else:
+        return ()
+    decoded = ansi_c_text(text)
+    return (text,) if decoded == text else (text, decoded)
+
+
+def standard_input(part, piped):
+    """The texts that reach a simple command's standard input, where this
+    module can tell: what its <<< here-string gives (Words.fed), else
+    piped, what the command before a pipe prints (printed_texts)."""
+    fed = getattr(part, "fed", None)
+    return (fed,) if fed is not None else tuple(piped)
+
+
+ECHO_OPTIONS = re.compile(r"-[neE]+")
+PRINTF_HOLE = re.compile(r"%[sb]")
+
+
+def printf_text(form, words):
+    """printf's format with each %s or %b given the next word in turn, the
+    rest nothing, and its other conversions left as written."""
+    given = iter(words)
+    return PRINTF_HOLE.sub(lambda hole: next(given, ""), form)
 
 
 # What a refusal adds where the reading that refused the push is one the
@@ -3788,7 +4007,7 @@ def refused_push(command, here, branches_of=None, reader_of=None, is_directory=N
     if len(command) > MAX_COMMAND:
         return TOO_LONG
     deadline, launches = DEADLINE.set(clock() + DEADLINE_SECONDS), LAUNCHES.set({})
-    ways, built = BUILT_WAYS.set({}), READINGS.set({})
+    ways, built, handed = BUILT_WAYS.set({}), READINGS.set({}), HANDED.set(set())
     try:
         placed = placed_commands(command, here, is_directory or os.path.isdir)
         return first_refusal(placed, here, branches_of or branches, reader_of or claim_file_reader)
@@ -3801,6 +4020,7 @@ def refused_push(command, here, branches_of=None, reader_of=None, is_directory=N
         LAUNCHES.reset(launches)
         BUILT_WAYS.reset(ways)
         READINGS.reset(built)
+        HANDED.reset(handed)
 
 
 def first_refusal(placed, here, branches_of, reader_of):
