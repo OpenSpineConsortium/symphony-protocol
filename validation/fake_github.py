@@ -118,6 +118,9 @@ from sdlc_protocol.adapters import github
 from .model import BOT, MAIN, OWNER, REPO, Comment, iso, moment
 
 PER_PAGE = 100
+# An issue's id, which a sub-issue link and a blocked-by relation name,
+# is its number plus this, so a number and an id are never confused.
+FIRST_ISSUE_ID = 1000
 # GitHub's contents API gives the text of a file of up to 1 MB and answers
 # a bigger one with an empty content and the encoding "none".
 CONTENTS_LIMIT = 1024 * 1024
@@ -471,8 +474,27 @@ class FakeGitHub:
             raise Refused(404)
         if len(s) == 2 and method == "GET":
             return (self.issue_json(target) if number in self.model.issues else self.pull_as_issue(target)), {}
+        if len(s) == 2 and method == "PATCH" and number in self.model.issues and set(body) == {"body"}:
+            # The board writes an epic's graph into its body, and the clerk
+            # the plan; nothing else of an issue is edited this way.
+            self.model.issues[number].body = body["body"]
+            return self.issue_json(target), {}
         if len(s) == 2:
             raise Unserved(f"{method} /{'/'.join(s)}")
+        if s[2] == "sub_issues" and len(s) == 3 and method == "GET" and number in self.model.issues:
+            listed = [self.issue_json(self.model.issues[n]) for n in target.sub_issues if n in self.model.issues]
+            return self.page(listed, query, url)
+        if s[2:] == ["dependencies", "blocked_by"] and number in self.model.issues:
+            if method == "GET":
+                listed = [self.issue_json(self.model.issues[n]) for n in target.blocked_by if n in self.model.issues]
+                return self.page(listed, query, url)
+            if method == "POST":
+                blocker = body["issue_id"] - FIRST_ISSUE_ID
+                if blocker not in self.model.issues:
+                    raise Refused(404)
+                if blocker not in target.blocked_by:
+                    target.blocked_by = target.blocked_by + (blocker,)
+                return self.issue_json(self.model.issues[blocker]), {}
         if s[2] == "comments" and len(s) == 3:
             if method == "GET":
                 listed = [self.comment_json(number, i, c) for i, c in enumerate(target.comments)]
@@ -501,8 +523,26 @@ class FakeGitHub:
         an issue closed and opened again stays open (F22), completed once
         it is closed, and none for one never closed."""
         reason = "reopened" if issue.reopened else "completed" if issue.state == "closed" else None
-        return {"number": issue.number, "title": issue.title, "state": issue.state, "body": issue.body,
-                "labels": [{"name": n} for n in sorted(issue.labels)], "updated_at": iso(0), "state_reason": reason}
+        return {"number": issue.number, "id": FIRST_ISSUE_ID + issue.number, "title": issue.title,
+                "state": issue.state, "body": issue.body,
+                "labels": [{"name": n} for n in sorted(issue.labels)], "updated_at": iso(0), "state_reason": reason,
+                "issue_dependencies_summary": self.dependencies_summary(issue),
+                "sub_issues_summary": self.sub_issues_summary(issue)}
+
+    def dependencies_summary(self, issue):
+        """The summary GitHub carries on every issue: how many issues block
+        it, open and in all, and how many it blocks, which nothing here
+        reads and the fake counts anyway."""
+        blockers = [self.model.issues[n] for n in issue.blocked_by if n in self.model.issues]
+        blocking = [i for i in self.model.issues.values() if issue.number in i.blocked_by]
+        return {"blocked_by": sum(1 for b in blockers if b.state == "open"), "blocking": len(blocking),
+                "total_blocked_by": len(blockers), "total_blocking": len(blocking)}
+
+    def sub_issues_summary(self, issue):
+        children = [self.model.issues[n] for n in issue.sub_issues if n in self.model.issues]
+        completed = sum(1 for c in children if c.state == "closed")
+        percent = round(100 * completed / len(children)) if children else 0
+        return {"total": len(children), "completed": completed, "percent_completed": percent}
 
     @staticmethod
     def events_json(model, issue):

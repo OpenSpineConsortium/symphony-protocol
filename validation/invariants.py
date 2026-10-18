@@ -1011,6 +1011,8 @@ def board_renders_the_state(after, record, known):
         problems.append(Violation("G9", f"the board's Blockers are {sorted(page.blockers(shown))}, the oracle's "
                                         f"{oracle.blockers(after)}"))
     problems += rows_show_labels(after, shown, calls)
+    problems += rows_say_blocked(after, shown)
+    problems += dependencies_drawn(after, shown, calls)
     spoken = [p.number for p in oracle.pulls_spoken_to(after)]
     if page.pulls(shown) != spoken:
         problems.append(Violation("G9", f"the board's Open pull requests are {page.pulls(shown)}, the oracle's "
@@ -1042,6 +1044,74 @@ def rows_show_labels(after, shown, calls=()):
                 problems.append(Violation("G9", f"the {name} row of #{number} shows {sorted(names)}, its issue "
                                                 f"carries {sorted(issue.labels)}"))
     return problems
+
+
+def rows_say_blocked(after, shown):
+    """G9: each row of the Queue, Given to workers and the Blockers says
+    beside its title when GitHub's dependencies say an open issue blocks
+    the issue (SPEC["blocked by"]), naming the open blockers the run read
+    or counting them, and says nothing of the kind otherwise."""
+    problems = []
+    sections = (("Queue", board.QUEUE_HEADING), ("Given to workers", board.GIVEN_HEADING),
+                ("Blockers", board.BLOCKER_HEADING))
+    for name, heading in sections:
+        for number, title in sorted(page.titles(shown, heading).items()):
+            said = " (blocked by " in title
+            if said != oracle.blocked_by_open(after, number):
+                problems.append(Violation("G9", f"the {name} row of #{number} says {title!r}, where its issue is "
+                                                f"{'' if said else 'not '}blocked by an open issue"))
+    return problems
+
+
+def dependency_read_failed(calls):
+    """Whether GitHub refused one of the Dependencies section's reads,
+    which leaves the section out for the run (adapters.github.dependencies)."""
+    return any(c.method == "GET" and (c.status is None or c.status >= FAILED_READ or c.status in (403, 429))
+               and (c.path.endswith("/sub_issues") or c.path.endswith("/dependencies/blocked_by"))
+               for _, c in answered(calls))
+
+
+def expected_blocks(model):
+    """The flowcharts the section owes: one per open epic with sub-issues,
+    its sub-issues and the issues outside the epic that block one of them
+    as nodes and each blocked-by relation among them as an edge, dotted
+    where the blocker is closed; and one of the goals above their
+    sub-issues, where an open goal has any (SPEC["goal"])."""
+    found = {}
+    goals = [i for i in model.issues.values() if i.state == "open" and oracle.GOAL in i.labels and i.sub_issues]
+    if goals:
+        nodes = {g.number for g in goals} | {n for g in goals for n in g.sub_issues if n in model.issues}
+        edges = {(g.number, n, "==>") for g in goals for n in g.sub_issues if n in model.issues}
+        found["goals"] = (sorted(nodes), edges)
+    for epic in model.issues.values():
+        if epic.state != "open" or oracle.EPIC not in epic.labels or not epic.sub_issues:
+            continue
+        nodes, edges = {n for n in epic.sub_issues if n in model.issues}, set()
+        for blocked in sorted(nodes):
+            for blocker in model.issues[blocked].blocked_by:
+                if blocker in model.issues:
+                    nodes.add(blocker)
+                    edges.add((blocker, blocked, "-.->" if model.issues[blocker].state == "closed" else "-->"))
+        found[epic.number] = (sorted(nodes), edges)
+    return found
+
+
+def dependencies_drawn(after, shown, calls=()):
+    """G9: the Dependencies section draws each open epic's tasks and their
+    blocked-by relations, and the goals above their epics, as the oracle
+    reads them, and is left off a page with nothing to draw; a run one of
+    whose reads for it GitHub refused says so in its place and draws
+    nothing."""
+    drawn, expected = page.dependency_blocks(shown), expected_blocks(after)
+    if dependency_read_failed(calls):
+        if drawn or page.not_drawn(shown) != board.NOT_DRAWN["failed"]:
+            return [Violation("G9", "a run whose dependency read failed drew the section or did not say why not")]
+        return []
+    if drawn != expected:
+        return [Violation("G9", f"the board's Dependencies are {drawn}, the oracle's {expected}")]
+    if not expected and board.DEPENDENCIES_HEADING in shown:
+        return [Violation("G9", "the board has a Dependencies section with nothing to draw")]
+    return []
 
 
 def claim_rows_name_their_own(after, shown):

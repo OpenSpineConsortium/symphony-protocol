@@ -1321,6 +1321,20 @@ def free_though_blocked(snap, issue):
     return issue["number"] not in snap.claimed and labels.CLAIMED not in labels.label_names(issue)
 
 
+def free_though_blocked_by_open(snap, issue):
+    """team.Snapshot.free leaving GitHub's dependencies out, so the clerk
+    deals an issue an open issue blocks, which Pick has wait until every
+    open issue blocking it is closed."""
+    names = labels.label_names(issue)
+    return issue["number"] not in snap.claimed and labels.BLOCKED not in names and labels.CLAIMED not in names
+
+
+def planned_without_goals(names):
+    """labels.planned reading an epic alone, so the board's Queue lists a
+    goal, which nobody takes whole."""
+    return labels.EPIC in names
+
+
 def in_review_left_where_a_branch_stands(snapshot, number, names):
     """coordinator.freeing taking nothing off a reopened issue whose claim
     branch, or a released branch, stands, so in-review stays and the
@@ -1917,6 +1931,14 @@ MUTANTS = {
         team.Snapshot, "free", free_though_blocked,
         "G14", "Pick never has anyone take an issue labelled blocked, so the clerk deals none (F15's fifth "
                "review)"),
+    "the clerk dealing an issue blocked by an open issue": Mutant(
+        team.Snapshot, "free", free_though_blocked_by_open,
+        "G14", "an issue GitHub's dependencies say an open issue blocks waits until every open issue blocking it "
+               "is closed, so the clerk deals none (the dependencies)"),
+    "the board listing a goal in the Queue": Mutant(
+        labels, "planned", planned_without_goals,
+        "G5", "the board's Queue leaves a goal out as it leaves an epic out, since nobody takes one whole (the "
+              "dependencies)"),
     "the Overlaps landing a blocker after other work": Mutant(
         board, "landing_key", lambda work: (not work.ready, board.began_at(work.began), work.number),
         "G7", "a blocker lands first, since it stops everyone (F15's fifth review)"),

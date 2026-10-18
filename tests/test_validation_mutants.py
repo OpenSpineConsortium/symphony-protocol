@@ -277,6 +277,9 @@ TRACES = {
     # team's deal gives a.
     "the clerk dealing blockers in number order": dealing.Case({1: ("todo",), 2: ("blocker",)}, 2, "none", ("a",)),
     "the clerk dealing an issue labelled blocked": dealing.Case({1: ("blocked", "todo")}, 1, "none", ("a", "b")),
+    "the clerk dealing an issue blocked by an open issue": dealing.Case({1: ("todo",), 2: ("todo",)}, 2, "none",
+                                                                       ("a", "b"), blocked_by=((1, 2),)),
+    "the board listing a goal in the Queue": ([labelled("goal"), BOARD], Scope()),
     "the Overlaps landing a blocker after other work": (LATER_BLOCKER + [BOARD], SHARED),
     "a released claim carried by its holder": dealing.Case({1: ("todo",)}, 1, "released", ("a", "b")),
     "a Worker line naming nobody taken for a name": dealing.Case({1: ("worker:b",)}, 1, "blank", ("a", "b")),
@@ -418,9 +421,11 @@ class TheLane(unittest.TestCase):
         name and a time the guard cannot tell read as the keyword alone,
         180; and its second review one, every ${NAME} read all set or all
         unset, 181; and its third review one, a push env's -S spells read
-        only as written, 182."""
+        only as written, 182; and the dependencies two, the clerk dealing
+        an issue an open issue blocks and the board listing a goal in the
+        Queue, 184."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 182)
+        self.assertEqual(len(mutants.MUTANTS), 184)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

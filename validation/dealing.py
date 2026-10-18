@@ -218,10 +218,15 @@ class Case(NamedTuple):
     held: int  # the issue the claim state applies to
     state: str  # one of CLAIM_STATES
     team: tuple
+    blocked_by: tuple = ()  # (blocked, blocker) pairs, GitHub's blocked-by relations
+    closed: tuple = ()  # the issues closed, a blocker among them
 
     def describe(self):
         issues = "; ".join(f"#{n} labelled {', '.join(sorted(names)) or 'nothing'}"
+                           + (" and closed" if n in self.closed else "")
                            for n, names in sorted(self.labels.items()))
+        for blocked, blocker in self.blocked_by:
+            issues += f"; #{blocked} blocked by #{blocker}"
         claim = {"none": "no claim",
                  "nobody": f"a claim on #{self.held} with no Worker line",
                  "blank": f"a claim on #{self.held} whose Worker line names nobody",
@@ -290,10 +295,32 @@ def release(model, number):
     model.add_comment(number, M.Comment(M.BOT, "NONE", model.now, f"{oracle.RELEASE_MARKER}\nreleased"))
 
 
+def dependency_cases():
+    """The cases that hold the clerk to SPEC["blocked by"] and SPEC["goal"],
+    after every mix: #1 blocked by #2 through GitHub's relation, #2 open
+    and queued, open and claimed by a peer, closed, or open and labelled
+    blocked, with #1 queued or given to the asking worker, which Pick has
+    it take first; and a goal labelled todo beside a queued issue, in a
+    team of two, which nobody takes whole. Each is dealt to a alone and
+    to a and b, so a task given to a that an open issue blocks goes to
+    nobody, and a queued one the same, where a closed blocker frees it."""
+    blocker_states = (("todo",), ("todo", "claimed", "worker:b"), ("todo",), ("todo", "blocked"))
+    for state, names in enumerate(blocker_states):
+        closed = (2,) if state == 2 else ()
+        held = "b" if state == 1 else "none"
+        for labels in (("todo",), ("todo", "worker:a")):
+            yield Case({1: labels, 2: names}, 2, held, ("a", "b"), blocked_by=((1, 2),), closed=closed)
+    yield Case({1: ("goal", "todo"), 2: ("todo",)}, 1, "none", ("a", "b"))
+
+
 def case_model(case):
     model = M.seeded(tuple(sorted(case.labels)), writers=("a", "b"))
     for number, names in case.labels.items():
         model.issues[number].labels = frozenset(names)
+    for blocked, blocker in case.blocked_by:
+        model.issues[blocked].blocked_by = model.issues[blocked].blocked_by + (blocker,)
+    for number in case.closed:
+        model.issues[number].state = "closed"
     if case.state in ("a", "b"):
         push_claim(model, case.state, case.held)
     elif case.state in ("nobody", "blank"):
@@ -330,7 +357,7 @@ def picking_lane():
     """Every case's problems, as the mutation lane reads a lane: by
     (guarantee, problem), the first case that showed it."""
     found = {}
-    for case, runs in picking_cases():
+    for case, runs in list(picking_cases()) + [(case, True) for case in dependency_cases()]:
         moves, problems = judge_case(case, runs)
         for problem in problems:
             found.setdefault(("G14", problem), (case.describe(), str(moves)))

@@ -131,6 +131,30 @@ class TheClerkAgainstPick(unittest.TestCase):
         with mutants.switched_on(mutants.MUTANTS["the clerk dealing an issue labelled blocked"]):
             self.assertEqual(dealing.judge_case(blocked)[1], ["a takes #1, where Pick has it take from nothing []"])
 
+    def test_an_issue_an_open_issue_blocks_is_dealt_to_nobody_and_a_goal_is_taken_whole_by_nobody(self):
+        """SPEC["blocked by"] and SPEC["goal"]: the nine cases the lane runs
+        after every mix, each dealt by Pick on the library, and the mutant
+        that undoes the clerk's rule caught on them."""
+        cases = list(dealing.dependency_cases())
+        self.assertEqual(len(cases), 9)
+        self.assertEqual({case.team for case in cases}, {("a", "b")})
+        for case in cases:
+            with self.subTest(case=case.describe()):
+                self.assertEqual(dealing.judge_case(case, runs=True)[1], [])
+        queued, given = cases[0], cases[1]
+        self.assertEqual(dealing.judge_case(queued)[0], {"a": "take 2", "b": "none"})
+        self.assertEqual(dealing.judge_case(given)[0], {"a": "take 2", "b": "none"}, "given to a, yet blocked")
+        closed = cases[5]
+        self.assertEqual(closed.closed, (2,))
+        self.assertEqual(dealing.judge_case(closed)[0], {"a": "take 1", "b": "none"}, "a closed blocker frees it")
+        with mutants.switched_on(mutants.MUTANTS["the clerk dealing an issue blocked by an open issue"]):
+            self.assertEqual(dealing.judge_case(queued)[1], ["dealt #1 to a though #2, open, blocks it"])
+            self.assertEqual(dealing.judge_case(closed)[1], [])
+        goal = cases[8]
+        self.assertEqual(dealing.judge_case(goal)[0], {"a": "take 2", "b": "none"})
+        self.assertIn("#1 blocked by #2", queued.describe())
+        self.assertIn("#2 labelled todo and closed", closed.describe())
+
     def test_a_released_claim_is_nobody_s_and_its_issue_nobody_s_to_take_until_the_rename(self):
         """F18's review: the claim file still names a, but the release made
         the claim nobody's, as the board shows; and the branch, until the
