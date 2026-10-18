@@ -48,7 +48,7 @@ from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 from unittest import mock
 
-from sdlc_protocol import board, claims, coordinator, guard, labels, team
+from sdlc_protocol import board, claims, coordinator, guard, labels, protocol_check, team
 from sdlc_protocol.adapters import github
 from sdlc_protocol.workers import fits
 
@@ -130,6 +130,7 @@ ORIGINAL_FREEING = coordinator.freeing
 ORIGINAL_RATE_LIMITED = github.rate_limited
 ORIGINAL_RATE_WAIT = github.rate_wait
 ORIGINAL_WROTE_NOTHING = github.wrote_nothing
+ORIGINAL_PROBLEMS_FOR = protocol_check.problems_for
 # The headers of the token's hour, which rate_wait reads for the hour's end.
 HOUR_HEADERS = ("x-ratelimit-remaining", "x-ratelimit-reset")
 
@@ -2262,6 +2263,12 @@ MUTANTS = {
         "G8", "the label claimed a person puts back after a claim made since a reopened issue's last close has "
               "ended, later than its branch's delete, is a person's undo, so the freeing leaves claimed on (the "
               "review of F22's third review)"),
+    "a ready pull request's claim file let through": Mutant(
+        protocol_check, "problems_for", lambda pull, claim_file_exists:
+        [p for p in ORIGINAL_PROBLEMS_FOR(pull, claim_file_exists) if "is still here" not in p],
+        "G12", "the protocol check fails a claim's pull request marked ready that still carries its claim file, "
+               "which is why GitHub refuses the owner's merge of one and no claim file reaches main by a merge "
+               "(F30)"),
     "the releases due read before the freeing": Mutant(
         github, "coordinate", releases_read_before_the_freeing,
         "G3", "a claim whose in-review a freeing takes off is released in the same run where its branch has gone a "

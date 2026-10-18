@@ -707,7 +707,7 @@ class TheLaneAsOneRun(unittest.TestCase):
             settings = lanes.Settings(folder, only=("search", "soak", "conformance"), jobs=2, quick=True)
             self.assertEqual(lanes.run(settings, out), 0, out.getvalue())
             data = json.loads((Path(folder) / "deep.json").read_text(encoding="ascii"))
-        self.assertEqual(sorted(s["space"] for s in data["searches"]), ["E-activity", "E-deep", "E-faults", "E-two"])
+        self.assertEqual(sorted(s["space"] for s in data["searches"]), ["E-activity", "E-deep", "E-faults", "E-reopen", "E-two"])
         self.assertEqual(data["red"], [])
         self.assertIn("search E-faults: depth 2", out.getvalue())
         self.assertIn("0 violations", out.getvalue())
@@ -734,7 +734,8 @@ class TheLaneAsOneRun(unittest.TestCase):
         self.assertEqual(second["run"], first["run"])
         self.assertEqual(len(second["soak"]["chunks"]), 2)
         self.assertGreaterEqual(second["seconds"], first["seconds"])
-        self.assertEqual(lanes.done_parts(second), {"search E-two", "search E-deep", "search E-faults", "search E-activity", "soak 0",
+        self.assertEqual(lanes.done_parts(second), {"search E-two", "search E-deep", "search E-faults", "search E-activity",
+                                                        "search E-reopen", "soak 0",
                                                         "soak 2"})
 
     def test_a_search_the_budget_stopped_is_run_again_from_its_checkpoint_on_resume(self):
@@ -815,8 +816,8 @@ class TheLaneAsOneRun(unittest.TestCase):
             self.assertEqual(lanes.run(settings, out), 1, out.getvalue())
             self.assertFalse((Path(folder) / lanes.RUNNING).exists())
             results = results_in(folder)
-        self.assertEqual(sorted(s["space"] for s in results["searches"]), ["E-activity", "E-deep", "E-faults", "E-two"])
-        self.assertEqual(sorted(c["space"] for c in results["conformance"]), ["E-activity", "E-deep", "E-faults", "E-two"])
+        self.assertEqual(sorted(s["space"] for s in results["searches"]), ["E-activity", "E-deep", "E-faults", "E-reopen", "E-two"])
+        self.assertEqual(sorted(c["space"] for c in results["conformance"]), ["E-activity", "E-deep", "E-faults", "E-reopen", "E-two"])
         self.assertEqual(sorted(e["part"] for e in results["errors"]), ["soak 0", "soak 2"])
         self.assertTrue(all(e["error"].startswith("its worker process died") for e in results["errors"]), results["errors"])
         self.assertEqual(len(results["red"]), 2)
@@ -833,12 +834,13 @@ class TheLaneAsOneRun(unittest.TestCase):
         mutant makes at them, 36, cost twenty seconds of replay over git
         where a few show the same."""
         with tempfile.TemporaryDirectory() as folder, \
-                mock.patch.dict(lanes.QUICK["depths"], {"E-two": 1, "E-deep": 1, "E-faults": 2, "E-activity": 1}):
+                mock.patch.dict(lanes.QUICK["depths"], {"E-two": 1, "E-deep": 1, "E-faults": 2, "E-activity": 1,
+                                                             "E-reopen": 1}):
             out = io.StringIO()
             settings = lanes.Settings(folder, only=("search", "conformance"), jobs=2, quick=True, budget=0.0)
             self.assertEqual(lanes.run(settings, out), 1, out.getvalue())
             stopped = results_in(folder)
-            self.assertEqual(sorted(c["space"] for c in stopped["conformance"]), ["E-activity", "E-deep", "E-faults", "E-two"])
+            self.assertEqual(sorted(c["space"] for c in stopped["conformance"]), ["E-activity", "E-deep", "E-faults", "E-reopen", "E-two"])
             self.assertEqual(lanes.counterexample_files(stopped), [])
             with mock.patch.object(claims, "is_idle", at_exactly_24_hours):
                 again = io.StringIO()
@@ -848,7 +850,7 @@ class TheLaneAsOneRun(unittest.TestCase):
         files = lanes.counterexample_files(resumed)
         self.assertTrue(files)
         self.assertEqual(sorted(c["space"] for c in resumed["conformance"]),
-                         ["E-activity", "E-deep", "E-faults", "E-two", "counterexamples"])
+                         ["E-activity", "E-deep", "E-faults", "E-reopen", "E-two", "counterexamples"])
         played = next(c for c in resumed["conformance"] if c["space"] == lanes.COUNTEREXAMPLES)
         self.assertEqual(played["files"], files)
         self.assertEqual((played["counterexamples"], played["paths"], played["disagreements"]), (len(files), 0, []))
@@ -965,7 +967,7 @@ class TheLaneAsOneRun(unittest.TestCase):
             settings = lanes.Settings(folder, only=("search", "soak"), jobs=2, quick=True)
             self.assertEqual(lanes.run(settings, out), 1, out.getvalue())
             results = json.loads((Path(folder) / "deep.json").read_text(encoding="ascii"))
-        self.assertEqual(sorted(s["space"] for s in results["searches"]), ["E-activity", "E-deep", "E-faults", "E-two"])
+        self.assertEqual(sorted(s["space"] for s in results["searches"]), ["E-activity", "E-deep", "E-faults", "E-reopen", "E-two"])
         self.assertEqual(sorted(e["part"] for e in results["errors"]), ["soak 0", "soak 2"])
         self.assertIn("a walk that raised", results["errors"][0]["traceback"])
         self.assertEqual(len(results["red"]), 2)

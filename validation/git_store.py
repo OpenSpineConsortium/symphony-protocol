@@ -559,8 +559,11 @@ class GitStore:
         main, the branch's text before main's where both changed a path,
         the issue closed and the head deleted, unless the repository keeps
         head branches (keep_head, F22); the four events at once, or three
-        with the head kept (verbs.merge)."""
+        with the head kept (verbs.merge). GitHub refuses the merge of a
+        pull request the required check fails, as verbs.merge does (F30)."""
         pull = model.pulls[number]
+        if model.checked_merges and not verbs.passes_check(model, pull):
+            return verbs.REFUSED_MERGE
         self.fetch_refs(GITHUB, MAIN, pull.head)
         clone = self.start_from(GITHUB, MAIN, f"origin/{MAIN}")
         attempt = git(clone, "merge", "--no-ff", "--no-edit", "-m", f"Merge #{number}", f"origin/{pull.head}",

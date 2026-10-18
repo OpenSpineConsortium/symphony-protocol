@@ -29,9 +29,10 @@ BUDGET_SECONDS = 300
 SHARED = ("src/shared.py",)
 THREE = Scope(workers=("a", "b", "c"), issues=(1, 2, 3), files=((1, SHARED), (2, SHARED), (3, SHARED)))
 THREE_PIECES = (Verb("claim", "a", (1,)), Verb("claim", "b", (2,)), Verb("commit", "a", (1,)), Verb("commit", "b", (2,)),
-                Verb("open-draft", "a", (1,)), Verb("mark-ready", "a", (100,)), Verb("merge", M.OWNER, (100,)),
-                Verb("claim", "c", (3,)), Verb("commit", "c", (3,)), Verb("merge-main", "b", (2,)),
-                Verb("open-draft", "b", (2,)), Verb("mark-ready", "b", (101,)), Verb("merge", M.OWNER, (101,)),
+                Verb("open-draft", "a", (1,)), Verb("drop-claim-file", "a", (1,)), Verb("mark-ready", "a", (100,)),
+                Verb("merge", M.OWNER, (100,)), Verb("claim", "c", (3,)), Verb("commit", "c", (3,)),
+                Verb("merge-main", "b", (2,)), Verb("open-draft", "b", (2,)), Verb("drop-claim-file", "b", (2,)),
+                Verb("mark-ready", "b", (101,)), Verb("merge", M.OWNER, (101,)),
                 Verb("open-draft", "c", (3,)))
 
 
