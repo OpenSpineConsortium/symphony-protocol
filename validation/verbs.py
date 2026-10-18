@@ -971,7 +971,10 @@ def passes_check(model, pull):
     required_status_checks "check", bypass_actors empty), so GitHub
     refuses the owner's merge of any other (F30). A claim file still
     reaches main where the check lets it through: a pull request that is
-    no claim's adding one, or a claim's carrying another issue's (F31)."""
+    no claim's adding one, or a claim's carrying another issue's (F31).
+    This reads the claim file at the pull request's head where the real
+    check reads the merge ref's checkout; the two agree while main holds
+    no claim file."""
     number = oracle.claim_number(pull.head)
     if number is None:
         return not pull.draft and not oracle.reads_as_claim(pull.head)
