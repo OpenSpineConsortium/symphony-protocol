@@ -131,6 +131,7 @@ ORIGINAL_RATE_LIMITED = github.rate_limited
 ORIGINAL_RATE_WAIT = github.rate_wait
 ORIGINAL_WROTE_NOTHING = github.wrote_nothing
 ORIGINAL_PROBLEMS_FOR = protocol_check.problems_for
+ORIGINAL_STRAY_CLAIM_FILES = protocol_check.stray_claim_files
 # The headers of the token's hour, which rate_wait reads for the hour's end.
 HOUR_HEADERS = ("x-ratelimit-remaining", "x-ratelimit-reset")
 
@@ -2264,11 +2265,27 @@ MUTANTS = {
               "ended, later than its branch's delete, is a person's undo, so the freeing leaves claimed on (the "
               "review of F22's third review)"),
     "a ready pull request's claim file let through": Mutant(
-        protocol_check, "problems_for", lambda pull, claim_file_exists:
-        [p for p in ORIGINAL_PROBLEMS_FOR(pull, claim_file_exists) if "is still here" not in p],
+        protocol_check, "problems_for", lambda pull, claim_file_exists, changed_claims=():
+        [p for p in ORIGINAL_PROBLEMS_FOR(pull, claim_file_exists, changed_claims) if "is still here" not in p],
         "G12", "the protocol check fails a claim's pull request marked ready that still carries its claim file, "
                "which is why GitHub refuses the owner's merge of one and no claim file reaches main by a merge "
                "(F30)"),
+    "a claim file of another issue let through": Mutant(
+        protocol_check, "problems_for", lambda pull, claim_file_exists, changed_claims=():
+        ORIGINAL_PROBLEMS_FOR(pull, claim_file_exists, ()),
+        "G12", "the protocol check fails a pull request that adds or changes against main a claim file other than "
+               "its own issue's on its own claim branch, so no merge puts another issue's claim on the default "
+               "branch (F31)"),
+    "a claim branch's every claim file its own": Mutant(
+        protocol_check, "stray_claim_files", lambda pull, changed_claims:
+        [] if protocol_check.claim_number(pull) is not None else ORIGINAL_STRAY_CLAIM_FILES(pull, changed_claims),
+        "G12", "a claim stacked on another claim's branch carries that claim's file, which the check fails, since "
+               "a claim branch's own claim file is its own issue's alone (F31)"),
+    "a pull request that is no claim's let carry a claim file": Mutant(
+        protocol_check, "stray_claim_files", lambda pull, changed_claims:
+        [] if protocol_check.claim_number(pull) is None else ORIGINAL_STRAY_CLAIM_FILES(pull, changed_claims),
+        "G12", "a pull request from a branch that is no claim's, which adds an issue's claim file, fails the "
+               "check, since the protocol check judges every pull request's change, not only a claim's (F31)"),
     "the releases due read before the freeing": Mutant(
         github, "coordinate", releases_read_before_the_freeing,
         "G3", "a claim whose in-review a freeing takes off is released in the same run where its branch has gone a "
@@ -2447,6 +2464,13 @@ SEARCHES = (
            people=(M.OWNER,), waits=(25,), reopens=True, deletes=True), 2),
     Search("an undo after a claim since a reopen ended", ENDED_LATER_CLAIM, Scope(workers=("a", "b"),
            people=(M.OWNER,), waits=(1,), reopens=True, deletes=True), 3),
+    # a's claim on #1 held: carol may open a pull request that is no
+    # claim's carrying #1's claim file, b may claim #2 from claude/1, and
+    # the owner merges what the check passes, so each rule of the change a
+    # pull request makes is searched and not only traced (F31).
+    Search("claim files that stray", (CLAIM, Verb("open-draft", "a", (1,))),
+           Scope(workers=("a", "b"), issues=(1, 2), people=(M.OWNER, CAROL), waits=(25,), strays=True), 3,
+           issues=(1, 2)),
 )
 CATCHERS = LANES + SEARCHES + (PICKING, LABEL_MIXES)
 

@@ -89,6 +89,26 @@ class ScenariosOverGit(unittest.TestCase):
                 self.assertEqual(over_git, in_memory)
 
 
+    def test_f31_s_trace_is_red_over_git_where_it_is_in_memory_under_each_of_its_mutants(self):
+        """F31's trace plays over real git as in memory: carol's branch and
+        b's claim stacked on claude/1 are real pushes, and the change each
+        pull request makes against main is read from the merge git would
+        make; green on the library, red under each mutant that undoes a
+        part of the fix at the same steps."""
+        trace = replay.traces()["F31"]
+        record = replay.replay(trace, world=run.GIT)
+        self.assertEqual(record.mismatches, [], "\n".join(record.timeline))
+        self.assertEqual(results(record), set(), "\n".join(record.timeline))
+        for name, mutant in mutants.MUTANTS.items():
+            if "F31" not in mutant.why:
+                continue
+            with self.subTest(mutant=name), mutants.switched_on(mutant):
+                in_memory = results(replay.replay(trace))
+                over_git = results(replay.replay(trace, world=run.GIT))
+                self.assertTrue(in_memory)
+                self.assertEqual(over_git, in_memory)
+
+
 class TheStore(unittest.TestCase):
     def test_a_claim_is_one_commit_on_main_in_the_bare_repository(self):
         with attached() as (store, model):
