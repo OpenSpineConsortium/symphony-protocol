@@ -134,9 +134,10 @@ class Issue:
     GitHub says it was reopened (its state_reason), which the coordinator
     reads to free one whose labels still speak of a claim that ended with
     its close (coordinator.reopened_due; F22); with, for the Dependencies
-    section, its state (a closed sub-issue or blocker is drawn too), how
-    many issues GitHub's dependencies say block it, open and in all, from
-    the summary GitHub carries on every issue (labels.blocked_by_counts),
+    section, its state (a closed sub-issue or an issue blocking one is
+    drawn too), how many issues GitHub's dependencies say block it, open
+    and in all, from the summary GitHub carries on every issue
+    (labels.blocked_by_counts), the relation and never the label blocker,
     and its sub-issues' progress, (completed, total), from the other
     summary."""
 
@@ -146,13 +147,13 @@ class Issue:
     updated_at: str = ""
     reopened: bool = False
     state: str = "open"
-    open_blockers: int = 0
-    total_blockers: int = 0
+    blocked_by_open: int = 0
+    blocked_by_total: int = 0
     progress: tuple | None = None
 
     @classmethod
     def from_dict(cls, data):
-        open_blockers, total_blockers = labels.blocked_by_counts(data)
+        blocked_by_open, blocked_by_total = labels.blocked_by_counts(data)
         return cls(
             number=int(data["number"]),
             title=data.get("title") or "",
@@ -160,8 +161,8 @@ class Issue:
             updated_at=data.get("updated_at") or "",
             reopened=data.get("state_reason") == REOPENED,
             state="closed" if data.get("state") == "closed" else "open",
-            open_blockers=open_blockers,
-            total_blockers=total_blockers,
+            blocked_by_open=blocked_by_open,
+            blocked_by_total=blocked_by_total,
             progress=progress_of(data.get("sub_issues_summary")),
         )
 
@@ -173,9 +174,9 @@ class Issue:
         return {"number": self.number, "title": self.title, "labels": list(self.labels), "updated_at": self.updated_at} \
             | ({"state_reason": REOPENED} if self.reopened else {}) \
             | ({"state": "closed"} if self.closed else {}) \
-            | ({"issue_dependencies_summary": {"blocked_by": self.open_blockers,
-                                               "total_blocked_by": self.total_blockers}}
-               if self.total_blockers else {}) \
+            | ({"issue_dependencies_summary": {"blocked_by": self.blocked_by_open,
+                                               "total_blocked_by": self.blocked_by_total}}
+               if self.blocked_by_total else {}) \
             | ({"sub_issues_summary": {"total": self.progress[1], "completed": self.progress[0]}}
                if self.progress else {})
 
@@ -461,6 +462,12 @@ class Snapshot:
     others: dict = field(default_factory=dict)
     dependencies_skipped: str = ""
     dependencies_notice: str = ""
+    # The chart each open issue's body held between the graph markers when
+    # the run listed the issues, by number, folded to LF (graph_block):
+    # what the adapter's graph writer compares its block with before it
+    # reads the epic again, and the issues whose chart it takes out once
+    # they owe none.
+    graphs: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data):
@@ -486,6 +493,7 @@ class Snapshot:
             others={int(k): Issue.from_dict(v) for k, v in (data.get("others") or {}).items()},
             dependencies_skipped=str(data.get("dependencies_skipped") or ""),
             dependencies_notice=str(data.get("dependencies_notice") or ""),
+            graphs={int(k): str(v) for k, v in (data.get("graphs") or {}).items()},
         )
 
     def to_dict(self):
@@ -508,7 +516,8 @@ class Snapshot:
             | ({"blocked_by": {str(k): list(v) for k, v in self.blocked_by.items()}} if self.blocked_by else {}) \
             | ({"others": {str(k): v.to_dict() for k, v in self.others.items()}} if self.others else {}) \
             | ({"dependencies_skipped": self.dependencies_skipped} if self.dependencies_skipped else {}) \
-            | ({"dependencies_notice": self.dependencies_notice} if self.dependencies_notice else {})
+            | ({"dependencies_notice": self.dependencies_notice} if self.dependencies_notice else {}) \
+            | ({"graphs": {str(k): v for k, v in self.graphs.items()}} if self.graphs else {})
 
     def issue_by_number(self, number):
         """The issue with this number, among the open issues or the others
@@ -910,12 +919,12 @@ def blocked_note(snap, issue):
     Dependencies reads brought them, else how many there are, since the
     summary every listed issue carries counts them and costs no read. ""
     for an issue blocked by nothing."""
-    if issue.open_blockers <= 0:
+    if issue.blocked_by_open <= 0:
         return ""
-    open_blockers = [n for n in snap.blocked_by.get(issue.number, []) if not snap.issue_by_number(n).closed]
-    if open_blockers:
-        return " (blocked by " + ", ".join(f"#{n}" for n in open_blockers) + ")"
-    count = issue.open_blockers
+    blocking = [n for n in snap.blocked_by.get(issue.number, []) if not snap.issue_by_number(n).closed]
+    if blocking:
+        return " (blocked by " + ", ".join(f"#{n}" for n in blocking) + ")"
+    count = issue.blocked_by_open
     return f" (blocked by {count} open issue{'s' if count != 1 else ''})"
 
 
@@ -1245,30 +1254,77 @@ def dependencies_lines(snap):
 
 
 def graph_section(body):
-    """Where an epic's body holds its graph: the span from the first
-    GRAPH_MARKER to the end of the first GRAPH_END_MARKER after it, or
-    None where the body holds neither, or holds one without the other."""
+    """Where an epic's body holds its graph: the span from the one
+    GRAPH_MARKER through the GRAPH_END_MARKER after it; None where the
+    body holds neither, or anything but one clean pair, a marker without
+    the other, an end before the start or a second pair, which a person
+    wrote and the board leaves alone, since writing into it could take
+    out what they meant to keep."""
     start = body.find(GRAPH_MARKER)
-    if start < 0:
+    if start < 0 or body.find(GRAPH_END_MARKER) < start:
         return None
     end = body.find(GRAPH_END_MARKER, start + len(GRAPH_MARKER))
-    return (start, end + len(GRAPH_END_MARKER)) if end >= 0 else None
+    if end < 0 or body.find(GRAPH_MARKER, start + len(GRAPH_MARKER)) >= 0:
+        return None
+    return (start, end + len(GRAPH_END_MARKER))
+
+
+def line_ending(body):
+    """The line ending a body is written with, Windows's where it holds
+    one, so what is put into it is written the same way."""
+    return "\r\n" if "\r\n" in body else "\n"
+
+
+def graph_block(body):
+    """The chart a body holds between its graph markers, folded to LF, or
+    None where it holds no clean pair of them (graph_section)."""
+    span = graph_section(body)
+    if span is None:
+        return None
+    inside = body[span[0] + len(GRAPH_MARKER):span[1] - len(GRAPH_END_MARKER)].replace("\r\n", "\n")
+    return inside.removeprefix("\n").removesuffix("\n")
+
+
+def listed_graphs(issues):
+    """The chart each listed issue's body holds between the graph markers,
+    by number, as the API's issue objects carry the body (Snapshot.graphs);
+    an issue with no clean pair of markers is left out."""
+    found = {}
+    for issue in issues:
+        block = graph_block(issue.get("body") or "")
+        if block is not None:
+            found[int(issue["number"])] = block
+    return found
 
 
 def body_with_graph(body, block):
     """An epic's body with its graph: the block between the markers, put
-    where the body holds them already or appended after a blank line; None
-    where the body holds one marker without the other, which a person
-    wrote and the board leaves alone. Windows line endings are folded, so
-    a body GitHub stored with them compares as what was written."""
-    body = body.replace("\r\n", "\n")
-    graph = f"{GRAPH_MARKER}\n{block}\n{GRAPH_END_MARKER}"
+    where the body holds them already or appended after a blank line, in
+    the body's own line ending, so nothing outside the markers changes;
+    None where the body holds markers that are not one clean pair, which
+    a person wrote and the board leaves alone."""
+    newline = line_ending(body)
+    graph = newline.join((GRAPH_MARKER, block.replace("\n", newline), GRAPH_END_MARKER))
     span = graph_section(body)
     if span is None:
         if GRAPH_MARKER in body or GRAPH_END_MARKER in body:
             return None
-        return body.rstrip("\n") + ("\n\n" if body.strip() else "") + graph + "\n"
+        return body.rstrip("\r\n") + (newline * 2 if body.strip() else "") + graph + newline
     return body[:span[0]] + graph + body[span[1]:]
+
+
+def body_without_graph(body):
+    """An epic's body with its graph taken out, the blank line before it
+    too, for an epic that owes no chart any more, its sub-issues taken
+    off; None where the body holds no clean pair of markers."""
+    span = graph_section(body)
+    if span is None:
+        return None
+    newline = line_ending(body)
+    before, after = body[:span[0]].rstrip("\r\n"), body[span[1]:].lstrip("\r\n")
+    if before and after:
+        return before + newline * 2 + after
+    return before + newline if before else after
 
 
 # --- the page ---------------------------------------------------------------

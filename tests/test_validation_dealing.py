@@ -132,11 +132,11 @@ class TheClerkAgainstPick(unittest.TestCase):
             self.assertEqual(dealing.judge_case(blocked)[1], ["a takes #1, where Pick has it take from nothing []"])
 
     def test_an_issue_an_open_issue_blocks_is_dealt_to_nobody_and_a_goal_is_taken_whole_by_nobody(self):
-        """SPEC["blocked by"] and SPEC["goal"]: the nine cases the lane runs
-        after every mix, each dealt by Pick on the library, and the mutant
-        that undoes the clerk's rule caught on them."""
+        """SPEC["blocked by"] and SPEC["goal"]: the eleven cases the lane
+        runs after every mix, each dealt by Pick on the library, and the
+        mutant that undoes the clerk's rule caught on them."""
         cases = list(dealing.dependency_cases())
-        self.assertEqual(len(cases), 9)
+        self.assertEqual(len(cases), 11)
         self.assertEqual({case.team for case in cases}, {("a", "b")})
         for case in cases:
             with self.subTest(case=case.describe()):
@@ -152,6 +152,15 @@ class TheClerkAgainstPick(unittest.TestCase):
             self.assertEqual(dealing.judge_case(closed)[1], [])
         goal = cases[8]
         self.assertEqual(dealing.judge_case(goal)[0], {"a": "take 2", "b": "none"})
+        # The review's two: a blocker an open issue blocks is held back
+        # too, so the Queue's issue is dealt, and one blocker closed of two
+        # frees nothing while the other is open.
+        blocker, two = cases[9], cases[10]
+        self.assertEqual(dealing.judge_case(blocker)[0], {"a": "take 2", "b": "none"})
+        self.assertEqual(dealing.judge_case(two)[0], {"a": "take 3", "b": "none"})
+        with mutants.switched_on(mutants.MUTANTS["the clerk dealing an issue blocked by an open issue"]):
+            self.assertEqual(dealing.judge_case(blocker)[1], ["dealt #1 to a though #2, open, blocks it"])
+            self.assertEqual(dealing.judge_case(two)[1], ["dealt #1 to a though #3, open, blocks it"])
         self.assertIn("#1 blocked by #2", queued.describe())
         self.assertIn("#2 labelled todo and closed", closed.describe())
 

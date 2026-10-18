@@ -386,7 +386,8 @@ class Snapshot:
     def given(self, agent, taken=(), alone=False):
         """The first task the labels give the member, beside other workers
         or, with alone, to the member alone (is_mine), that is free and no
-        epic or goal, which the coordinator plans and nobody takes whole, and that
+        epic, which the coordinator plans into tasks, nor goal, which a
+        person breaks into epics, since nobody takes either whole, and that
         no member before it in the team took (taken), whether or not it also
         carries todo, since the board shows it under Given to workers either
         way (F14) and the spec has the worker take it first; None when there
@@ -412,8 +413,9 @@ class Snapshot:
 
     def pool(self):
         """The shared work: unclaimed issues labelled blocker or todo that
-        no worker was given and that are neither epics nor goals, blockers
-        first, since a blocker stops everyone (spec/PROTOCOL.md)."""
+        no worker was given and that are neither epics, which the
+        coordinator plans, nor goals, which a person breaks into epics,
+        blockers first, since a blocker stops everyone (spec/PROTOCOL.md)."""
         def shared(issue):
             labels = label_names(issue)
             return (self.free(issue) and not holders(issue) and not planned(labels)
@@ -546,7 +548,10 @@ def plan_schema(owners):
     a task's owner is one of them; with none, any text, which seed leaves
     out, so every task goes to the open queue."""
     owner = {"type": "string", "enum": list(owners)} if owners else {"type": "string"}
-    depends_on = {"type": "array", "items": {"type": "integer", "minimum": 1}, "uniqueItems": True,
+    # No minimum and no uniqueItems: the API's structured output takes
+    # neither keyword for sure, and dependency_problems and positions hold
+    # the plan to both whatever wrote it.
+    depends_on = {"type": "array", "items": {"type": "integer"},
                   "description": ("positions of the tasks of this plan that must close before this one "
                                   "can be taken, counted from 1 in the order the tasks are listed")}
     task = {"type": "object",
@@ -579,8 +584,18 @@ def owners_for(tasks, agents):
 
 
 def depends_on(task):
-    """The positions a task depends on, as the plan lists them, or none."""
+    """What a task's depends_on lists, as the plan wrote it, or none; a
+    plan written by hand may list anything, so dependency_problems reads
+    this and the rest read positions."""
     return task.get("depends_on") or []
+
+
+def positions(task):
+    """The positions a task depends on, each once: a position listed
+    twice, which the schema asks against and a hand-written plan may
+    carry, is one relation, not two writes of it. Only called once
+    dependency_problems has found the list to hold positions."""
+    return list(dict.fromkeys(depends_on(task)))
 
 
 def is_position(value):
@@ -600,7 +615,9 @@ def dependency_problems(tasks):
     problems = []
     for position, task in enumerate(tasks, 1):
         listed = depends_on(task)
-        if not all(is_position(value) for value in listed):
+        # A depends_on that is no list, a bare number for one dependency,
+        # is the same problem as a list of the wrong things.
+        if not isinstance(listed, list) or not all(is_position(value) for value in listed):
             problems.append(f"plan: task {position}'s depends_on must list positions, whole numbers from 1")
             continue
         for value in listed:
@@ -620,7 +637,7 @@ def dependency_cycle(tasks):
     or none: a depth-first walk from each position along what it depends
     on, which meets a position still on its path exactly when there is a
     cycle. Only called once every position listed is a task's."""
-    edges = {position: list(depends_on(task)) for position, task in enumerate(tasks, 1)}
+    edges = {position: positions(task) for position, task in enumerate(tasks, 1)}
     done = set()
     for start in edges:
         stack = [(start, iter(edges[start]))]
@@ -689,7 +706,7 @@ def write_relations(client, tasks, made):
     numbers = [issue["number"] for issue in made]
     blockers, refused = {}, []
     for position, task in enumerate(tasks, 1):
-        for depended in depends_on(task):
+        for depended in positions(task):
             blocked, blocker = numbers[position - 1], numbers[depended - 1]
             try:
                 client.add_blocked_by(blocked, made[depended - 1]["id"])
@@ -713,7 +730,7 @@ def task_line(number, title, owner, blockers=(), refused=()):
 
 def plan_section(plan, made, blockers=None, refused=()):
     """What seed appends to the epic: the coordinator's plan, the task
-    list, with each task's blockers where the plan has any, and the
+    list, with the tasks that block each task where the plan has any, and the
     machine line route reads."""
     blockers = blockers or {}
     lines = [task_line(number, title, owner, blockers.get(number, ()),
@@ -724,15 +741,47 @@ def plan_section(plan, made, blockers=None, refused=()):
             "## Tasks\n\n" + "\n".join(lines) + f"\n\n<!-- team:tasks {numbers} -->\n")
 
 
+def body_as_it_stands(client, epic_number, first):
+    """The epic's body right before the plan is written: read again, since
+    the tasks took a while to open and a person, or the board's graph, may
+    have changed it meanwhile; where GitHub refuses that read the body
+    read when seed began stands in, since the tasks and their relations
+    exist by now and a plan not written would have the next run open them
+    all again, which costs more than an edit lost."""
+    try:
+        return client.issue(epic_number).get("body") or ""
+    except ClientError:
+        return first
+
+
+def write_plan(client, epic_number, first, section):
+    """Write the plan section onto the epic's body as it stands, then read
+    the body back once and write the section again where the marker is
+    gone. The board's graph writer reads and writes the whole body too,
+    and one that read the epic before this write and wrote after it would
+    have put the plan out; the plan is written once and route reads it
+    ever after, so losing it would open the tasks twice, while the graph
+    is drawn again every run and costs nothing lost. A read-back GitHub
+    refuses is let go, since the write itself went through."""
+    client.set_body(epic_number, body_as_it_stands(client, epic_number, first) + section)
+    try:
+        written = client.issue(epic_number).get("body") or ""
+    except ClientError:
+        return
+    if PLAN_MARKER not in written:
+        client.set_body(epic_number, written + section)
+
+
 def seed(client, epic_number, plan, agents):
     """Open the epic's tasks, write the dependencies the plan names as
     GitHub's blocked-by relations, and write the plan into the epic, once.
     A plan whose dependencies do not hold together is refused before any
-    task is opened (dependency_problems). The epic is read again right
-    before its body is written, since the tasks took a while to open and a
-    person, or the board's graph, may have changed it meanwhile."""
+    task is opened (dependency_problems); the plan is written onto the
+    epic as it stands once the tasks are open and read back once, so a
+    body written over it meanwhile does not lose it (write_plan)."""
     epic = client.issue(epic_number)
-    if PLAN_MARKER in (epic.get("body") or ""):
+    first = epic.get("body") or ""
+    if PLAN_MARKER in first:
         return "already planned"
     tasks = plan.get("tasks") or []
     if not tasks:
@@ -744,8 +793,7 @@ def seed(client, epic_number, plan, agents):
     opened = [open_task(client, epic_number, task, owner) for task, owner in zip(tasks, owners)]
     made = [(issue["number"], task["title"], owner) for issue, task, owner in zip(opened, tasks, owners)]
     blockers, refused = write_relations(client, tasks, opened)
-    body = (client.issue(epic_number).get("body") or "") + plan_section(plan.get("plan", ""), made, blockers, refused)
-    client.set_body(epic_number, body)
+    write_plan(client, epic_number, first, plan_section(plan.get("plan", ""), made, blockers, refused))
     # An epic opened with the Task form carries todo, which would put it on
     # the board's queue for any worker to take whole; its tasks are the work.
     client.remove_label(epic_number, TODO_LABEL)

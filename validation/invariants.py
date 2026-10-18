@@ -1059,7 +1059,7 @@ def rows_say_blocked(after, shown):
             said = " (blocked by " in title
             if said != oracle.blocked_by_open(after, number):
                 problems.append(Violation("G9", f"the {name} row of #{number} says {title!r}, where its issue is "
-                                                f"{'' if said else 'not '}blocked by an open issue"))
+                                                f"{'not ' if said else ''}blocked by an open issue"))
     return problems
 
 

@@ -19,10 +19,12 @@ IN_REVIEW = "in-review"
 BLOCKER = "blocker"
 EPIC = "epic"
 BLOCKED = "blocked"
-# A goal is a request the coordinator plans into epics, each a sub-issue
-# of the goal: the board leaves it out of its Queue as it leaves an epic
-# out and draws it above its epics. Only a person puts it on, so it is not
-# among the labels a repository makes up front (LABELS).
+# A goal is a request a person breaks into epics, each a sub-issue of the
+# goal, which the coordinator then plans: the board leaves it out of its
+# Queue as it leaves an epic out and draws it above its epics. Only a
+# person puts it on, so it is not among the labels a repository makes up
+# front (LABELS), and a repository whose label goal means something else
+# renames that label first, since an issue carrying it is dealt to nobody.
 GOAL = "goal"
 
 # A worker's label: the name after the colon is the worker that holds the

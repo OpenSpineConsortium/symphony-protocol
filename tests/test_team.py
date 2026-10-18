@@ -764,8 +764,41 @@ class SeedTest(unittest.TestCase):
         self.assertEqual(team.seed(api, 1, plan, ["w1"]),
                          "seeded 101 102 103; #103 blocked by #102 not written: GitHub did not answer")
         self.assertEqual(api.blocked_by, [(103, 9101)])
-        self.assertIn("- [ ] #103 C (worker:w1), blocked by #101; not written: #102 (GitHub did not answer)\n",
-                      api.issues[1]["body"])
+        body = api.issues[1]["body"]
+        self.assertIn("- [ ] #103 C (worker:w1), blocked by #101; not written: #102 (GitHub did not answer)\n", body)
+        # The refusal is said on the line of the task it was for and on no other.
+        self.assertIn("- [ ] #101 A (worker:w1)\n", body)
+        self.assertIn("- [ ] #102 B (worker:w1)\n", body)
+        self.assertEqual(body.count("not written"), 1)
+
+    def test_a_position_listed_twice_is_one_relation_written_once(self):
+        # A hand-written plan may repeat a position; the schema asks
+        # against it, and seed writes the relation once and says it once.
+        api = FakeClient()
+        api.add_issue(1, ["epic"])
+        plan = {"plan": "p", "tasks": [{"title": "A", "owner": "w1", "files": [], "body": "a"},
+                                       {"title": "B", "owner": "w1", "files": [], "body": "b", "depends_on": [1, 1]}]}
+        self.assertEqual(team.seed(api, 1, plan, ["w1"]), "seeded 101 102")
+        self.assertEqual(api.blocked_by, [(102, 9101)])
+        self.assertIn("- [ ] #102 B (worker:w1), blocked by #101\n", api.issues[1]["body"])
+        self.assertEqual(team.positions({"depends_on": [2, 1, 2]}), [2, 1])
+
+    def test_a_depends_on_that_is_no_list_is_refused_in_one_line(self):
+        # A bare number for one dependency, the natural slip in a plan
+        # written by hand, is the same refusal as a list of the wrong
+        # things, not a traceback.
+        for wrong in (1, True, "1", {"on": 1}):
+            with self.subTest(wrong=wrong):
+                tasks = [{"title": "A"}, {"title": "B", "depends_on": wrong}]
+                self.assertEqual(team.dependency_problems(tasks),
+                                 ["plan: task 2's depends_on must list positions, whole numbers from 1"])
+        api = FakeClient()
+        api.add_issue(1, ["epic"], body="Build it.")
+        plan = {"plan": "p", "tasks": [{"title": "A", "owner": "w1"}, {"title": "B", "owner": "w1", "depends_on": 1}]}
+        with self.assertRaises(ValueError) as caught:
+            team.seed(api, 1, plan, ["w1"])
+        self.assertEqual(str(caught.exception), "plan: task 2's depends_on must list positions, whole numbers from 1")
+        self.assertEqual(len(api.issues), 1)
 
     def test_a_refusal_with_a_status_says_what_github_answered(self):
         problem = team.ClientError("POST x: HTTP 422")
@@ -795,6 +828,57 @@ class SeedTest(unittest.TestCase):
         api.add_issue(1, ["epic"], body="Build it.")
         team.seed(api, 1, self.PLAN, ["w1", "w2"])
         self.assertTrue(api.issues[1]["body"].startswith("Build it.\n\nAdded meanwhile.\n\nAdded meanwhile.\n\n<!-- team:plan -->"))
+
+    def test_a_refused_read_before_the_write_falls_back_to_the_body_seed_began_with(self):
+        """Once the tasks exist, a plan not written would have the next run
+        open them all again, so a read GitHub refuses right before the
+        write costs an edit made meanwhile, never the plan."""
+        class Refusing(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.reads = 0
+
+            def issue(self, number):
+                self.reads += 1
+                if number == 1 and self.reads > 1:
+                    raise team.ClientError("GET issue: HTTP 502")
+                return super().issue(number)
+        api = Refusing()
+        api.add_issue(1, ["epic"], body="Build it.")
+        self.assertEqual(team.seed(api, 1, self.PLAN, ["w1", "w2"]), "seeded 101 102")
+        self.assertTrue(api.issues[1]["body"].startswith("Build it.\n\n<!-- team:plan -->"))
+        self.assertIn("<!-- team:tasks 101 102 -->", api.issues[1]["body"])
+
+    def test_a_plan_written_over_meanwhile_is_written_again(self):
+        """The board's graph writer reads and writes the whole body too: one
+        that read the epic before seed's write and wrote after it puts the
+        plan out, so seed reads the body back once and writes the section
+        again where the marker is gone, onto the body as the other writer
+        left it."""
+        class Overwritten(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.writes = []
+
+            def set_body(self, number, body):
+                self.writes.append(body)
+                if len(self.writes) == 1:
+                    # The graph writer's PATCH lands after seed's, from a body it read before.
+                    body = "Build it.\n\n<!-- sdlc-board: graph -->\nchart\n<!-- sdlc-board: /graph -->\n"
+                super().set_body(number, body)
+        api = Overwritten()
+        api.add_issue(1, ["epic"], body="Build it.")
+        self.assertEqual(team.seed(api, 1, self.PLAN, ["w1", "w2"]), "seeded 101 102")
+        self.assertEqual(len(api.writes), 2)
+        body = api.issues[1]["body"]
+        self.assertTrue(body.startswith("Build it.\n\n<!-- sdlc-board: graph -->\nchart\n<!-- sdlc-board: /graph -->\n"
+                                        "\n\n<!-- team:plan -->"), body)
+        self.assertEqual(body.count("<!-- team:plan -->"), 1)
+        self.assertEqual(team.task_numbers(api.issues[1]), [101, 102])
+        api = FakeClient()
+        api.add_issue(1, ["epic"], body="Build it.")
+        team.seed(api, 1, self.PLAN, ["w1", "w2"])
+        self.assertEqual(api.issues[1]["body"].count("<!-- team:plan -->"), 1, "written once where nothing overwrote it")
 
     def test_open_task_returns_the_issue_github_made(self):
         api = FakeClient()
@@ -839,6 +923,11 @@ class DependencyProblemsTest(unittest.TestCase):
                          ["plan: tasks 2, 3 depend on each other in a cycle"])
         self.assertEqual(team.dependency_problems(self.tasks([3], [1], [2], [1])),
                          ["plan: tasks 1, 2, 3 depend on each other in a cycle"])
+        # A task that leads into a cycle without being in it is not blamed.
+        self.assertEqual(team.dependency_problems(self.tasks([2], [3], [2])),
+                         ["plan: tasks 2, 3 depend on each other in a cycle"])
+        self.assertEqual(team.dependency_problems(self.tasks([2], [3], [4], [3])),
+                         ["plan: tasks 3, 4 depend on each other in a cycle"])
 
     def test_the_first_problem_found_is_the_one_reported_first(self):
         problems = team.dependency_problems(self.tasks(["x"], [9], [3]))
@@ -852,8 +941,11 @@ class PlanSchemaTest(unittest.TestCase):
         task = given["properties"]["tasks"]["items"]
         self.assertEqual(task["properties"]["owner"], {"type": "string", "enum": ["alice", "nightly"]})
         self.assertEqual(task["required"], ["title", "owner", "files", "body"])
+        # No minimum and no uniqueItems, which the API's structured output
+        # may not take: dependency_problems and positions hold the plan to
+        # both.
         self.assertEqual(task["properties"]["depends_on"], {
-            "type": "array", "items": {"type": "integer", "minimum": 1}, "uniqueItems": True,
+            "type": "array", "items": {"type": "integer"},
             "description": ("positions of the tasks of this plan that must close before this one "
                             "can be taken, counted from 1 in the order the tasks are listed")})
         self.assertEqual(given["required"], ["plan", "tasks"])

@@ -527,6 +527,10 @@ class TeamRun(unittest.TestCase):
                                        {"title": "B", "owner": "w2", "depends_on": [1]}]}
         self.assertEqual(self.seed_with(api, plan), (1, "", "team: plan: tasks 1, 2 depend on each other in a cycle\n"))
         self.assertEqual(len(api.issues), 1)
+        plan = {"plan": "p", "tasks": [{"title": "A", "owner": "w1"}, {"title": "B", "owner": "w2", "depends_on": 1}]}
+        self.assertEqual(self.seed_with(api, plan),
+                         (1, "", "team: plan: task 2's depends_on must list positions, whole numbers from 1\n"))
+        self.assertEqual(len(api.issues), 1)
 
 
 def registry(folder, *files):

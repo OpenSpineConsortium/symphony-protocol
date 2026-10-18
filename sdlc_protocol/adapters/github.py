@@ -1385,11 +1385,32 @@ def pages_or_empty(api, path):
         raise
 
 
+def in_repository(issue, repo):
+    """Whether an issue object is this repository's: its repository_url
+    names the repository, as every issue GitHub gives carries, or it
+    carries none, as a fixture's does. A sub-issue or an issue blocking
+    one may live in another repository, where its number means nothing
+    here and would be read and drawn as this repository's issue of the
+    same number, so such an item is left out of the reads."""
+    url = issue.get("repository_url")
+    return not isinstance(url, str) or url.lower().endswith("/repos/" + repo.lower())
+
+
+def owes_no_read(parent):
+    """Whether a planned issue's own summary says it has no sub-issue, so
+    its read would answer nothing: the open list carries the summary on
+    every issue, and an issue with none, an older answer, is read."""
+    summary = parent.get("sub_issues_summary")
+    # A bool is not a count, though Python counts it: a summary that says
+    # no whole number is read, as the issue is read when it carries none.
+    return isinstance(summary, dict) and type(summary.get("total")) is int and summary["total"] == 0
+
+
 class DependencyReads:
     """What the Dependencies section's reads found, as collect writes it
     into the snapshot: each open epic's and goal's sub-issues, the issues
-    blocking each sub-issue, and the issues those name that the open list
-    does not hold, as board.Issue dictionaries."""
+    blocking each of an epic's sub-issues, and the issues those name that
+    the open list does not hold, as board.Issue dictionaries."""
 
     def __init__(self, api, found):
         self.api = api
@@ -1399,28 +1420,37 @@ class DependencyReads:
         self.reading = ""
 
     def read(self, planned):
-        """Read every planned issue's sub-issues and each sub-issue's
-        blockers; False where the reserve stopped a read, with the rest
-        left unread, since a section half drawn would mislead."""
+        """Read every planned issue's sub-issues and, for an epic's, the
+        issues blocking each sub-issue, which the epic's chart draws; a
+        goal's sub-issues are epics, whose chart draws no relation of the
+        epic's own, so their blocked-by relations are not read. False where
+        the reserve stopped a read, with the rest left unread, since a
+        section half drawn would mislead."""
         for parent in sorted(planned, key=lambda issue: issue["number"]):
             self.reading = f"#{parent['number']}'s sub-issues"
             children = [child for child in pages_or_empty(self.api, self.issue_path(parent["number"], "sub_issues"))
-                        if "pull_request" not in child]
+                        if "pull_request" not in child and in_repository(child, self.repo)]
             if not within_budget(self.api, 0):
                 return False
             if children:
                 self.sub_issues[parent["number"]] = [child["number"] for child in children]
             for child in children:
                 self.remember(child)
-                if labels.blocked_by_counts(child)[1] > 0 and not self.read_blockers(child):
+                if labels.EPIC in labels.label_names(parent) and not self.read_blockers(child):
                     return False
         return True
 
     def read_blockers(self, child):
+        """Read the issues blocking a sub-issue, where its summary counts
+        one and no earlier parent's read brought them; False where the
+        reserve stopped the read."""
+        if labels.blocked_by_counts(child)[1] == 0 or child["number"] in self.blocked_by:
+            return True
         if not within_budget(self.api, 1):
             return False
-        self.reading = f"#{child['number']}'s blockers"
-        blockers = pages_or_empty(self.api, self.issue_path(child["number"], "dependencies/blocked_by"))
+        self.reading = f"the issues blocking #{child['number']}"
+        listed = pages_or_empty(self.api, self.issue_path(child["number"], "dependencies/blocked_by"))
+        blockers = [blocker for blocker in listed if in_repository(blocker, self.repo)]
         if not within_budget(self.api, 0):
             return False
         self.blocked_by[child["number"]] = sorted(blocker["number"] for blocker in blockers)
@@ -1430,7 +1460,8 @@ class DependencyReads:
 
     def remember(self, issue):
         """Keep an issue the open list does not hold, a closed sub-issue
-        or a blocker outside the epic, so the chart draws it."""
+        or an issue blocking one from outside the epic, so the chart draws
+        it."""
         if issue["number"] not in self.listed:
             self.others[issue["number"]] = board.Issue.from_dict(issue).to_dict()
 
@@ -1446,12 +1477,20 @@ class DependencyReads:
 def dependencies(api, found):
     """The Dependencies section's reads, last in collect, so the page's
     tables are read whatever happens here: for every open issue labelled
-    epic or goal its sub-issues, and for every sub-issue whose summary
-    counts a blocker the issues blocking it. The reads stop short of the
+    epic or goal whose summary does not say it has no sub-issue, its
+    sub-issues, and for every sub-issue of an epic whose summary counts
+    an issue blocking it, those issues. The reads stop short of the
     reserve (within_budget), and a read GitHub fails drops the section
     with its own notice; either way the run goes on and the page says why
-    the section is not drawn (board.NOT_DRAWN). Nothing here raises."""
-    planned = [issue for issue in found["issues"] if labels.planned(labels.label_names(issue))]
+    the section is not drawn (board.NOT_DRAWN). The chart each listed
+    body holds is kept whatever is read (board.listed_graphs), so the
+    graph writer knows what stands without reading again. Nothing here
+    raises."""
+    graphs = board.listed_graphs(found["issues"])
+    if graphs:
+        found["graphs"] = graphs
+    planned = [issue for issue in found["issues"]
+               if labels.planned(labels.label_names(issue)) and not owes_no_read(issue)]
     if not planned:
         return
     reads = DependencyReads(api, found)
@@ -1481,15 +1520,25 @@ def dependencies_skipped_lines(snapshot):
 
 def write_graphs(api, snapshot, blocks):
     """Write each open epic's flowchart into its body, between the graph
-    markers, after the page is written: the epic is read afresh, since
-    the clerk or a person may have written it since the run began, and
-    written only when its body would change, so a run that finds nothing
-    moved writes nothing. A closed or deleted epic, a body whose markers
-    are unpaired, which a person wrote and the board leaves alone, a
-    write that would reach the reserve and one GitHub refuses are each a
-    line and never stop the next; nothing here raises."""
+    markers, after the page is written, and take the chart out of an
+    issue that owes none any more, its sub-issues taken off; nothing in a
+    run whose reads for the section were left out, since it knows nothing
+    of what the bodies owe. An epic whose listed body holds the block
+    already costs no call; any other is read afresh, since the clerk or a
+    person may have written it since the run began, and written only when
+    its body would change, so a run that finds nothing moved writes
+    nothing. A closed or deleted epic, a body whose markers are not one
+    clean pair, which a person wrote and the board leaves alone, a write
+    that would reach the reserve and one GitHub refuses are each a line
+    and never stop the next; nothing here raises."""
+    snap = board.as_snapshot(snapshot)
+    if snap.dependencies_skipped:
+        return []
     lines = []
-    for number, block in sorted(blocks.items()):
+    for number in sorted(set(blocks) | set(snap.graphs)):
+        block = blocks.get(number)
+        if block is not None and snap.graphs.get(number) == block:
+            continue
         if not within_budget(api, 2):
             lines.append(f"epic #{number}: graph not written: {reserve_words(api)}")
             continue
@@ -1501,17 +1550,21 @@ def write_graphs(api, snapshot, blocks):
 
 
 def write_graph(api, number, block):
+    """One epic's write: its body with the block, or without the chart
+    where block is None, compared with the body as read with Windows
+    line endings folded, so a body GitHub stored with them is not
+    rewritten every run."""
     issue = issue_or_none(api, number)
     if issue is None or issue.get("state") == "closed":
         return []
-    body = (issue.get("body") or "").replace("\r\n", "\n")
-    wanted = board.body_with_graph(body, block)
+    body = issue.get("body") or ""
+    wanted = board.body_with_graph(body, block) if block is not None else board.body_without_graph(body)
     if wanted is None:
-        return [f"epic #{number}: graph block not written: markers unpaired"]
-    if wanted == body:
+        return [] if block is None else [f"epic #{number}: graph block not written: markers unpaired"]
+    if wanted.replace("\r\n", "\n") == body.replace("\r\n", "\n"):
         return []
     api.set_body(number, wanted)
-    return [f"epic #{number}: graph written"]
+    return [f"epic #{number}: graph {'written' if block is not None else 'taken out'}"]
 
 
 def began_times(api, found):

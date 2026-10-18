@@ -280,6 +280,10 @@ TRACES = {
     "the clerk dealing an issue blocked by an open issue": dealing.Case({1: ("todo",), 2: ("todo",)}, 2, "none",
                                                                        ("a", "b"), blocked_by=((1, 2),)),
     "the board listing a goal in the Queue": ([labelled("goal"), BOARD], Scope()),
+    # The dependencies' review: two rules of the page no search or trace
+    # draws a relation for, caught by the lane that does.
+    "the rows saying nothing of an issue an open issue blocks": "the dependencies on the page",
+    "the Dependencies section never drawn": "the dependencies on the page",
     "the Overlaps landing a blocker after other work": (LATER_BLOCKER + [BOARD], SHARED),
     "a released claim carried by its holder": dealing.Case({1: ("todo",)}, 1, "released", ("a", "b")),
     "a Worker line naming nobody taken for a name": dealing.Case({1: ("worker:b",)}, 1, "blank", ("a", "b")),
@@ -423,9 +427,11 @@ class TheLane(unittest.TestCase):
         unset, 181; and its third review one, a push env's -S spells read
         only as written, 182; and the dependencies two, the clerk dealing
         an issue an open issue blocks and the board listing a goal in the
-        Queue, 184."""
+        Queue, 184; and their review's two, the rows saying nothing of an
+        issue an open issue blocks and the Dependencies section never
+        drawn, 186."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 184)
+        self.assertEqual(len(mutants.MUTANTS), 186)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

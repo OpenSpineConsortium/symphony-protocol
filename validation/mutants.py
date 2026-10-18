@@ -1329,6 +1329,19 @@ def free_though_blocked_by_open(snap, issue):
     return issue["number"] not in snap.claimed and labels.BLOCKED not in names and labels.CLAIMED not in names
 
 
+def blocked_note_silent(snap, issue):
+    """board.blocked_note saying nothing, so the row of an issue an open
+    issue blocks reads as free to take, which a worker reading the page
+    would then claim."""
+    return ""
+
+
+def dependencies_lines_empty(snap):
+    """board.dependencies_lines drawing nothing, so the page carries no
+    Dependencies section however many open epics have sub-issues."""
+    return []
+
+
 def planned_without_goals(names):
     """labels.planned reading an epic alone, so the board's Queue lists a
     goal, which nobody takes whole."""
@@ -1939,6 +1952,15 @@ MUTANTS = {
         labels, "planned", planned_without_goals,
         "G5", "the board's Queue leaves a goal out as it leaves an epic out, since nobody takes one whole (the "
               "dependencies)"),
+    "the rows saying nothing of an issue an open issue blocks": Mutant(
+        board, "blocked_note", blocked_note_silent,
+        "G9", "each row of the Queue, Given to workers and the Blockers says beside its title when GitHub's "
+              "dependencies say an open issue blocks the issue, so a worker reading the page does not take it (the "
+              "dependencies' review)"),
+    "the Dependencies section never drawn": Mutant(
+        board, "dependencies_lines", dependencies_lines_empty,
+        "G9", "the board draws each open epic's sub-issues and their blocked-by relations (the dependencies' "
+              "review)"),
     "the Overlaps landing a blocker after other work": Mutant(
         board, "landing_key", lambda work: (not work.ready, board.began_at(work.began), work.number),
         "G7", "a blocker lands first, since it stops everyone (F15's fifth review)"),
@@ -2270,9 +2292,31 @@ def labels_lane():
     return found
 
 
+def dependencies_lane():
+    """One board run on each shape the dependencies take on a page, checked
+    as a search checks one, since no search or trace draws a blocked-by
+    relation: #1 blocked by the open #2, labelled todo, blocker or given to
+    a, so a row of each section says so (invariants.rows_say_blocked), both
+    under epic #3, so the section draws them (invariants.dependencies_drawn)."""
+    found = {}
+    now = Verb("board", verbs.BOARD, (cycle.SCHEDULE, ""))
+    for names in (("todo",), ("blocker",), ("todo", "worker:a")):
+        model = M.seeded((1, 2, 3), writers=("a", "b"))
+        model.issues[1].labels = frozenset(names)
+        model.issues[1].blocked_by = (2,)
+        model.issues[3].labels = frozenset({"epic"})
+        model.issues[3].sub_issues = (1, 2)
+        before = model.clone()
+        outcome = verbs.apply(model, now)
+        for v in invariants.step_checks(before, model, now, outcome):
+            found.setdefault((v.guarantee, v.detail), (f"#1 labelled {', '.join(names)}, blocked by #2, under epic #3", now))
+    return found
+
+
 LANES = (Lane("the regression traces", traces_lane),
          Lane("the guard grammar against git's answers", guard_lane),
-         Lane("dealing at every look", dealing_lane))
+         Lane("dealing at every look", dealing_lane),
+         Lane("the dependencies on the page", dependencies_lane))
 # Two lanes come after the searches, each wider and slower than any of
 # them, so a mutant reaches them only past every search: the clerk's deal
 # against Pick, from one look at every state a person can label an issue

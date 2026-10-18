@@ -524,7 +524,7 @@ class FakeGitHub:
         it is closed, and none for one never closed."""
         reason = "reopened" if issue.reopened else "completed" if issue.state == "closed" else None
         return {"number": issue.number, "id": FIRST_ISSUE_ID + issue.number, "title": issue.title,
-                "state": issue.state, "body": issue.body,
+                "state": issue.state, "body": issue.body, "repository_url": f"https://api.github.com{BASE}",
                 "labels": [{"name": n} for n in sorted(issue.labels)], "updated_at": iso(0), "state_reason": reason,
                 "issue_dependencies_summary": self.dependencies_summary(issue),
                 "sub_issues_summary": self.sub_issues_summary(issue)}

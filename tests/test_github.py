@@ -3662,7 +3662,7 @@ class Dependencies(unittest.TestCase):
 
     def test_a_read_that_lands_on_the_reserve_drops_the_section_whole(self):
         # 303 left before the reads, 302 after #20's sub-issues and 301
-        # after #22's blockers: #23's blockers would be the last call
+        # after the issues blocking #22: those blocking #23 would be the last call
         # before the reserve, so nothing is kept, not even what was read.
         snap, answers = epics_answers(limit_headers(303))
         answers["/repos/o/r/issues/20/sub_issues?per_page=100"].headers = limit_headers(302)
@@ -3682,13 +3682,87 @@ class Dependencies(unittest.TestCase):
         found = github.collect(client(answers)[0], "abc", "main")
         self.assertEqual(found["dependencies_skipped"], "failed")
         self.assertEqual(found["dependencies_notice"],
-                         "reading #23's blockers failed: GET /repos/o/r/issues/23/dependencies/blocked_by: HTTP 502")
+                         "reading the issues blocking #23 failed: GET /repos/o/r/issues/23/dependencies/blocked_by: "
+                         "HTTP 502")
         self.assertNotIn("sub_issues", found)
         self.assertIn(board.NOT_DRAWN["failed"], board.render(found))
         answers["/repos/o/r/issues/20/sub_issues?per_page=100"] = Refusal(500, {"message": "down"})
         found = github.collect(client(answers)[0], "abc", "main")
         self.assertEqual(found["dependencies_notice"],
                          "reading #20's sub-issues failed: GET /repos/o/r/issues/20/sub_issues: HTTP 500: down")
+
+    def test_a_sub_issue_or_blocking_issue_of_another_repository_is_left_out(self):
+        """GitHub lets a sub-issue and a blocking issue live in another
+        repository, where its number means nothing here: read by its
+        number it would be this repository's issue of that number, so
+        the reads keep only items whose repository_url is this
+        repository's, and the row falls back to the summary's count."""
+        snap, answers = epics_answers()
+        foreign = dict(issue_of(snap, 99)) | {"repository_url": "https://api.github.com/repos/other/widgets",
+                                               "title": "Foreign", "state": "closed"}
+        answers["/repos/o/r/issues/22/dependencies/blocked_by?per_page=100"] = FakeAnswer([foreign])
+        # A foreign sub-issue numbered like this repository's open #99.
+        child = dict(issue_of(snap, 99)) | {"repository_url": "https://api.github.com/repos/Other/Widgets",
+                                             "issue_dependencies_summary": {"blocked_by": 1, "total_blocked_by": 1}}
+        answers["/repos/o/r/issues/30/sub_issues?per_page=100"] = FakeAnswer([issue_of(snap, 20), child])
+        api, opener = client(answers)
+        found = github.collect(api, "abc", "main")
+        self.assertEqual(found["sub_issues"], {20: [21, 22, 23], 30: [20]})
+        self.assertEqual(found["blocked_by"], {22: [], 23: [21, 22]})
+        self.assertNotIn("/repos/o/r/issues/99/dependencies/blocked_by?per_page=100",
+                         [c.selector for c in opener.calls])
+        live = board.as_snapshot(found)
+        self.assertEqual(board.blocked_note(live, live.issue_by_number(22)), " (blocked by 1 open issue)")
+        self.assertNotIn("i99", board.render(found))
+        local = dict(issue_of(snap, 99)) | {"repository_url": "https://api.github.com/repos/O/R"}
+        self.assertTrue(github.in_repository(local, "o/r"), "the repository's own name in any case")
+        self.assertTrue(github.in_repository({"number": 1}, "o/r"), "a fixture's item carries no url")
+
+    def test_a_planned_issue_whose_summary_counts_no_sub_issue_is_not_read(self):
+        # The open list carries sub_issues_summary on every issue, so an
+        # epic with none costs no call a run; one with no summary at all,
+        # an older answer, is read as before (the wide fixture's #23).
+        snap, answers = epics_answers()
+        answers["/repos/o/r/issues?state=open&per_page=100"] = FakeAnswer(
+            snap["issues"] + [{"number": 40, "title": "Empty", "labels": [{"name": "epic"}],
+                               "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0}},
+                              {"number": 41, "title": "Older", "labels": [{"name": "goal"}]}])
+        answers["/repos/o/r/issues/41/sub_issues?per_page=100"] = FakeAnswer([])
+        api, opener = client(answers)
+        found = github.collect(api, "abc", "main")
+        asked = [c.selector for c in opener.calls if "sub_issues" in c.selector]
+        self.assertEqual(asked, ["/repos/o/r/issues/20/sub_issues?per_page=100",
+                                 "/repos/o/r/issues/30/sub_issues?per_page=100",
+                                 "/repos/o/r/issues/41/sub_issues?per_page=100"])
+        self.assertEqual(found["sub_issues"], {20: [21, 22, 23], 30: [20]})
+        self.assertTrue(github.owes_no_read({"sub_issues_summary": {"total": 0}}))
+        self.assertFalse(github.owes_no_read({"sub_issues_summary": {"total": True}}))
+        self.assertFalse(github.owes_no_read({"sub_issues_summary": "3"}))
+        self.assertFalse(github.owes_no_read({}))
+
+    def test_the_issues_blocking_a_goal_s_epic_are_not_read_and_a_child_of_two_parents_is_read_once(self):
+        # A goal's block draws no blocked-by relation, so a read of the
+        # issues blocking its epics would buy nothing; and a child two
+        # parents list, a stale answer, costs one read.
+        snap, answers = epics_answers()
+        epic = dict(issue_of(snap, 20)) | {"issue_dependencies_summary": {"blocked_by": 1, "total_blocked_by": 1}}
+        answers["/repos/o/r/issues/30/sub_issues?per_page=100"] = FakeAnswer([epic, issue_of(snap, 23)])
+        api, opener = client(answers)
+        found = github.collect(api, "abc", "main")
+        asked = [c.selector for c in opener.calls if "blocked_by" in c.selector]
+        self.assertEqual(asked, ["/repos/o/r/issues/22/dependencies/blocked_by?per_page=100",
+                                 "/repos/o/r/issues/23/dependencies/blocked_by?per_page=100"])
+        self.assertEqual(found["sub_issues"], {20: [21, 22, 23], 30: [20, 23]})
+
+    def test_the_chart_each_listed_body_holds_is_kept_for_the_writer(self):
+        snap, answers = epics_answers()
+        block = "```mermaid\nflowchart TD\n  i21[\"#21 Read\"]\n```"
+        issues = [dict(i) for i in snap["issues"]]
+        issues[0]["body"] = "Build it.\n\n<!-- sdlc-board: graph -->\n" + block + "\n<!-- sdlc-board: /graph -->\n"
+        answers["/repos/o/r/issues?state=open&per_page=100"] = FakeAnswer(issues)
+        found = github.collect(client(answers)[0], "abc", "main")
+        self.assertEqual(found["graphs"], {20: block})
+        self.assertNotIn("graphs", github.collect(client(epics_answers()[1])[0], "abc", "main"))
 
     def test_a_deleted_or_missing_issue_has_no_sub_issues(self):
         api, _ = client({"/repos/o/r/issues/5/sub_issues?per_page=100": Refusal(410)})
@@ -3748,6 +3822,50 @@ class WriteGraphs(unittest.TestCase):
         self.assertEqual(github.write_graphs(api, board.Snapshot(), {20: self.BLOCK}),
                          ["epic #20: graph not written: 302 of 1000 calls left, the reserve is 300"])
         self.assertEqual(opener.calls, [])
+
+    def test_an_epic_whose_listed_body_holds_the_block_costs_no_call(self):
+        # The open list gave the body at the run's start; where it holds
+        # the chart the run drew, nothing would change, so nothing is read
+        # again, and a quiet run costs the writer nothing.
+        api, opener = client({"/repos/o/r/issues/21": FakeAnswer({"number": 21, "state": "open", "body": ""}),
+                              "PATCH /repos/o/r/issues/21": FakeAnswer({})})
+        snap = board.Snapshot(graphs={20: self.BLOCK, 21: "stale"})
+        self.assertEqual(github.write_graphs(api, snap, {20: self.BLOCK, 21: self.BLOCK}), ["epic #21: graph written"])
+        self.assertEqual([c.selector for c in opener.calls], ["/repos/o/r/issues/21", "/repos/o/r/issues/21"])
+
+    def test_a_chart_an_issue_no_longer_owes_is_taken_out(self):
+        # An epic whose sub-issues were taken off, or whose label came off,
+        # keeps no stale chart: the span and the blank line before it go,
+        # and nothing else in the body moves.
+        body = "Build it.\r\n\r\n" + self.GRAPH.replace("\n", "\r\n") + "\r\n\r\n<!-- team:plan -->\r\nplan\r\n"
+        api, opener = client({"/repos/o/r/issues/20": FakeAnswer({"number": 20, "state": "open", "body": body}),
+                              "PATCH /repos/o/r/issues/20": FakeAnswer({}),
+                              "/repos/o/r/issues/21": FakeAnswer({"number": 21, "state": "open", "body": "mended\n"})})
+        snap = board.Snapshot(graphs={20: self.BLOCK, 21: self.BLOCK})
+        self.assertEqual(github.write_graphs(api, snap, {}), ["epic #20: graph taken out"])
+        self.assertEqual(opener.sent("PATCH"), [{"body": "Build it.\r\n\r\n<!-- team:plan -->\r\nplan\r\n"}])
+        api.limit = (301, 1000, 1760612400)
+        self.assertEqual(github.write_graphs(api, snap, {}),
+                         ["epic #20: graph not written: 301 of 1000 calls left, the reserve is 300",
+                          "epic #21: graph not written: 301 of 1000 calls left, the reserve is 300"])
+
+    def test_a_run_whose_reads_were_left_out_writes_no_chart_and_takes_none_out(self):
+        api, opener = client({})
+        snap = board.Snapshot(graphs={20: self.BLOCK}, dependencies_skipped="reserve")
+        self.assertEqual(github.write_graphs(api, snap, {}), [])
+        self.assertEqual(opener.calls, [])
+
+    def test_a_body_with_windows_line_endings_is_written_in_them_and_read_back_as_unchanged(self):
+        body = "Build it.\r\n\r\nmore\r\n"
+        api, opener = client({"/repos/o/r/issues/20": FakeAnswer({"number": 20, "state": "open", "body": body}),
+                              "PATCH /repos/o/r/issues/20": FakeAnswer({})})
+        self.assertEqual(github.write_graphs(api, board.Snapshot(), {20: self.BLOCK}), ["epic #20: graph written"])
+        written = opener.sent("PATCH")[0]["body"]
+        self.assertTrue(written.startswith("Build it.\r\n\r\nmore\r\n\r\n<!-- sdlc-board: graph -->\r\n"), written)
+        self.assertNotIn("\n", written.replace("\r\n", ""), "every line ending stays Windows's")
+        api, opener = client({"/repos/o/r/issues/20": FakeAnswer({"number": 20, "state": "open", "body": written})})
+        self.assertEqual(github.write_graphs(api, board.Snapshot(), {20: self.BLOCK}), [])
+        self.assertEqual(opener.sent("PATCH"), [])
 
 
 class TeamClient(unittest.TestCase):

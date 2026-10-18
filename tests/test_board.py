@@ -1410,14 +1410,14 @@ class RowsTest(unittest.TestCase):
         self.assertIn("| #25 | Fix the build (blocked by 1 open issue) | blocker |", text)
         self.assertIn("| #99 | Settle the colours | todo |", text)
 
-    def test_the_note_names_the_open_blockers_read_or_counts_them(self):
-        snap = Snapshot(issues=[Issue(5, "t", ["todo"], open_blockers=2, total_blockers=3)],
+    def test_the_note_names_the_blocked_by_open_read_or_counts_them(self):
+        snap = Snapshot(issues=[Issue(5, "t", ["todo"], blocked_by_open=2, blocked_by_total=3)],
                         blocked_by={5: [1, 2, 3]}, others={1: Issue(1, "", state="closed")})
         self.assertEqual(board.blocked_note(snap, snap.issues[0]), " (blocked by #2, #3)")
         snap.blocked_by = {}
         self.assertEqual(board.blocked_note(snap, snap.issues[0]), " (blocked by 2 open issues)")
-        self.assertEqual(board.blocked_note(snap, Issue(6, "t", open_blockers=1)), " (blocked by 1 open issue)")
-        self.assertEqual(board.blocked_note(snap, Issue(6, "t", total_blockers=1)), "")
+        self.assertEqual(board.blocked_note(snap, Issue(6, "t", blocked_by_open=1)), " (blocked by 1 open issue)")
+        self.assertEqual(board.blocked_note(snap, Issue(6, "t", blocked_by_total=1)), "")
 
     def test_a_goal_is_left_out_of_the_queue_as_an_epic_is(self):
         text = board.render(Snapshot(issues=[Issue(30, "Ship", ["goal", "todo"]), Issue(31, "Plan", ["epic", "todo"]),
@@ -1443,15 +1443,57 @@ class GraphSectionTest(unittest.TestCase):
         self.assertEqual(board.body_with_graph(body, self.BLOCK),
                          "Build it.\n\n<!-- sdlc-board: graph -->\n" + self.BLOCK
                          + "\n<!-- sdlc-board: /graph -->\n\n<!-- team:plan -->\nplan\n")
-        self.assertEqual(board.body_with_graph(body.replace("\n", "\r\n"), self.BLOCK),
-                         board.body_with_graph(body, self.BLOCK))
+
+    def test_a_body_with_windows_line_endings_keeps_them_and_takes_the_block_in_them(self):
+        # The writer never touches a line outside the markers, so a body
+        # GitHub stored with CRLF stays CRLF and the block is put in CRLF
+        # too, which folds to the block the page carries (graph_block).
+        body = "Build it.\r\n\r\n<!-- sdlc-board: graph -->\r\nold\r\n<!-- sdlc-board: /graph -->\r\n\r\nplan\r\n"
+        self.assertEqual(board.body_with_graph(body, self.BLOCK),
+                         board.body_with_graph(body.replace("\r\n", "\n"), self.BLOCK).replace("\n", "\r\n"))
+        self.assertEqual(board.body_with_graph("Build it.\r\n", self.BLOCK),
+                         "Build it.\r\n\r\n<!-- sdlc-board: graph -->\r\n" + self.BLOCK.replace("\n", "\r\n")
+                         + "\r\n<!-- sdlc-board: /graph -->\r\n")
+        self.assertEqual(board.graph_block(board.body_with_graph("Build it.\r\n", self.BLOCK)), self.BLOCK)
+        self.assertEqual(board.line_ending("a\r\nb"), "\r\n")
+        self.assertEqual(board.line_ending("a\nb"), "\n")
 
     def test_unpaired_markers_are_left_alone(self):
         for body in ("<!-- sdlc-board: graph -->\nx", "x\n<!-- sdlc-board: /graph -->",
                      "<!-- sdlc-board: /graph -->\n<!-- sdlc-board: graph -->"):
             self.assertIsNone(board.body_with_graph(body, self.BLOCK), body)
             self.assertIsNone(board.graph_section(body), body)
+            self.assertIsNone(board.graph_block(body), body)
+            self.assertIsNone(board.body_without_graph(body), body)
         self.assertIsNone(board.graph_section("nothing"))
+
+    def test_a_stray_end_marker_before_the_pair_or_a_second_pair_is_left_alone(self):
+        # A person's paste that is not one clean pair is theirs to mend:
+        # writing into it could take out what they meant to keep, or
+        # leave a second, stale chart standing for good.
+        pair = "<!-- sdlc-board: graph -->\nold\n<!-- sdlc-board: /graph -->"
+        for body in ("<!-- sdlc-board: /graph -->\nA\n" + pair, pair + "\n\n" + pair,
+                     pair + "\n<!-- sdlc-board: graph -->"):
+            self.assertIsNone(board.graph_section(body), body)
+            self.assertIsNone(board.body_with_graph(body, self.BLOCK), body)
+            self.assertIsNone(board.body_without_graph(body), body)
+
+    def test_the_graph_is_taken_out_with_the_blank_line_before_it(self):
+        pair = "<!-- sdlc-board: graph -->\n" + self.BLOCK + "\n<!-- sdlc-board: /graph -->"
+        self.assertEqual(board.body_without_graph("Build it.\n\n" + pair + "\n"), "Build it.\n")
+        self.assertEqual(board.body_without_graph("Build it.\n\n" + pair + "\n\n<!-- team:plan -->\nplan\n"),
+                         "Build it.\n\n<!-- team:plan -->\nplan\n")
+        self.assertEqual(board.body_without_graph(pair + "\n"), "")
+        self.assertEqual(board.body_without_graph(pair + "\n\nplan\n"), "plan\n")
+        self.assertEqual(board.body_without_graph("Build it.\r\n\r\n" + pair.replace("\n", "\r\n") + "\r\n"),
+                         "Build it.\r\n")
+
+    def test_the_listed_graphs_are_each_body_s_block_folded(self):
+        pair = "<!-- sdlc-board: graph -->\r\n" + self.BLOCK.replace("\n", "\r\n") + "\r\n<!-- sdlc-board: /graph -->"
+        issues = [{"number": 20, "body": "Build it.\r\n\r\n" + pair + "\r\n"},
+                  {"number": 21, "body": "<!-- sdlc-board: graph -->\nx"}, {"number": 22, "body": None},
+                  {"number": "23", "body": "<!-- sdlc-board: graph -->\n<!-- sdlc-board: /graph -->"}]
+        self.assertEqual(board.listed_graphs(issues), {20: self.BLOCK, 23: ""})
 
     def test_writing_the_same_block_twice_changes_nothing(self):
         once = board.body_with_graph("Build it.", self.BLOCK)
@@ -1470,12 +1512,15 @@ class SnapshotRoundTripTest(unittest.TestCase):
             self.assertNotIn(key, plain)
         skipped = Snapshot(dependencies_skipped="failed", dependencies_notice="reading #20's sub-issues failed: x")
         self.assertEqual(Snapshot.from_json(skipped.to_json()), skipped)
+        graphed = Snapshot(graphs={20: "```mermaid\nflowchart TD\n```"})
+        self.assertEqual(Snapshot.from_json(graphed.to_json()), graphed)
+        self.assertNotIn("graphs", plain)
 
     def test_an_issue_keeps_its_state_and_its_summaries(self):
         issue = Issue.from_dict({"number": 5, "title": "t", "labels": ["todo"], "state": "closed",
                                  "issue_dependencies_summary": {"blocked_by": 1, "total_blocked_by": 2},
                                  "sub_issues_summary": {"total": 3, "completed": 1}})
-        self.assertEqual((issue.state, issue.open_blockers, issue.total_blockers, issue.progress), ("closed", 1, 2, (1, 3)))
+        self.assertEqual((issue.state, issue.blocked_by_open, issue.blocked_by_total, issue.progress), ("closed", 1, 2, (1, 3)))
         self.assertEqual(Issue.from_dict(issue.to_dict()), issue)
         self.assertEqual(Issue.from_dict({"number": 5}).to_dict(), {"number": 5, "title": "", "labels": [], "updated_at": ""})
 

@@ -1225,7 +1225,8 @@ def deal_problems(model, team, moves):
         place, numbers = pick(model, member, {n for m, n in takes.items() if m != member})
         alone = given_alone(model, member)
         if member in takes and blocked_by_open(model, takes[member]):
-            blocker = next(n for n in model.issues[takes[member]].blocked_by if model.issues[n].state == "open")
+            blocker = next(n for n in model.issues[takes[member]].blocked_by
+                           if n in model.issues and model.issues[n].state == "open")
             problems.append(f"dealt #{takes[member]} to {member} though #{blocker}, open, blocks it")
         elif member in takes and takes[member] not in numbers:
             problems.append(f"{member} takes #{takes[member]}, where Pick has it take from "

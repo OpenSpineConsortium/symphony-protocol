@@ -499,6 +499,8 @@ class Faults(unittest.TestCase):
         self.assertEqual(api.get_all(f"/repos/{M.REPO}/issues/2/sub_issues"), [])
         three = api.get(f"/repos/{M.REPO}/issues/3")
         self.assertEqual(three["id"], 1003)
+        self.assertEqual(three["repository_url"], f"https://api.github.com/repos/{M.REPO}",
+                         "every issue names its repository, as the reads tell a foreign one by")
         self.assertEqual(three["issue_dependencies_summary"],
                          {"blocked_by": 1, "blocking": 0, "total_blocked_by": 2, "total_blocking": 0})
         self.assertEqual(api.get(f"/repos/{M.REPO}/issues/2")["issue_dependencies_summary"]["blocking"], 1)

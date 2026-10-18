@@ -300,10 +300,13 @@ def dependency_cases():
     after every mix: #1 blocked by #2 through GitHub's relation, #2 open
     and queued, open and claimed by a peer, closed, or open and labelled
     blocked, with #1 queued or given to the asking worker, which Pick has
-    it take first; and a goal labelled todo beside a queued issue, in a
-    team of two, which nobody takes whole. Each is dealt to a alone and
-    to a and b, so a task given to a that an open issue blocks goes to
-    nobody, and a queued one the same, where a closed blocker frees it."""
+    it take first; a goal labelled todo beside a queued issue, in a team
+    of two, which nobody takes whole; and, from the review, a blocker an
+    open issue blocks, which Pick's first place holds back too, and an
+    issue blocked by a closed issue and an open one, which the open one
+    holds back. Each is dealt to a alone and to a and b, so a task given
+    to a that an open issue blocks goes to nobody, and a queued one the
+    same, where a closed blocker frees it."""
     blocker_states = (("todo",), ("todo", "claimed", "worker:b"), ("todo",), ("todo", "blocked"))
     for state, names in enumerate(blocker_states):
         closed = (2,) if state == 2 else ()
@@ -311,6 +314,9 @@ def dependency_cases():
         for labels in (("todo",), ("todo", "worker:a")):
             yield Case({1: labels, 2: names}, 2, held, ("a", "b"), blocked_by=((1, 2),), closed=closed)
     yield Case({1: ("goal", "todo"), 2: ("todo",)}, 1, "none", ("a", "b"))
+    yield Case({1: ("blocker",), 2: ("todo",)}, 1, "none", ("a", "b"), blocked_by=((1, 2),))
+    yield Case({1: ("todo",), 2: ("todo",), 3: ("todo",)}, 1, "none", ("a", "b"), blocked_by=((1, 2), (1, 3)),
+               closed=(2,))
 
 
 def case_model(case):
