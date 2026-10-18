@@ -521,6 +521,10 @@ TOO_SLOW = (f"a command the guard cannot read and judge in {DEADLINE_SECONDS} se
             "answer in time, is refused: a hook that runs out of time lets the command run; write the text to a file "
             "first, or push in a command of its own (.claude/rules/board.md)")
 
+UNREADABLE = ("a command the guard cannot read, for the size of what it builds, is refused: a hook that fails lets "
+              "the command run; write the text to a file first, or push in a command of its own "
+              "(.claude/rules/board.md)")
+
 # The hook's exit codes: 0 lets the tool call run, 2 stops it and sends
 # stderr back into the session.
 PASS = 0
@@ -585,7 +589,16 @@ def ansi_c_close(command, i):
 
 def ansi_c_text(text):
     """What bash's $'...' gives for the text between its quotes (ANSI_C_ESCAPES):
-    git $'pu\\x73h' origin $'ma\\151n' runs git push origin main (F29)."""
+    git $'pu\\x73h' origin $'ma\\151n' runs git push origin main (F29).
+    A NUL ends it, as it ends any word bash builds."""
+    return escapes_read(text).partition("\0")[0]
+
+
+def escapes_read(text):
+    """The text with its backslash escapes read as $'...' reads them, a NUL
+    kept where one is written: echo and printf print it, and a shell that
+    reads their output from a pipe drops it and reads on (printed_texts;
+    F32's second review)."""
     out, i = [], 0
     while i < len(text):
         ch = text[i]
@@ -612,7 +625,7 @@ def ansi_c_text(text):
             out.append("\x7f" if control == "?" else chr(ord(upper if len(upper) == 1 else control) & 0x1F))
         else:
             out.append("\\" + escape)
-    return "".join(out).partition("\0")[0]
+    return "".join(out)
 
 
 def code_point(value, escape, digits):
@@ -3709,10 +3722,14 @@ def placed_parts(parts, start, is_directory, handed=None):
     return placed
 
 
-# The words that open a compound command, and those that close one, as
-# the first word of a simple command's part (Flow).
+# The words that open a compound command, and those that close one, at
+# the head of a simple command's part (Flow), and the reserved words that
+# may stand before one there, as then and ! do in then if, ! { and time {
+# (F32's second review: only the first word was read, so the second { of
+# { { echo ...; }; } | bash opened nothing and the echo's output was lost).
 COMPOUND_OPENS = frozenset({"{", "if", "while", "until", "for", "case", "select"})
 COMPOUND_CLOSES = frozenset({"}", "fi", "done", "esac"})
+COMPOUND_LEADS = frozenset({"!", "time", "then", "do", "else", "elif"})
 
 
 class Flow:
@@ -3723,8 +3740,8 @@ class Flow:
     the list operator that ends that stage at its own depth."""
 
     def __init__(self):
-        self.depth, self.groups, self.last = 0, [], ()
-        self.feed, self.feed_depth = (), None
+        self.depth, self.groups, self.kinds, self.last = 0, [], [], ()
+        self.feed, self.feed_depth, self.piped = (), None, False
 
     def feeding(self):
         return self.feed
@@ -3735,32 +3752,46 @@ class Flow:
             self.groups[-1].extend(texts)
 
     def opens_or_closes(self, part, before):
-        word = part[0] if part else ""
-        if before and word in COMPOUND_OPENS:
-            self.open()
-        elif not before and word in COMPOUND_CLOSES:
-            self.close()
+        self.piped = False
+        for word in part:
+            if before and word in COMPOUND_OPENS:
+                self.open(word)
+            elif not before and word in COMPOUND_CLOSES:
+                self.close()
+            elif word not in COMPOUND_LEADS and word not in COMPOUND_OPENS and word not in COMPOUND_CLOSES:
+                break
 
-    def open(self):
+    def open(self, kind):
         self.depth += 1
         self.groups.append([])
+        self.kinds.append(kind)
 
     def close(self):
         if not self.groups:
             return
         self.depth -= 1
+        self.kinds.pop()
         texts = self.groups.pop()
-        self.last = ("\n".join(texts),) if texts else ()
+        self.last = ("".join(texts),) if texts else ()
         if self.groups:
             self.groups[-1].extend(self.last)
 
     def operator(self, operator):
-        if operator in ("|", "|&"):
+        if self.piped and operator == ";":
+            # A newline after a pipe, which the readings write as ;, goes
+            # on to the stage after it, as bash reads echo ... |, a newline
+            # and bash (F32's second review).
+            return
+        self.piped = operator in ("|", "|&")
+        if self.piped:
             self.feed, self.feed_depth = self.last, self.depth
         elif operator == "(":
-            self.open()
+            self.open("(")
         elif operator == ")":
-            self.close()
+            if self.kinds[-1:] != ["case"]:
+                # A case's pattern closes with ), which closes no group
+                # (F32's second review: case a in a) echo ...;; esac | bash).
+                self.close()
         elif self.feed_depth is not None and self.depth <= self.feed_depth:
             self.feed, self.feed_depth = (), None
         if operator not in ("|", "|&", ")"):
@@ -3907,15 +3938,27 @@ def printed_texts(argv, fed=()):
     escapes read so, as printf always reads them; and what cat with no file prints,
     its standard input (fed). Nothing for any other command, whose output
     this module does not know."""
+    return tuple(text.replace("\0", "") for text in printed_with_nuls(argv, fed))
+
+
+def printed_with_nuls(argv, fed):
+    """What printed_texts gives, a NUL byte still in it, which a shell
+    reading the text from a pipe drops (F32's second review: printf
+    'gi\\0t push origin main' | bash runs the push). Each text ends as the
+    command ends its output: echo with a newline unless -n or \\c ends it,
+    printf with none, so a group's outputs join as bash prints them (Flow)."""
     name, rest = command_words(argv)
     if name == "cat" and all(word.startswith("-") for word in rest):
         return tuple(fed)
     if name == "echo":
+        ends = "\n"
         while rest and ECHO_OPTIONS.fullmatch(rest[0]):
+            ends = "" if "n" in rest[0] else ends
             rest = rest[1:]
         text = " ".join(rest)
         decoded = echo_text(text)
-        return (text,) if decoded == text else (text, decoded)
+        decoded += "" if ECHO_STOP in text else ends
+        return (text + ends,) if decoded == text + ends else (text + ends, decoded)
     if name == "printf":
         if rest[:1] == ["--"]:
             rest = rest[1:]
@@ -3940,7 +3983,12 @@ ECHO_OPTIONS = re.compile(r"-[neE]+")
 ECHO_OCTAL = re.compile(r"\\0([0-7]{0,3})")
 ECHO_STOP = "\\c"
 # A printf conversion: its flags, width and precision, and its letter.
-PRINTF_CONVERSION = re.compile(r"%([-+ #0]*)(\*|[0-9]*)(?:\.(\*|[0-9]*))?([a-zA-Z%])")
+# Its length modifiers, which bash reads past (F32's second review: %ls
+# prints as %s), q not among them, since %q is a conversion of its own.
+PRINTF_CONVERSION = re.compile(r"%([-+ #0]*)(\*|[0-9]*)(?:\.(\*|[0-9]*))?[hlLjzt]*([a-zA-Z%])")
+# The most digits of a width or precision read as a number: one longer is
+# read as MAX_COMMAND, past which nothing printed is read (printf_text).
+MOST_WIDTH_DIGITS = 9
 # The most times printf's format is read again for its words, past which,
 # or past MAX_COMMAND characters printed, the rest is not read.
 MOST_PRINTF_PASSES = 256
@@ -3951,7 +3999,7 @@ def echo_text(text):
     read as $'...' reads them, but \\0nnn as an octal byte, and nothing
     after \\c."""
     text = text.split(ECHO_STOP, 1)[0]
-    return ansi_c_text(ECHO_OCTAL.sub(lambda m: "\\" + (m.group(1) or "0").rjust(3, "0"), text))
+    return escapes_read(ECHO_OCTAL.sub(lambda m: "\\" + (m.group(1) or "0").rjust(3, "0"), text))
 
 
 def printf_text(form, words):
@@ -3960,37 +4008,68 @@ def printf_text(form, words):
     their width and precision, %b's escapes as echo's, %c its first
     character, %q the word quoted, a numeric one the word as written, %%
     a %, and the format's own escapes read as $'...' reads them."""
-    out, given, size, decoded = [], list(words), 0, ansi_c_text(form)
+    out, given, decoded = [], list(words), escapes_read(form)
     for _ in range(MOST_PRINTF_PASSES):
         before = len(given)
-        out.append(PRINTF_CONVERSION.sub(lambda m: printf_conversion(m, given), decoded))
-        size += len(out[-1])
-        if not given or len(given) == before or size > MAX_COMMAND:
+        if printf_pass(decoded, given, out) or not given or len(given) == before or printf_size(out) > MAX_COMMAND:
             break
     return "".join(out)
 
 
-def printf_conversion(match, given):
+def printf_pass(form, given, out):
+    """Read the decoded format once into out, each conversion filled from
+    given; whether a %b's \\c stopped printf, which prints nothing more
+    (F32's second review: printf '%b%s' 'git push origin main\\c' x | bash
+    runs the push). Past MAX_COMMAND characters each padding is cut to one
+    blank, so no width builds more than the guard reads (F32's second
+    review: printf '%999999999999999s' x took the hook down)."""
+    at = 0
+    for match in PRINTF_CONVERSION.finditer(form):
+        out.append(form[at:match.start()])
+        word, stopped = printf_conversion(match, given, MAX_COMMAND - printf_size(out))
+        out.append(word)
+        if stopped:
+            return True
+        at = match.end()
+    out.append(form[at:])
+    return False
+
+
+def printf_size(out):
+    return sum(len(piece) for piece in out)
+
+
+def printf_conversion(match, given, room=MAX_COMMAND):
     """One printf conversion filled from given, the words left, which it
-    takes from."""
+    takes from, padded to its width or to room, if less, but by one blank
+    at least; and whether it is a %b whose \\c stops printf."""
     flags, width, precision, letter = match.groups()
     if letter == "%":
-        return "%"
+        return "%", False
     for star in (width, precision):
         if star == "*" and given:
             given.pop(0)
-    word = given.pop(0) if given else ""
+    word, stopped = given.pop(0) if given else "", False
     if letter == "b":
+        stopped = ECHO_STOP in word
         word = echo_text(word)
     elif letter == "c":
         word = word[:1]
     elif letter == "q":
         word = shlex.quote(word)
     if letter in "bs" and precision and precision.isdigit():
-        word = word[:int(precision)]
+        word = word[:printf_number(precision)]
     if width.isdigit():
-        word = word.ljust(int(width)) if "-" in flags else word.rjust(int(width))
-    return word
+        size = min(printf_number(width), max(room, len(word) + 1))
+        word = word.ljust(size) if "-" in flags else word.rjust(size)
+    return word, stopped
+
+
+def printf_number(digits):
+    """A width or precision as a number, one of more than
+    MOST_WIDTH_DIGITS digits as MAX_COMMAND, so int() never meets one too
+    long to read (the Constraint on 4,300 digits)."""
+    return MAX_COMMAND if len(digits) > MOST_WIDTH_DIGITS else int(digits)
 
 
 # What a refusal adds where the reading that refused the push is one the
@@ -4139,6 +4218,10 @@ def refused_push(command, here, branches_of=None, reader_of=None, is_directory=N
         return problem.args[0] if problem.args else TOO_DEEP
     except TooSlow:
         return TOO_SLOW
+    except (MemoryError, OverflowError, RecursionError, ValueError):
+        # A command the guard cannot read for its size refuses, since a hook
+        # that fails lets the command run (F32's second review).
+        return UNREADABLE
     finally:
         DEADLINE.reset(deadline)
         LAUNCHES.reset(launches)
@@ -4698,13 +4781,18 @@ def may_push(command):
     of a word of it (BUILDS_WORDS), or it may hand a shell a text whose
     escapes or printf's conversions spell push (HANDS_TEXT; F32's first
     review: printf 'git pu\\163h origin main' | bash)."""
-    return (holds_push([lines_joined(command)]) or not BUILDS_WORDS.isdisjoint(command)
-            or not BUILDS_TEXT.isdisjoint(command) and bool(HANDS_TEXT.search(command)))
+    joined = lines_joined(command)
+    return (holds_push([joined]) or not BUILDS_WORDS.isdisjoint(command)
+            or not BUILDS_TEXT.isdisjoint(command) and bool(HANDS_TEXT.search(joined)))
 
 
 # A word that may hand a shell a text to run (handed_texts), and what in a
-# text it hands lets echo or printf print what is not written out.
-HANDS_TEXT = re.compile(r"(?<![\w.-])(?:\w*sh|eval|trap|source|\.)(?![\w.-])")
+# text it hands lets echo or printf print what is not written out. It is
+# looked for once the continuations are out, as bash reads words, and
+# never right after one, so the sh that git pu, a continuation and sh
+# leaves is no shell's name and the gate reads that push only by joining
+# its lines (the mutant "the hook's gate read with continuations in").
+HANDS_TEXT = re.compile(r"(?<![\w.-])(?<!\\\n)(?:\w*sh[0-9]*|eval|trap|source|\.)(?![\w.-])")
 BUILDS_TEXT = frozenset("\\%")
 
 

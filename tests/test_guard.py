@@ -2032,6 +2032,30 @@ FIRST_REVIEW_PUSHES = (
     "printf 'git pu%sh origin main' s | bash", "echo -e 'git pu\\x73h origin main' | bash",
 )
 
+SECOND_REVIEW_PUSHES = (
+    "printf 'gi\\0t push origin main' | bash",
+    "echo -e 'git pu\\0sh origin main' | bash",
+    "printf '%b' 'git pu\\0sh origin main' | bash",
+    "printf '\\x00git push origin main' | bash",
+    "printf '%b%s\\n' 'git push origin main\\c' x | bash",
+    "printf '%bx\\n' 'git push origin main\\c' | bash",
+    "printf 'git push origin %ls\\n' main | bash",
+    "printf 'git push origin %jb\\n' main | bash",
+    "{ { echo 'git push origin main'; }; } | bash",
+    "if true; then if true; then echo 'git push origin main'; fi; fi | bash",
+    "if true; then { echo 'git push origin main'; }; fi | bash",
+    "for i in 1; do for j in 1; do echo 'git push origin main'; done; done | bash",
+    "! { echo 'git push origin main'; } | bash",
+    "time { echo 'git push origin main'; } | bash",
+    "case a in a) echo 'git push origin main';; esac | bash",
+    "{ printf 'git push '; echo origin main; } | bash",
+    "{ echo -n 'git push origin '; echo main; } | bash",
+    "( printf 'git pu'; echo 'sh origin main' ) | bash",
+    "echo 'git push origin main' |\n bash",
+    "printf 'git pu\\163h origin main' | ksh93",
+)
+
+
 class HandedTextTest(unittest.TestCase):
     """What a command hands to a shell to run (F32): a shell's -c string,
     eval's words, trap's action, and a here-string or what echo, printf or
@@ -2144,6 +2168,43 @@ class HandedTextTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNotNone(guard.refused_push(command, "/w", branches_of, lambda place: None,
                                                         lambda place: True))
+
+    def test_the_second_review_s_pushes_are_refused(self):
+        """F32's second review: a NUL a pipe's shell drops, %b's \\c ending
+        all of printf's output, printf's length modifiers, a compound
+        command's second opener and the reserved words before it, a case
+        pattern's ), a group's outputs joined as printed, and a newline
+        after a pipe. bash 5.2.21 ran each push, and the guard of 0c224c3
+        passed each."""
+        for command in SECOND_REVIEW_PUSHES:
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+                self.assertTrue(guard.may_push(command))
+
+    def test_each_second_review_rule_bites(self):
+        cases = {"COMPOUND_LEADS": (frozenset(), "if true; then { echo 'git push origin main'; }; fi | bash"),
+                 "PRINTF_CONVERSION": (re.compile(r"%([-+ #0]*)(\*|[0-9]*)(?:\.(\*|[0-9]*))?([a-zA-Z%])"),
+                                       "printf 'git push origin %ls\\n' main | bash"),
+                 "ECHO_STOP": ("\\c\\c", "printf '%b%s\\n' 'git push origin main\\c' x | bash")}
+        for name, (value, command) in cases.items():
+            with self.subTest(name=name), mock.patch.object(guard, name, value):
+                self.assertIsNone(refused(command))
+
+    def test_a_width_too_wide_to_build_is_read_in_time(self):
+        """F32's second review: printf '%999999999999999s' raised
+        MemoryError out of the hook, which Claude Code reads as no
+        objection, and 5,000 digits raised ValueError; each width is cut to
+        what the guard reads, and anything the guard cannot build refuses."""
+        for width in ("999999999999999", "9" * 30, "9" * 5000):
+            command = "printf '%" + width + "s' x >/dev/null; git push origin main"
+            with self.subTest(width=width[:20]):
+                start = time.monotonic()
+                self.assertEqual(guard.run({"tool_input": {"command": command}}, "/w")[0], guard.REFUSE)
+                self.assertLess(time.monotonic() - start, 3)
+        self.assertLessEqual(len(guard.printf_text("%999999s" * 20000, ["x"] * 20000)), 3 * guard.MAX_COMMAND)
+        with mock.patch.object(guard, "printed_texts", side_effect=MemoryError):
+            self.assertEqual(guard.refused_push("echo x | bash", "/w", lambda place: ("claude/7", "main"),
+                                                lambda place: None, lambda place: True), guard.UNREADABLE)
 
     def test_the_template_s_helpers_still_give_lists(self):
         """parts_of keeps a here-string on the words it feeds (Words), a
