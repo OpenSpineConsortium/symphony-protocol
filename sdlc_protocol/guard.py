@@ -301,6 +301,12 @@ PUSH_OPTIONS = {
     "push-option": VALUE, "ipv4": FLAG, "ipv6": FLAG,
 }
 NOT_NEGATED = {"no-verify", "verify", "ipv4", "ipv6"}
+# Every whole long name git push reads, by whether it may take a value:
+# each option's own, and no-<option> for each one git lets be negated,
+# which takes none (whole_flag).
+FLAG_NAMES = frozenset({name for name, kind in PUSH_OPTIONS.items() if kind == FLAG}
+                       | {f"no-{name}" for name in PUSH_OPTIONS if name not in NOT_NEGATED})
+VALUE_NAMES = frozenset(name for name, kind in PUSH_OPTIONS.items() if kind != FLAG)
 PUSH_LETTERS = {"v": "verbose", "q": "quiet", "d": "delete", "n": "dry-run", "f": "force",
                 "u": "set-upstream", "o": "push-option", "4": "ipv4", "6": "ipv6"}
 # The options that push branches wholesale rather than the one named.
@@ -428,7 +434,8 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 # and ! that negates a pipeline. The command after one is a command of its
 # own, so "if git push ...", "while ! git push ...", "do git push ..." and
 # "{ git push ...; }" each run the push. function takes the next word as
-# the name it defines.
+# the name it defines, and coproc, which runs the command after it, takes
+# it as the coprocess's name before a compound command (coproc_named).
 RESERVED = {"!", "{", "if", "then", "else", "elif", "while", "until", "do"}
 
 # A claim branch is claude/ and the issue's number as GitHub writes it,
@@ -632,7 +639,7 @@ def single_quoted(text):
     return "'" + text.replace("'", "'\"'\"'") + "'"
 
 
-def plain_text(command, lenient=False, spans_run=True):
+def plain_text(command, lenient=False, spans_run=True, patterns=False):
     """The command with each unquoted newline made a ; so that shlex, which
     reads a newline as whitespace, ends a command there as the shell does.
     A comment ends at its newline, which then separates; a backslash-newline
@@ -656,7 +663,10 @@ def plain_text(command, lenient=False, spans_run=True):
     continuation leaves whether a word starts where it was, since bash takes
     it out before it reads on, so a # after one that follows a blank opens a
     comment (F29: echo a \\, a newline and #' hid the push on the next line
-    inside a quote bash never opened)."""
+    inside a quote bash never opened). Where patterns, each extended
+    pattern, @( ), ?( ), *( ), +( ) or !( ), is kept whole as a part of its
+    word (pattern_group), as bash reads one with extglob on, where without
+    it the parentheses end the word (pattern_reading)."""
     out, spans, word_start, i = [], [], True, 0
     while i < len(command):
         ch = command[i]
@@ -685,6 +695,9 @@ def plain_text(command, lenient=False, spans_run=True):
         elif ch == "#" and word_start:
             end = command.find("\n", i)
             i = len(command) if end == -1 else end
+        elif patterns and (group := pattern_group(command, i)):
+            out.append(group[0])
+            i, word_start = group[1], False
         elif ch == "`" and lenient and (span := backquoted_span(command, i)):
             out.append(backquoted_word(span.group(0)))
             if spans_run and span.group(0)[1:-1].strip():
@@ -694,6 +707,32 @@ def plain_text(command, lenient=False, spans_run=True):
             out.append(" ; " if ch == "\n" else ch)
             i, word_start = i + 1, ch in WORD_BREAKS
     return "".join(out) + "".join(f" ; ( {inner} ) " for inner in spans)
+
+
+def pattern_group(command, i):
+    """The extended pattern that opens at command[i], one of @?*+! and a
+    parenthesis not after a $, as the text shlex reads as one part of a
+    word, each character that would end it escaped, and where it ends;
+    None where none opens there, or its parenthesis does not close on its
+    line."""
+    if command[i] not in "@?*+!" or not command.startswith("(", i + 1) or command[i - 1:i] == "$":
+        return None
+    depth, j = 0, i + 1
+    while j < len(command) and command[j] != "\n":
+        ch = command[j]
+        if ch == "\\":
+            j += 2
+            continue
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        j += 1
+        if not depth:
+            return command[i] + "".join("\\" + ch if ch in ENDS_A_WORD else ch for ch in command[i + 1:j]), j
+    return None
+
+
+# What ends a word for shlex outside quotes, which an extended pattern keeps
+# (pattern_group).
+ENDS_A_WORD = frozenset(" \t()|&;<>")
 
 
 def backquoted_span(command, i):
@@ -1974,7 +2013,20 @@ def readings(command):
     else:
         found = [plain_text(command, lenient=True, spans_run=False),
                  plain_text(cut_out(command, bodies, runs=False), lenient=True, spans_run=False) + apart]
-    return found + own_text_reading(own, cut)
+    return found + own_text_reading(own, cut) + pattern_reading(own)
+
+
+def pattern_reading(own):
+    """The reading of a command's own text (read_apart) with each extended
+    pattern, as @(main), a part of its word (pattern_group), where it holds
+    any: bash reads them so with extglob on, a shopt a session may set, and
+    fills one from the names of files, so git push origin @(main) pushes
+    main where a file is named so (F29's first review). The readings
+    without it stand too, as bash reads the text with extglob off."""
+    return [plain_text(own, lenient=True, spans_run=False, patterns=True)] if EXTENDED_PATTERN.search(own) else []
+
+
+EXTENDED_PATTERN = re.compile(r"(?<!\$)[@?*+!]\(")
 
 
 def own_text_reading(own, cut):
@@ -2360,6 +2412,19 @@ def launch(argv, unset=UNSET):
     return found
 
 
+def coproc_named(rest):
+    """Whether the word after coproc, the next of rest (read_launch's, the
+    next last), is the name it gives the coprocess, which it takes only
+    before a compound command, as in coproc X { git push ...; }; before a
+    simple command that word is the command, as git is in coproc git push
+    (F29's first review)."""
+    return len(rest) > 1 and bool(PARAMETER_NAME.fullmatch(rest[-1][0])) and rest[-2][0] in COMPOUND_OPENERS
+
+
+# The words that open a compound command, after which coproc's name stands.
+COMPOUND_OPENERS = {"{", "if", "while", "until", "for", "case", "select", "[[", "(("}
+
+
 # The readings launch has made in the run under way, by words and the
 # names taken as unset, handed out again unchanged; None outside a run.
 LAUNCHES = contextvars.ContextVar("LAUNCHES", default=None)
@@ -2381,11 +2446,11 @@ def read_launch(argv, unset):
         in_time()
         word = rest[-1][0]
         name = program(word)
-        if word in RESERVED or ASSIGNMENT.match(word) or word == "function":
+        if word in RESERVED or ASSIGNMENT.match(word) or word in ("function", "coproc"):
             read.append(rest.pop()[0])
             if ASSIGNMENT.match(word):
                 assignments.append(word)
-            elif word == "function" and rest:
+            elif word == "function" and rest or word == "coproc" and coproc_named(rest):
                 read.append(rest.pop()[0])
         elif name in WRAPPERS:
             read.append(rest.pop()[0])
@@ -2443,11 +2508,13 @@ def holds_push(argv):
 # What bash builds a part of a word from once its quotes are gone (F29): a
 # parameter, $NAME, ${ }, $1, $@ and the rest of its specials, a
 # substitution (SUBSTITUTED), and a pattern's *, ? and [ ], which the name
-# of a file fills; and brace expansion, {a,b} and {a..z}, which makes one
-# word many (brace_words).
+# of a file fills, and an extended pattern's parenthesis, as in @(main),
+# which a word holds only where bash reads it so (pattern_reading); and
+# brace expansion, {a,b} and {a..z}, which makes one word many
+# (brace_words).
 PARAMETER_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 SPECIAL_PARAMETERS = "0123456789@*#?$!-"
-BUILT = frozenset("$*?[" + SUBSTITUTED)
+BUILT = frozenset("$*?[(" + SUBSTITUTED)
 
 
 class Hole(NamedTuple):
@@ -2503,9 +2570,13 @@ def word_pieces(word):
         ch = word[i]
         end = expansion_end(word, i) if ch == "$" else None
         close = word.find("]", i + 2) if ch == "[" and i < no_class_after else -1
+        group = pattern_end(word, i) if ch in "@?*+!" else None
         if end is not None or ch == SUBSTITUTED:
             hole(EXPANSION_HOLE)
             i = end or i + 1
+        elif group:
+            hole(PATTERN_HOLE)
+            i = group
         elif ch in "*?":
             hole(PATTERN_HOLE if ch == "*" else CHARACTER_HOLE)
             i += 1
@@ -2521,9 +2592,26 @@ def word_pieces(word):
     return pieces
 
 
+def pattern_end(word, i):
+    """Where the extended pattern that opens at word[i], as @(main|x), ends,
+    after the parenthesis that closes it; None where none opens there or
+    none closes (word_pieces)."""
+    if not word.startswith("(", i + 1) or word[i - 1:i] == "$":
+        return None
+    depth = 0
+    for j in range(i + 1, len(word)):
+        depth += {"(": 1, ")": -1}.get(word[j], 0)
+        if not depth:
+            return j + 1
+    return None
+
+
 def is_built(word):
-    """Whether bash builds a part of the word (BUILT)."""
-    return not BUILT.isdisjoint(word)
+    """Whether bash builds a part of the word: it holds a character that
+    may open a part bash builds (BUILT), and one does (word_pieces), so a
+    $ that ends a word, as the whole reading leaves of --no-verify$(true),
+    is the character it is."""
+    return not BUILT.isdisjoint(word) and any(isinstance(piece, Hole) for piece in word_pieces(word))
 
 
 def may_be(word, text):
@@ -2551,29 +2639,39 @@ def may_be(word, text):
     return len(text) in places
 
 
-def one_expansion(word):
-    """Whether the word is one expansion whole, as "$(git branch
-    --show-current)" or "$BRANCH" are: a value the guard cannot know, read
-    as a variable is, and, where bash may make it nothing, as nothing
-    (unset_value)."""
-    return is_built(word) and word_pieces(word) == [EXPANSION_HOLE]
+def expansions_alone(word):
+    """Whether the word is made of expansions alone, with no character of
+    its own and no pattern, as "$(git branch --show-current)", "$BRANCH"
+    and "${PREFIX}${N}" are: a value the guard cannot know, read as a
+    variable's is, and, where bash may make it nothing, as nothing
+    (unset_value). Two expansions side by side may make main as one may
+    (F29's first review), so the guard reads them as it reads one, and
+    refuses only a name that holds a character of its own beside them, as
+    ma$(true)in does, or a pattern, which the names of files fill."""
+    return is_built(word) and all(piece == EXPANSION_HOLE for piece in word_pieces(word))
 
 
 # A ${ } as unset_value reads its start: an indirection ! or a length #,
-# the parameter, and the operator after it, of which -, :-, = and := give
-# their word where the parameter is unset.
-BRACED_HEAD = re.compile(r"\$\{([!#]?)([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])?(:?[-=+?])?")
+# the parameter, an array's subscript after it, and the operator after
+# that, of which -, :-, = and := give their word where the parameter is
+# unset, as ${NOPE[@]:-main} gives main (F29's first review).
+BRACED_HEAD = re.compile(r"\$\{([!#]?)([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?|[0-9]+|[@*#?$!-])?(:?[-=+?])?")
 GIVES_ITS_WORD = ("-", ":-", "=", ":=")
 
 
-def unset_value(word):
+def unset_value(word, carried=None):
     """The word as bash builds it where every variable is unset and every
     substitution prints nothing (F29): each $NAME, special parameter and
     substitution gone, and each ${ } replaced by what it gives then, the
-    word of a ${NAME:-word} and its like, read the same way, and nothing for
-    any other, so ${NOPE:-push} is push and pu${NOPE}sh push. A world bash
-    may run in, so a push found in it is one bash may run."""
-    out, stack, dropping, i = [], [], 0, 0
+    word of a ${NAME:-word} and its like, read the same way, a $'...' in it
+    as the text it decodes to (ansi_c_text), which bash gives there even
+    inside double quotes, and nothing for any other, so ${NOPE:-push} is
+    push and pu${NOPE}sh push. A world bash may run in, so a push found in
+    it is one bash may run. carried, where given, is the ${ }s a word
+    before this one left open, which this one goes on with and leaves as
+    it finds them (unset_words)."""
+    out, stack, i = [], [] if carried is None else carried, 0
+    dropping = sum(not keeps for keeps, _ in stack)
     while i < len(word):
         ch = word[i]
         if ch == "$" and word.startswith("${", i):
@@ -2582,6 +2680,10 @@ def unset_value(word):
             stack.append([keeps, 0])
             dropping += not keeps
             i = head.end()
+            continue
+        if stack and word.startswith("$'", i) and (close := ansi_c_close(word, i + 2)):
+            out += [] if dropping else [ansi_c_text(word[i + 2:close - 1])]
+            i = close
             continue
         end = expansion_end(word, i) if ch == "$" else None
         if end is not None or ch == SUBSTITUTED:
@@ -2597,6 +2699,29 @@ def unset_value(word):
             out.append(ch)
         i += 1
     return "".join(out)
+
+
+def unset_words(way):
+    """A simple command's words where every variable is unset and every
+    substitution prints nothing (unset_value), a word that is then nothing
+    dropped. A ${ } that a blank stands in, unquoted, is split there into
+    words by shlex as bash splits what it gives, so the words after it go
+    on with it until it closes: ${NOPE:-git push origin main} runs git push
+    origin main, while its quoted form stays one word, which runs no git
+    (F29's first review). And a word with holes that is then only colons and
+    pluses, as $B:$B, is kept as written, as one whole expansion is: read
+    as nothing in each hole it is the refspec :, which pushes every branch
+    both sides have, but the session writes it for one branch whose name it
+    reads, as git push origin "$(git branch --show-current)" does (F29's
+    first review), and a + in it, as in +$B, still forces."""
+    carried, words = [], []
+    for word in way:
+        value = unset_value(word, carried)
+        if value and not value.strip(":+") and is_built(word):
+            value = word
+        if value or not word:
+            words.append(value)
+    return words
 
 
 # How many words brace expansion may add to one simple command's before the
@@ -2752,7 +2877,7 @@ def built_ways(argv):
             ways += [braced] if braced != ways[0] else []
     for way in list(ways):
         if any(not BUILT.isdisjoint(word) for word in way):
-            unset = [value for word in way if (value := unset_value(word)) or not word]
+            unset = unset_words(way)
             ways += [unset] if unset not in ways else []
     return ways, too_many
 
@@ -3770,7 +3895,8 @@ def other_holder(name, source, expected, claim_file_at, remote="origin"):
 # name it builds around its own characters, as ma$(true)in or mai?, may be
 # the default branch or board. A branch that is one expansion whole, as
 # "$(git branch --show-current)", is a value the guard cannot know, read
-# as a variable's is (one_expansion), and as nothing where bash may make it
+# as a variable's is, and so is one made of expansions alone, as
+# "${PREFIX}${N}" (expansions_alone), and as nothing where bash may make it
 # nothing (unset_value).
 BUILT_OPTION = ("a push with the option {word} is refused: the shell builds its name, which may be --force; write "
                 "the option out (.claude/rules/board.md)")
@@ -3778,23 +3904,46 @@ BUILT_TARGET = ("a push to {word} is refused: the shell builds that name, which 
                 "out (.claude/rules/board.md)")
 
 
+def as_shown(word):
+    """A word as a refusal names it, each substitution read apart shown as
+    $(...) where the reading holds SUBSTITUTED, a character no terminal
+    shows, so the refusal stays ASCII as the words written are."""
+    return word.replace(SUBSTITUTED, "$(...)")
+
+
 def built_option(args):
     """The first of a push's option words whose name, before any =, bash
-    builds (is_built), as -$(echo f) or --for${X}ce, else None; words after
-    a -- are no options."""
+    builds (is_built), as -$(echo f), --for${X}ce or --"$opt", else None,
+    unless it opens with a whole option no other extends (whole_flag);
+    words after a -- are no options."""
     for word in args:
         if word == "--":
             return None
-        if word.startswith("-") and is_built(word.partition("=")[0]):
+        if word.startswith("-") and is_built(word.partition("=")[0]) and not whole_flag(word):
             return word
     return None
+
+
+def whole_flag(word):
+    """Whether a long option word opens, before the first part bash builds,
+    with the whole name of an option of git push that takes no value and
+    that no other option's name extends, as --no-verify${NOPE} does: bash
+    may build it only into that option, or into a word git refuses, which
+    pushes nothing (F29's first review). A built short bundle is never one,
+    since -u${X} may be -uf, and --"$opt" is none, since it may be --force,
+    nor is --force$X, which may be --force-with-lease."""
+    head = word_pieces(word)[0]
+    if not isinstance(head, str) or not head.startswith("--"):
+        return False
+    name = head[2:]
+    return name in FLAG_NAMES and not any(other != name and other.startswith(name) for other in FLAG_NAMES | VALUE_NAMES)
 
 
 def built_target(name, default_branch):
     """The branch the rules name that bash may build the branch name into,
     the default branch or board (may_be), where the name is built and is
-    not one expansion whole (one_expansion), else None."""
-    if not is_built(name) or one_expansion(name):
+    not made of expansions alone (expansions_alone), else None."""
+    if not is_built(name) or expansions_alone(name):
         return None
     return next((branch for branch in (default_branch, "board") if branch and may_be(name, branch)), None)
 
@@ -3815,7 +3964,7 @@ def refusal(args, current_branch, default_branch, claim_file_at=None):
         return str(unread)
     built = built_option(args)
     if built:
-        return BUILT_OPTION.format(word=built)
+        return BUILT_OPTION.format(word=as_shown(built))
     options, positionals = push_words(args)
     remote, refspecs, deleting = (positionals or [""])[0], positionals[1:], "delete" in options
     wholesale = [name for name in options if name in WHOLESALE]
@@ -3851,7 +4000,7 @@ def refusal(args, current_branch, default_branch, claim_file_at=None):
             return misnamed
         meant = built_target(name, default_branch)
         if meant:
-            return BUILT_TARGET.format(word=name, meant=meant)
+            return BUILT_TARGET.format(word=as_shown(name), meant=meant)
     if "force-with-lease" in options:
         strays = [name for name, _ in targets if not name.startswith("claude/")]
         if strays:
@@ -3940,10 +4089,16 @@ def where_to_ask(payload, cwd):
     return (session if isinstance(session, str) and session else None) or cwd or "."
 
 
+def lines_joined(command):
+    """The command with each line continuation taken out, as bash takes it
+    out before it reads a word (run)."""
+    return command.replace("\\\n", "")
+
+
 # What in a command's text lets bash build a word whose text is not written
 # out (run): an expansion or a substitution, a backquote, a brace and a
-# pattern's characters.
-BUILDS_WORDS = frozenset("$`{*?[")
+# pattern's characters, an extended pattern's parenthesis among them.
+BUILDS_WORDS = frozenset("$`{*?[(")
 
 
 def run(payload, cwd=None):
@@ -3963,9 +4118,11 @@ def run(payload, cwd=None):
     holds push as written. And it may push wherever bash builds a part of a
     word (BUILDS_WORDS), as git pu$(true)sh, git $'pu\\x73h', git p{u,}sh and
     git pus? do, whose text spells no push (F29), so such a command is read
-    too, git still asked only once a push is found in it."""
+    too, git still asked only once a push is found in it; and a line
+    continuation is taken out first, as bash takes it out, so git p\\, a
+    newline and ush is read as the push it runs (F29's first review)."""
     command = command_of(payload)
-    if not holds_push([command]) and BUILDS_WORDS.isdisjoint(command):
+    if not holds_push([lines_joined(command)]) and BUILDS_WORDS.isdisjoint(command):
         return PASS, ""
     reason = refused_push(command, where_to_ask(payload, cwd))
     return (REFUSE, reason) if reason else (PASS, "")

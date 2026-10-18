@@ -1273,6 +1273,15 @@ BUILT_PUSHES = (
     "cat <<E$(echo x)F\nDon't\nE$(echo x)F\ngit push origin main\ncat <<'EOF'\nIt's\nEOF",
     "cat <<E`echo x`F\nDon't\nE`echo x`F\ngit push origin main\ncat <<'EOF'\nIt's\nEOF",
     "cat <<$'E\\x4fF'\nDon't\nEOF\ngit push origin main\ncat <<'EOF'\nIt's\nEOF",
+    # F29's first review: a continuation inside a word, coproc, a default
+    # with blanks that bash splits, an array's default, a $'...' in a
+    # default, and extended patterns.
+    "git p\\\nush origin main", "git pu\\\nsh origin main", "coproc git push origin main",
+    "coproc X { git push origin main; }", "coproc { git push origin main; }", "${NOPE:-git push origin main}",
+    "${NOPE:-git push} origin main", "git ${NOPE:-push origin main}", 'git push origin "${NOPE[@]:-main}"',
+    "git push origin ${NOPE[0]:-main}", "git push origin \"${NOPE:-$'\\x6dain'}\"",
+    "shopt -s extglob\ntouch main; git push origin @(main)", "shopt -s extglob\ngit push origin @(main|x)",
+    "shopt -s extglob\ngit push origin ma?(x)in", "shopt -s extglob\ngit pu@(s)h origin main",
 )
 # What sessions write most that bash runs no forbidden push of: a branch
 # or a lease's value by a substitution whole, a commit message in ANSI-C
@@ -1290,6 +1299,12 @@ BUILT_TEXTS = (
     'git push origin "$(git rev-parse --abbrev-ref HEAD)"', 'echo a \\\n#x; git push origin main',
     "echo $'git push origin main'", 'echo {push,pull} && git push origin claude/7',
     'echo $(( 1 << 2 )) && git push origin claude/7',
+    # F29's first review: a refspec that is one name read twice, a name
+    # made of expansions alone, and a whole option with nothing after it.
+    'git push origin "$(git branch --show-current):$(git branch --show-current)"', "git push origin $B:$B",
+    'git push origin "${PREFIX}${N}"', 'git push origin HEAD:"$PREFIX$N"', "git push origin $A$B:$C$D",
+    "git push -u origin claude/7 --no-verify${NOPE}", "git push --no-verify$(true) origin claude/7",
+    'echo "${X:-git push origin main}"; git push origin claude/7',
 )
 
 
@@ -1331,6 +1346,59 @@ class BuiltWordsTest(unittest.TestCase):
         self.assertIsNone(refused("$G -u x push origin main"))
         self.assertIsNotNone(refused("$G --no-pager push origin main"))
         self.assertIsNotNone(refused("$G -C /w push origin main"))
+
+    def test_a_built_option_passes_only_after_a_whole_flag_no_other_extends(self):
+        """A built option is refused unless the text before its first hole
+        is a whole option of git push that takes no value and that no other
+        option's name extends (guard.whole_flag), so --no-verify${NOPE} is
+        --no-verify or a word git refuses; --"$opt" may be --force,
+        --force$X --force-with-lease, -u$X -uf and --no-v$X a start."""
+        for command in ('git push --"$opt" origin claude/7', "git push --force$X origin claude/7",
+                        "git push -u$X origin claude/7", "git push --no-v$X origin claude/7",
+                        "git push --repo$X origin claude/7", "git push --no-force$X origin claude/7",
+                        "git push --all$NOPE origin"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+        for command in ("git push --thin$X origin claude/7", "git push --no-thin$X origin claude/7",
+                        "git push --verify${X} origin claude/7", "git push --atomic$(true)x origin claude/7"):
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+
+    def test_a_refspec_that_collapses_to_a_colon_or_a_plus_is_kept_as_written(self):
+        """In the world where every variable is unset, $B:$B is the
+        refspec :, which pushes every branch both sides have; the guard
+        reads it as written, a name it cannot know read twice, as it reads
+        $B, while a + in it still forces, and a written name beside it is
+        still judged."""
+        self.assertEqual(guard.unset_words(["git", "push", "origin", "$B:$B", "+$B", "$B:main"]),
+                         ["git", "push", "origin", "$B:$B", "+$B", ":main"])
+        self.assertIsNotNone(refused("git push origin +$B"))
+        self.assertIsNotNone(refused("git push origin $B:main"))
+
+    def test_an_unquoted_default_with_blanks_goes_on_into_the_words_after_it(self):
+        """shlex splits a ${ } at a blank inside it, as bash splits what it
+        gives where it is unquoted, so the words after it go on with it
+        until it closes; quoted it stays one word, which runs no git."""
+        self.assertEqual(guard.unset_words(["${NOPE:-git", "push}", "origin", "main"]), ["git", "push", "origin", "main"])
+        self.assertEqual(guard.unset_words(["${NOPE:+git", "push}", "origin"]), ["origin"])
+        self.assertIsNone(refused('"${NOPE:-git push origin main}"'))
+
+    def test_the_hook_reads_a_push_a_line_continuation_splits(self):
+        """run asks of the text with each line continuation out, as bash
+        takes it out, so a push it splits is read and refused; one that
+        spells no push still passes unread."""
+        for command in ("git p\\\nush origin main", "git pu\\\nsh origin main", "git push\\\n origin main"):
+            with self.subTest(command=command):
+                self.assertEqual(guard.run({"tool_input": {"command": command}, "cwd": "/"})[0], guard.REFUSE)
+        self.assertEqual(guard.run({"tool_input": {"command": "git p\\\null origin main"}, "cwd": "/"}),
+                         (guard.PASS, ""))
+        self.assertEqual(guard.lines_joined("a \\\nb"), "a b")
+
+    def test_coproc_names_its_coprocess_only_before_a_compound_command(self):
+        self.assertEqual(guard.launch(["coproc", "X", "{", "git", "push"]).argv[guard.launch(
+            ["coproc", "X", "{", "git", "push"]).start:], ["git", "push"])
+        self.assertEqual(guard.launch(["coproc", "git", "push"]).argv[guard.launch(["coproc", "git", "push"]).start:],
+                         ["git", "push"])
 
     def test_a_lone_assignment_may_name_the_repository(self):
         """GIT_DIR=x alone sets the shell's variable, which git sees only
