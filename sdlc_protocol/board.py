@@ -1130,15 +1130,18 @@ def node_label(issue):
     NODE_LABEL_WIDTH, and the sub-issues' progress where there is any.
     Mermaid reads a quoted label's entities, so the characters that would
     end the label or the node are written as entities, "#" first since
-    the entities carry one, and so is "%", which ends nothing but would
-    let a title open a %%{ directive that restyles or breaks the chart;
-    it goes after the fold, which turns the small and the fullwidth
-    percent signs into it."""
+    the entities carry one, and so are "%", which ends nothing but would
+    let a title open a %%{ directive that restyles or breaks the chart,
+    and "$", since Mermaid typesets $$...$$ as math and a formula it
+    cannot parse stops the whole chart from drawing; both go after the
+    fold, which turns the small and the fullwidth percent and dollar
+    signs into them. The control panel writes the same entities in the
+    same order, so its charts and the board's are the same bytes."""
     title = " ".join(ascii_fold(issue.title).split())
     if len(title) > NODE_LABEL_WIDTH:
         title = title[:NODE_LABEL_WIDTH - 3].rstrip() + "..."
-    for plain, entity in (("#", "#35;"), ("%", "#37;"), ('"', "#quot;"), ("|", "#124;"), ("<", "#lt;"),
-                          (">", "#gt;")):
+    for plain, entity in (("#", "#35;"), ("%", "#37;"), ("$", "#36;"), ('"', "#quot;"), ("|", "#124;"),
+                          ("<", "#lt;"), (">", "#gt;")):
         title = title.replace(plain, entity)
     label = f"#{issue.number}" + (f" {title}" if title else "")
     if issue.progress and issue.progress[1] > 0:

@@ -1324,6 +1324,23 @@ class NodeLineTest(unittest.TestCase):
         self.assertEqual(board.node_label(Issue(7, "a \ufe6a b \uff05 c")), "#7 a #37; b #37; c")
         self.assertEqual(board.node_label(Issue(7, "a #% b")), "#7 a #35;#37; b")
 
+    def test_a_dollar_sign_is_written_as_its_entity(self):
+        # Mermaid typesets $$...$$ as math and a formula it cannot parse
+        # stops the chart from drawing, so no "$" reaches the chart.
+        title = "$$\\def\\x{\\x\\x}\\x$$"
+        self.assertEqual(board.node_label(Issue(7, title)), "#7 #36;#36;\\def\\x{\\x\\x}\\x#36;#36;")
+        self.assertEqual(board.node_label(Issue(7, "Pay $5")), "#7 Pay #36;5")
+        # The fold turns the small and the fullwidth dollar signs into "$".
+        self.assertEqual(board.node_label(Issue(7, "a \ufe69 b \uff04 c")), "#7 a #36; b #36; c")
+        self.assertEqual(board.node_label(Issue(7, "a #$ b")), "#7 a #35;#36; b")
+        snap = Snapshot(issues=[Issue(20, "Pay $$x$$", ["epic"]), Issue(21, title, ["todo"])],
+                        sub_issues={20: [21]})
+        text = board.render(snap)
+        blocks = [block.split("```", 1)[0] for block in text.split("```mermaid\n")[1:]]
+        self.assertEqual(len(blocks), 1)
+        self.assertNotIn("$", blocks[0])
+        self.assertIn("\n### Epic #20: Pay $$x$$\n", text)
+
     def test_a_title_that_spells_a_directive_leaves_no_percent_sign_in_the_chart(self):
         directive = '%%{init: {"theme":"dark"}}%% x'
         snap = Snapshot(issues=[Issue(20, "Draw %%{init", ["epic"]), Issue(21, directive, ["todo"]),
@@ -1341,6 +1358,7 @@ class NodeLineTest(unittest.TestCase):
         # Outside the charts a percent sign means nothing, so the heading
         # and the rows keep it as the title has it.
         self.assertIn("\n### Epic #20: Draw %%{init\n", text)
+        self.assertIn("\n| #22 | Cut 50% of the reads | todo |", text)
 
     def test_the_progress_follows_the_label_only_when_it_counts_something(self):
         self.assertEqual(board.node_label(Issue(20, "Draw", progress=(1, 3))), "#20 Draw (1/3)")
