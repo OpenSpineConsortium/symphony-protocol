@@ -3686,25 +3686,31 @@ def placed_parts(parts, start, is_directory, handed=None):
     placed, shell, opened, piped, moves = [], start, [], False, {}
     list_start = pipe_start = shell
     handed = [] if handed is None else handed
-    flow = Flow()
+    # A reading with no pipe feeds nothing but its here-strings, so its
+    # flow is not followed (Flow), which a wide one would pay for.
+    flow = Flow() if any(isinstance(part, str) and "|" in part for part in parts) else None
+    texts = {}
     for count, part in enumerate(parts):
         if not count % CHECKS_EVERY:
             in_time()
         if isinstance(part, list):
-            flow.opens_or_closes(part, before=True)
-            fed = standard_input(part, flow.feeding())
+            if flow:
+                flow.opens_or_closes(part, before=True)
+            fed = standard_input(part, flow.feeding() if flow else ())
             for argv in env_readings(part):
                 placed.append((argv, shell))
-                handed += [(text, shell) for text in handed_texts(argv, fed)]
-            flow.printed(printed_texts(part, fed))
-            flow.opens_or_closes(part, before=False)
+                handed += [(text, shell) for text in known(texts, handed_texts, argv, fed)]
+            if flow:
+                flow.printed(known(texts, printed_texts, part, fed))
+                flow.opens_or_closes(part, before=False)
             key = (tuple(part), shell)
             if key not in moves:
                 moves[key] = moved_to(part, shell, is_directory)
             shell = moves[key]
             continue
         for operator in operators(part):
-            flow.operator(operator)
+            if flow:
+                flow.operator(operator)
             if operator in ("|", "|&"):
                 shell, piped = pipe_start, True
                 continue
@@ -3720,6 +3726,16 @@ def placed_parts(parts, start, is_directory, handed=None):
                 list_start = shell
             pipe_start = shell
     return placed
+
+
+def known(texts, find, argv, fed):
+    """What find gives for argv and fed, found once for each pair in one
+    reading (placed_parts): a reading of a wide command repeats its simple
+    commands by the hundred thousand, and each finding reads its words."""
+    key = (find, tuple(argv), fed)
+    if key not in texts:
+        texts[key] = find(argv, fed)
+    return texts[key]
 
 
 # The words that open a compound command, and those that close one, at
@@ -3804,9 +3820,9 @@ SHELLS = frozenset({"sh", "bash", "rbash", "dash", "ash", "zsh", "ksh", "ksh93",
 # The options of those shells that take the next word as their value, and
 # the long ones; every other option is a flag.
 SHELL_VALUE_LETTERS = "oO"
-SHELL_VALUE_OPTIONS = {"--rcfile", "--init-file"}
+SHELL_VALUE_OPTIONS = frozenset({"--rcfile", "--init-file"})
 # The files a shell or source reads its standard input by.
-STANDARD_INPUT = {"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
+STANDARD_INPUT = frozenset({"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
 # The builtins that run their words as commands in the shell: eval its
 # words joined, trap its action when a signal comes; and those that run a
 # file, read here only where it is standard input.
