@@ -79,6 +79,42 @@ ISSUE_COLUMNS = ("Issue", "Title", "Labels")
 GIVEN_HEADING = "## Given to workers (open issues a worker's label names, not yet claimed)"
 GIVEN_COLUMNS = ("Issue", "Title", "Worker")
 BLOCKER_HEADING = "## Blockers (open issues labelled blocker)"
+# The last section, drawn only where an open epic or goal has sub-issues,
+# or where the run left it out: each open epic's tasks and their blocked-by
+# relations as a Mermaid flowchart, and the goals above their epics.
+DEPENDENCIES_HEADING = "## Dependencies"
+DEPENDENCIES_PREFACE = (
+    "Each open epic's tasks as GitHub's sub-issues and blocked-by relations hold them: an arrow runs from the "
+    "issue that blocks to the issue it blocks, dotted once the blocker is closed; a node's shade is its state, "
+    "and an epic's heading counts its closed tasks."
+)
+GOALS_HEADING = "### Goals"
+# Why the section was left out, by the word the adapter writes in the
+# snapshot (dependencies_skipped): its reads would have reached the calls
+# the board keeps in reserve, or GitHub failed one of them.
+NOT_DRAWN = {
+    "reserve": ("Not drawn this run: its reads would reach the calls the board keeps in reserve; "
+                "the next run tries again."),
+    "failed": "Not drawn this run: GitHub did not answer one of its reads; the next run tries again.",
+}
+# A node's class is its state, one of these, in this order of precedence
+# once closed is settled: review, claimed, blocked, todo; an issue in no
+# state is drawn plain.
+NODE_CLASSES = (
+    "classDef todo fill:#ffffff,stroke:#0e8a16,color:#000000",
+    "classDef claimed fill:#fff8d6,stroke:#fbca04,color:#000000",
+    "classDef review fill:#e3f0ff,stroke:#1d76db,color:#000000",
+    "classDef blocked fill:#ffe7e7,stroke:#e99695,color:#000000",
+    "classDef closed fill:#eeeeee,stroke:#999999,color:#666666",
+)
+# A node's label is cut to this many characters, so a wide title keeps
+# the chart readable.
+NODE_LABEL_WIDTH = 40
+# The same block, written into each open epic's body between these
+# markers, so the epic's own page shows its graph; the plan section the
+# clerk writes (team.PLAN_MARKER) stands beside it.
+GRAPH_MARKER = "<!-- sdlc-board: graph -->"
+GRAPH_END_MARKER = "<!-- sdlc-board: /graph -->"
 MERGED_HEADING = f"## Recently merged (the last {RECENT_MERGED})"
 MERGED_COLUMNS = ("PR", "Title", "Branch", "Merged")
 
@@ -97,29 +133,64 @@ class Issue:
     """An open issue as the queue and the blockers show it, and whether
     GitHub says it was reopened (its state_reason), which the coordinator
     reads to free one whose labels still speak of a claim that ended with
-    its close (coordinator.reopened_due; F22)."""
+    its close (coordinator.reopened_due; F22); with, for the Dependencies
+    section, its state (a closed sub-issue or blocker is drawn too), how
+    many issues GitHub's dependencies say block it, open and in all, from
+    the summary GitHub carries on every issue (labels.blocked_by_counts),
+    and its sub-issues' progress, (completed, total), from the other
+    summary."""
 
     number: int
     title: str = ""
     labels: list = field(default_factory=list)
     updated_at: str = ""
     reopened: bool = False
+    state: str = "open"
+    open_blockers: int = 0
+    total_blockers: int = 0
+    progress: tuple | None = None
 
     @classmethod
     def from_dict(cls, data):
+        open_blockers, total_blockers = labels.blocked_by_counts(data)
         return cls(
             number=int(data["number"]),
             title=data.get("title") or "",
             labels=labels.label_names(data),
             updated_at=data.get("updated_at") or "",
             reopened=data.get("state_reason") == REOPENED,
+            state="closed" if data.get("state") == "closed" else "open",
+            open_blockers=open_blockers,
+            total_blockers=total_blockers,
+            progress=progress_of(data.get("sub_issues_summary")),
         )
 
     def to_dict(self):
         """Its JSON shape; state_reason only for an issue reopened, so a
-        snapshot saved before F22's fix is written back as it was."""
+        snapshot saved before F22's fix is written back as it was, and the
+        state, the dependency summary and the sub-issue summary only when
+        they say something."""
         return {"number": self.number, "title": self.title, "labels": list(self.labels), "updated_at": self.updated_at} \
-            | ({"state_reason": REOPENED} if self.reopened else {})
+            | ({"state_reason": REOPENED} if self.reopened else {}) \
+            | ({"state": "closed"} if self.closed else {}) \
+            | ({"issue_dependencies_summary": {"blocked_by": self.open_blockers,
+                                               "total_blocked_by": self.total_blockers}}
+               if self.total_blockers else {}) \
+            | ({"sub_issues_summary": {"total": self.progress[1], "completed": self.progress[0]}}
+               if self.progress else {})
+
+    @property
+    def closed(self):
+        return self.state == "closed"
+
+
+def progress_of(summary):
+    """(completed, total) from GitHub's sub_issues_summary, or None where
+    there is no summary or it counts no sub-issue."""
+    if not isinstance(summary, dict):
+        return None
+    total, completed = labels.whole_count(summary.get("total")), labels.whole_count(summary.get("completed"))
+    return (completed, total) if total else None
 
 
 @dataclass
@@ -379,6 +450,17 @@ class Snapshot:
     pushed_refused: dict = field(default_factory=dict)
     kept_names: list = field(default_factory=list)
     ended_releases: list = field(default_factory=list)
+    # The Dependencies section's reads (adapters.github.dependencies): each
+    # open epic's and goal's sub-issues, by number; the issues that block
+    # each sub-issue, by number, ascending; the issues those name that the
+    # open list does not hold (closed sub-issues, blockers outside), by
+    # number; the word for why the section was left out (NOT_DRAWN), ""
+    # when it was not, and what the run's log says of it.
+    sub_issues: dict = field(default_factory=dict)
+    blocked_by: dict = field(default_factory=dict)
+    others: dict = field(default_factory=dict)
+    dependencies_skipped: str = ""
+    dependencies_notice: str = ""
 
     @classmethod
     def from_dict(cls, data):
@@ -399,6 +481,11 @@ class Snapshot:
             pushed_refused={str(k): str(v) for k, v in (data.get("pushed_refused") or {}).items()},
             kept_names=[branch_name(b) for b in data.get("kept_names") or []],
             ended_releases=[str(k) for k in data.get("ended_releases") or []],
+            sub_issues={int(k): [int(n) for n in v] for k, v in (data.get("sub_issues") or {}).items()},
+            blocked_by={int(k): sorted(int(n) for n in v) for k, v in (data.get("blocked_by") or {}).items()},
+            others={int(k): Issue.from_dict(v) for k, v in (data.get("others") or {}).items()},
+            dependencies_skipped=str(data.get("dependencies_skipped") or ""),
+            dependencies_notice=str(data.get("dependencies_notice") or ""),
         )
 
     def to_dict(self):
@@ -416,7 +503,21 @@ class Snapshot:
         } | ({"began_refused": dict(self.began_refused)} if self.began_refused else {}) \
             | ({"pushed_refused": dict(self.pushed_refused)} if self.pushed_refused else {}) \
             | ({"kept_names": list(self.kept_names)} if self.kept_names else {}) \
-            | ({"ended_releases": list(self.ended_releases)} if self.ended_releases else {})
+            | ({"ended_releases": list(self.ended_releases)} if self.ended_releases else {}) \
+            | ({"sub_issues": {str(k): list(v) for k, v in self.sub_issues.items()}} if self.sub_issues else {}) \
+            | ({"blocked_by": {str(k): list(v) for k, v in self.blocked_by.items()}} if self.blocked_by else {}) \
+            | ({"others": {str(k): v.to_dict() for k, v in self.others.items()}} if self.others else {}) \
+            | ({"dependencies_skipped": self.dependencies_skipped} if self.dependencies_skipped else {}) \
+            | ({"dependencies_notice": self.dependencies_notice} if self.dependencies_notice else {})
+
+    def issue_by_number(self, number):
+        """The issue with this number, among the open issues or the others
+        the Dependencies reads brought, or a bare one when neither holds
+        it, so a node is drawn for every number an edge names."""
+        for issue in self.issues:
+            if issue.number == number:
+                return issue
+        return self.others.get(number) or Issue(number)
 
     @classmethod
     def from_json(cls, text):
@@ -722,11 +823,17 @@ def comments_due(snapshot, event_name, ref_name, now, idle_after=IDLE_AFTER):
 
 # --- the page ---------------------------------------------------------------
 
+def ascii_fold(text):
+    """Text folded to ASCII, accented letters to their plain ones and the
+    rest dropped, so the page passes a repository's own ASCII check."""
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+
+
 def cell(value):
     """A table cell: one line, ASCII, pipes escaped, so the board stays a
     valid table and passes a repository's own ASCII check."""
     text = str(value).replace("\r", " ").replace("\n", " ").replace("|", "\\|")
-    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().strip()
+    return ascii_fold(text).strip()
 
 
 def table(columns, rows):
@@ -797,10 +904,28 @@ def pull_rows(snap):
     ]
 
 
+def blocked_note(snap, issue):
+    """What a row says after an issue's title when GitHub's dependencies
+    say an open issue blocks it: the open blockers by number where the
+    Dependencies reads brought them, else how many there are, since the
+    summary every listed issue carries counts them and costs no read. ""
+    for an issue blocked by nothing."""
+    if issue.open_blockers <= 0:
+        return ""
+    open_blockers = [n for n in snap.blocked_by.get(issue.number, []) if not snap.issue_by_number(n).closed]
+    if open_blockers:
+        return " (blocked by " + ", ".join(f"#{n}" for n in open_blockers) + ")"
+    count = issue.open_blockers
+    return f" (blocked by {count} open issue{'s' if count != 1 else ''})"
+
+
 def issue_rows(snap, label, unclaimed_only):
     """The issues carrying a label, in number order; the queue leaves out
     an issue with the label claimed, a claim branch that is not released,
-    an epic, or a worker's label, which gives the issue to that worker."""
+    an epic or a goal, or a worker's label, which gives the issue to that
+    worker. An issue an open issue blocks stays listed and says so beside
+    its title (blocked_note), since the blocked-by relation keeps it from
+    being taken, not from being seen."""
     claimed = claimed_numbers(snap.branches, released_keys(snap))
     rows = []
     for issue in sorted(snap.issues, key=lambda i: i.number):
@@ -809,7 +934,7 @@ def issue_rows(snap, label, unclaimed_only):
             continue
         if unclaimed_only and (labels.CLAIMED in names or issue.number in claimed or labels.reserved(names)):
             continue
-        rows.append([f"#{issue.number}", issue.title, ", ".join(names)])
+        rows.append([f"#{issue.number}", issue.title + blocked_note(snap, issue), ", ".join(names)])
     return rows
 
 
@@ -829,7 +954,7 @@ def given_rows(snap):
         workers = labels.holder_names(names)
         if labels.CLAIMED in names or not workers or issue.number in claimed:
             continue
-        rows.append([f"#{issue.number}", issue.title, ", ".join(workers)])
+        rows.append([f"#{issue.number}", issue.title + blocked_note(snap, issue), ", ".join(workers)])
     return rows
 
 
@@ -985,6 +1110,169 @@ def merged_rows(snap):
     ]
 
 
+# --- the dependencies -------------------------------------------------------
+
+def node_id(number):
+    return f"i{number}"
+
+
+def node_label(issue):
+    """A node's text: the number, the title folded to ASCII and cut to
+    NODE_LABEL_WIDTH, and the sub-issues' progress where there is any.
+    Mermaid reads a quoted label's entities, so the characters that would
+    end the label or the node are written as entities, "#" first since
+    the entities carry one."""
+    title = " ".join(ascii_fold(issue.title).split())
+    if len(title) > NODE_LABEL_WIDTH:
+        title = title[:NODE_LABEL_WIDTH - 3].rstrip() + "..."
+    for plain, entity in (("#", "#35;"), ('"', "#quot;"), ("|", "#124;"), ("<", "#lt;"), (">", "#gt;")):
+        title = title.replace(plain, entity)
+    label = f"#{issue.number}" + (f" {title}" if title else "")
+    if issue.progress and issue.progress[1] > 0:
+        label += f" ({issue.progress[0]}/{issue.progress[1]})"
+    return label
+
+
+def node_class(issue, claimed):
+    """A node's state as its class: closed first, then in review, then
+    claimed (the label, or an unreleased claude/<issue> branch), then
+    labelled blocked, then todo; "" for an issue in none of them."""
+    names = issue.labels
+    if issue.closed:
+        return "closed"
+    if labels.IN_REVIEW in names:
+        return "review"
+    if labels.CLAIMED in names or issue.number in claimed:
+        return "claimed"
+    if labels.BLOCKED in names:
+        return "blocked"
+    return "todo" if labels.TODO in names else ""
+
+
+def node_line(issue, claimed):
+    """One node of a flowchart: its id, its label in quotes, and its class
+    where it has one."""
+    suffix = f":::{node_class(issue, claimed)}" if node_class(issue, claimed) else ""
+    return f'{node_id(issue.number)}["{node_label(issue)}"]{suffix}'
+
+
+def mermaid_block(nodes, edges, claimed):
+    """A fenced Mermaid flowchart: the nodes in number order, the edges
+    sorted and each once, and the five classes, so the same state draws
+    the same bytes."""
+    lines = ["```mermaid", "flowchart TD"]
+    lines += ["  " + node_line(issue, claimed) for issue in sorted(nodes, key=lambda i: i.number)]
+    lines += ["  " + edge for edge in sorted(set(edges))]
+    lines += ["  " + line for line in NODE_CLASSES]
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def blocked_by_edge(snap, blocker, blocked):
+    """An arrow from the issue that blocks to the issue it blocks, dotted
+    once the blocker is closed."""
+    arrow = "-.->" if snap.issue_by_number(blocker).closed else "-->"
+    return f"{node_id(blocker)} {arrow} {node_id(blocked)}"
+
+
+def epic_block(snap, epic_number):
+    """One open epic's flowchart: its sub-issues and the issues outside
+    the epic that block one of them, with every blocked-by relation among
+    them as an edge."""
+    numbers = set(snap.sub_issues.get(epic_number, []))
+    edges = []
+    for blocked in sorted(numbers):
+        for blocker in snap.blocked_by.get(blocked, []):
+            numbers.add(blocker)
+            edges.append(blocked_by_edge(snap, blocker, blocked))
+    nodes = [snap.issue_by_number(n) for n in numbers]
+    return mermaid_block(nodes, edges, claimed_numbers(snap.branches, released_keys(snap)))
+
+
+def goals_block(snap, goals):
+    """The goals above their epics: each open goal with sub-issues and the
+    issues under it, joined by thick arrows and no blocked-by edge, since
+    an epic's own block draws those."""
+    numbers, edges = set(), []
+    for goal in goals:
+        numbers.add(goal.number)
+        for epic in snap.sub_issues.get(goal.number, []):
+            numbers.add(epic)
+            edges.append(f"{node_id(goal.number)} ==> {node_id(epic)}")
+    nodes = [snap.issue_by_number(n) for n in numbers]
+    return mermaid_block(nodes, edges, claimed_numbers(snap.branches, released_keys(snap)))
+
+
+def planned_with_sub_issues(snap, label):
+    """The open issues carrying the label that the reads found sub-issues
+    for, in number order."""
+    return [issue for issue in sorted(snap.issues, key=lambda i: i.number)
+            if label in issue.labels and snap.sub_issues.get(issue.number)]
+
+
+def epic_heading(issue):
+    """An epic's heading in the section, counting its closed tasks where
+    GitHub's summary gives the count."""
+    heading = f"### Epic #{issue.number}" + (f": {cell(issue.title)}" if cell(issue.title) else "")
+    if issue.progress and issue.progress[1] > 0:
+        heading += f" ({issue.progress[0]}/{issue.progress[1]})"
+    return heading
+
+
+def epic_blocks(snap):
+    """The flowchart of every open epic with sub-issues, by epic number:
+    what the section draws, and what the adapter writes into each epic's
+    body (write_graphs)."""
+    return {issue.number: epic_block(snap, issue.number) for issue in planned_with_sub_issues(snap, labels.EPIC)}
+
+
+def dependencies_lines(snap):
+    """The Dependencies section's lines, or none where there is nothing to
+    draw and the reads were not left out, so a repository with no epic
+    reads the page it always did."""
+    if snap.dependencies_skipped:
+        return ["", DEPENDENCIES_HEADING, "", NOT_DRAWN.get(snap.dependencies_skipped, NOT_DRAWN["failed"])]
+    goals = planned_with_sub_issues(snap, labels.GOAL)
+    blocks = epic_blocks(snap)
+    if not goals and not blocks:
+        return []
+    lines = ["", DEPENDENCIES_HEADING, "", DEPENDENCIES_PREFACE]
+    if goals:
+        lines += ["", GOALS_HEADING, "", goals_block(snap, goals)]
+    for number, block in blocks.items():
+        lines += ["", epic_heading(snap.issue_by_number(number)), "", block]
+    return lines
+
+
+def graph_section(body):
+    """Where an epic's body holds its graph: the span from the first
+    GRAPH_MARKER to the end of the first GRAPH_END_MARKER after it, or
+    None where the body holds neither, or holds one without the other."""
+    start = body.find(GRAPH_MARKER)
+    if start < 0:
+        return None
+    end = body.find(GRAPH_END_MARKER, start + len(GRAPH_MARKER))
+    return (start, end + len(GRAPH_END_MARKER)) if end >= 0 else None
+
+
+def body_with_graph(body, block):
+    """An epic's body with its graph: the block between the markers, put
+    where the body holds them already or appended after a blank line; None
+    where the body holds one marker without the other, which a person
+    wrote and the board leaves alone. Windows line endings are folded, so
+    a body GitHub stored with them compares as what was written."""
+    body = body.replace("\r\n", "\n")
+    graph = f"{GRAPH_MARKER}\n{block}\n{GRAPH_END_MARKER}"
+    span = graph_section(body)
+    if span is None:
+        if GRAPH_MARKER in body or GRAPH_END_MARKER in body:
+            return None
+        return body.rstrip("\n") + ("\n\n" if body.strip() else "") + graph + "\n"
+    return body[:span[0]] + graph + body[span[1]:]
+
+
+# --- the page ---------------------------------------------------------------
+
 def render(snapshot, default_branch=None):
     """STATE.md for a snapshot: the layout the protocol's STATE.md describes.
     The default branch named here wins over the snapshot's own, for a
@@ -1008,6 +1296,7 @@ def render(snapshot, default_branch=None):
     )
     for heading, columns, rows in sections:
         lines += ["", heading, ""] + table(columns, rows)
+    lines += dependencies_lines(snap)
     return "\n".join(lines) + "\n"
 
 

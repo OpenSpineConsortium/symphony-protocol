@@ -1,0 +1,75 @@
+{
+  "sha": "0123abcdef0123abcdef0123abcdef0123abcdef",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 20,
+      "title": "Draw the board",
+      "labels": [{"name": "epic"}],
+      "updated_at": "2026-10-10T09:00:00Z",
+      "sub_issues_summary": {"total": 3, "completed": 1, "percent_completed": 33},
+      "issue_dependencies_summary": {"blocked_by": 0, "blocking": 0, "total_blocked_by": 0, "total_blocking": 0}
+    },
+    {
+      "number": 22,
+      "title": "Render the section",
+      "labels": [{"name": "claimed"}, {"name": "worker:alice"}],
+      "updated_at": "2026-10-12T09:00:00Z",
+      "issue_dependencies_summary": {"blocked_by": 1, "blocking": 1, "total_blocked_by": 1, "total_blocking": 1}
+    },
+    {
+      "number": 23,
+      "title": "Write the body | with \"quotes\" and <tags> #5 and a title long enough to be cut short",
+      "labels": [{"name": "todo"}],
+      "updated_at": "2026-10-12T10:00:00Z",
+      "issue_dependencies_summary": {"blocked_by": 1, "blocking": 0, "total_blocked_by": 2, "total_blocking": 0}
+    },
+    {
+      "number": 24,
+      "title": "Write the docs",
+      "labels": [{"name": "todo"}, {"name": "worker:bob"}],
+      "updated_at": "2026-10-12T11:00:00Z",
+      "issue_dependencies_summary": {"blocked_by": 2, "blocking": 0, "total_blocked_by": 2, "total_blocking": 0}
+    },
+    {
+      "number": 25,
+      "title": "Fix the build",
+      "labels": [{"name": "blocker"}],
+      "updated_at": "2026-10-12T12:00:00Z",
+      "issue_dependencies_summary": {"blocked_by": 1, "blocking": 0, "total_blocked_by": 1, "total_blocking": 0}
+    },
+    {
+      "number": 30,
+      "title": "Ship the graph",
+      "labels": [{"name": "goal"}, {"name": "todo"}],
+      "updated_at": "2026-10-09T09:00:00Z",
+      "sub_issues_summary": {"total": 1, "completed": 0, "percent_completed": 0}
+    },
+    {
+      "number": 99,
+      "title": "Settle the colours",
+      "labels": [{"name": "todo"}],
+      "updated_at": "2026-10-11T09:00:00Z"
+    }
+  ],
+  "pulls": [],
+  "branches": ["main", "claude/22"],
+  "claims": {
+    "22": "# Claim: #22\n\n- Issue: https://github.com/octo/widgets/issues/22\n- Worker: alice\n- Branch: claude/22\n\n## Plan\n\nRender the section.\n\n## Files to touch\n\n- sdlc_protocol/board.py\n"
+  },
+  "claim_issues": {
+    "22": {"state": "open", "labels": ["claimed", "worker:alice"]}
+  },
+  "merged": [],
+  "sub_issues": {"20": [21, 22, 23], "30": [20]},
+  "blocked_by": {"22": [99], "23": [21, 22]},
+  "others": {
+    "21": {
+      "number": 21,
+      "title": "Read the summary",
+      "labels": [{"name": "todo"}],
+      "updated_at": "2026-10-11T08:00:00Z",
+      "state": "closed"
+    }
+  }
+}

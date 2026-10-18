@@ -21,7 +21,7 @@ class FakeClient:
 
     def __init__(self):
         self.issues, self.branches, self.pulls, self.checks = {}, set(), {}, {}
-        self.labels, self.sub_issues = {"todo", "epic"}, []
+        self.labels, self.sub_issues, self.blocked_by = {"todo", "epic"}, [], []
         self.claims, self.released_claims, self.released_asked = {}, set(), []
         self.next_number = 100
 
@@ -30,9 +30,14 @@ class FakeClient:
         self.branches.add(f"claude/{issue}")
         self.claims[f"claude/{issue}"] = f"# Claim: #{issue}\n\n- Worker: {worker}\n- Branch: claude/{issue}\n"
 
-    def add_issue(self, number, labels=(), body="", state="open", title="t"):
+    def add_issue(self, number, labels=(), body="", state="open", title="t", blocked_by=None):
         self.issues[number] = {"number": number, "id": 9000 + number, "title": title, "body": body,
                                "state": state, "labels": [{"name": n} for n in labels]}
+        if blocked_by is not None:
+            # The dependency summary GitHub carries on every issue it lists:
+            # (open blockers, all blockers).
+            self.issues[number]["issue_dependencies_summary"] = {
+                "blocked_by": blocked_by[0], "blocking": 0, "total_blocked_by": blocked_by[1], "total_blocking": 0}
         return self.issues[number]
 
     def add_pull(self, issue, draft=False, state="clean", conclusion="success", check="check"):
@@ -72,6 +77,9 @@ class FakeClient:
 
     def add_sub_issue(self, parent, child_id):
         self.sub_issues.append((parent, child_id))
+
+    def add_blocked_by(self, number, blocker_id):
+        self.blocked_by.append((number, blocker_id))
 
     def set_body(self, number, body):
         self.issues[number]["body"] = body
@@ -264,6 +272,32 @@ class NextTest(unittest.TestCase):
         self.api.add_issue(3, ["blocker", "blocked"])
         self.assertEqual(team.next_for(self.api, "w1"), "none")
         self.assertEqual(team.deals(self.api, ["w1", "w2"]), {"w1": "none", "w2": "none"})
+
+    def test_an_issue_an_open_issue_blocks_is_dealt_from_nowhere(self):
+        """An issue GitHub's dependencies say an open issue blocks is not
+        free, in the queue, among the blockers or given to the worker; one
+        whose blockers are all closed is."""
+        self.api.add_issue(2, ["todo"], blocked_by=(1, 1))
+        self.api.add_issue(3, ["blocker"], blocked_by=(2, 2))
+        self.api.add_issue(4, ["todo", "worker:w1"], blocked_by=(1, 3))
+        self.assertEqual(team.next_for(self.api, "w1"), "none")
+        self.assertEqual(team.deals(self.api, ["w1", "w2"]), {"w1": "none", "w2": "none"})
+        self.api.add_issue(5, ["todo"], blocked_by=(0, 2))
+        self.assertEqual(team.next_for(self.api, "w1"), "take 5")
+
+    def test_an_issue_without_a_dependency_summary_is_blocked_by_nothing(self):
+        self.api.add_issue(2, ["todo"])
+        self.assertTrue(team.Snapshot(self.api).free(self.api.issues[2]))
+        self.api.add_issue(3, ["todo"], blocked_by=(1, 1))
+        self.assertFalse(team.Snapshot(self.api).free(self.api.issues[3]))
+
+    def test_a_goal_is_taken_whole_by_nobody(self):
+        """A goal is planned into epics, as an epic is into tasks: neither
+        is dealt, given or not, with todo or not."""
+        self.api.add_issue(2, ["goal", "todo"])
+        self.api.add_issue(3, ["goal", "worker:w1"])
+        self.assertEqual(team.next_for(self.api, "w1"), "none")
+        self.assertEqual(team.deals(self.api, ["w1"]), {"w1": "none"})
 
     def test_a_task_another_account_claimed_is_never_carried(self):
         self.api.add_issue(6, ["todo", "agent:w1", "claimed", "account:second"])
@@ -699,6 +733,76 @@ class SeedTest(unittest.TestCase):
         with self.assertRaises(team.TeamError):
             team.seed(api, 1, {"plan": "x", "tasks": []}, ["w1"])
 
+    def test_seed_writes_the_plans_dependencies_as_blocked_by_relations(self):
+        api = FakeClient()
+        api.add_issue(1, ["epic"], body="Build it.")
+        plan = {"plan": "In order.",
+                "tasks": [{"title": "A", "owner": "w1", "files": [], "body": "a"},
+                          {"title": "B", "owner": "w2", "files": [], "body": "b", "depends_on": [1]},
+                          {"title": "C", "owner": "w1", "files": [], "body": "c", "depends_on": [1, 2]}]}
+        self.assertEqual(team.seed(api, 1, plan, ["w1", "w2"]), "seeded 101 102 103")
+        # The relation names the blocker by its id, as the API takes it.
+        self.assertEqual(api.blocked_by, [(102, 9101), (103, 9101), (103, 9102)])
+        body = api.issues[1]["body"]
+        self.assertIn("- [ ] #101 A (worker:w1)\n", body)
+        self.assertIn("- [ ] #102 B (worker:w2), blocked by #101\n", body)
+        self.assertIn("- [ ] #103 C (worker:w1), blocked by #101, #102\n", body)
+        self.assertEqual(team.task_numbers(api.issues[1]), [101, 102, 103])
+
+    def test_a_relation_github_refuses_is_said_and_stops_no_other(self):
+        class Refusing(FakeClient):
+            def add_blocked_by(self, number, blocker_id):
+                if number == 103 and blocker_id == 9102:
+                    raise team.ClientError("POST dependencies: HTTP 422")
+                super().add_blocked_by(number, blocker_id)
+        api = Refusing()
+        api.add_issue(1, ["epic"])
+        plan = {"plan": "p",
+                "tasks": [{"title": "A", "owner": "w1", "files": [], "body": "a"},
+                          {"title": "B", "owner": "w1", "files": [], "body": "b"},
+                          {"title": "C", "owner": "w1", "files": [], "body": "c", "depends_on": [1, 2]}]}
+        self.assertEqual(team.seed(api, 1, plan, ["w1"]),
+                         "seeded 101 102 103; #103 blocked by #102 not written: GitHub did not answer")
+        self.assertEqual(api.blocked_by, [(103, 9101)])
+        self.assertIn("- [ ] #103 C (worker:w1), blocked by #101; not written: #102 (GitHub did not answer)\n",
+                      api.issues[1]["body"])
+
+    def test_a_refusal_with_a_status_says_what_github_answered(self):
+        problem = team.ClientError("POST x: HTTP 422")
+        problem.status = 422
+        self.assertEqual(team.refusal_words(problem), "GitHub answered 422")
+        self.assertEqual(team.refusal_words(team.ClientError("no answer")), "GitHub did not answer")
+
+    def test_a_plan_whose_dependencies_do_not_hold_opens_nothing(self):
+        api = FakeClient()
+        api.add_issue(1, ["epic"], body="Build it.")
+        plan = {"plan": "p", "tasks": [{"title": "A", "owner": "w1", "files": [], "body": "a", "depends_on": [2]},
+                                       {"title": "B", "owner": "w1", "files": [], "body": "b", "depends_on": [1]}]}
+        with self.assertRaises(ValueError) as caught:
+            team.seed(api, 1, plan, ["w1"])
+        self.assertEqual(str(caught.exception), "plan: tasks 1, 2 depend on each other in a cycle")
+        self.assertEqual(len(api.issues), 1)
+        self.assertEqual(api.issues[1]["body"], "Build it.")
+
+    def test_seed_writes_the_plan_onto_the_epic_as_it_stands_once_the_tasks_are_open(self):
+        """A person or the board's graph may change the epic while the
+        tasks open, so the body written is the one read right before."""
+        class Changing(FakeClient):
+            def create_issue(self, title, body, labels):
+                self.issues[1]["body"] += "\n\nAdded meanwhile."
+                return super().create_issue(title, body, labels)
+        api = Changing()
+        api.add_issue(1, ["epic"], body="Build it.")
+        team.seed(api, 1, self.PLAN, ["w1", "w2"])
+        self.assertTrue(api.issues[1]["body"].startswith("Build it.\n\nAdded meanwhile.\n\nAdded meanwhile.\n\n<!-- team:plan -->"))
+
+    def test_open_task_returns_the_issue_github_made(self):
+        api = FakeClient()
+        api.add_issue(1, ["epic"])
+        made = team.open_task(api, 1, {"title": "T", "body": "b"}, "w1")
+        self.assertEqual((made["number"], made["id"]), (101, 9101))
+        self.assertEqual(api.sub_issues, [(1, 9101)])
+
     def test_a_task_body_names_the_epic_and_the_files(self):
         body = team.task_body(7, {"body": " Parse it. ", "files": ["a.py", "b.py"]})
         self.assertTrue(body.startswith("Epic: #7\n\nParse it.\n\n## Files to touch\n\n- a.py\n- b.py\n"))
@@ -707,12 +811,51 @@ class SeedTest(unittest.TestCase):
         self.assertEqual(claims.issue_files(team.task_body(7, {"files": ["b.py", "a.py"]})), ["a.py", "b.py"])
 
 
+class DependencyProblemsTest(unittest.TestCase):
+    @staticmethod
+    def tasks(*depends):
+        return [{"title": "t", "depends_on": list(d)} if d is not None else {"title": "t"} for d in depends]
+
+    def test_a_plan_whose_dependencies_hold_has_no_problem(self):
+        self.assertEqual(team.dependency_problems(self.tasks(None, [1], [1, 2])), [])
+        self.assertEqual(team.dependency_problems(self.tasks([], [])), [])
+
+    def test_depends_on_must_list_positions(self):
+        for bad in (["1"], [True], [0], [1.5], [None]):
+            self.assertEqual(team.dependency_problems(self.tasks(None, bad)),
+                             ["plan: task 2's depends_on must list positions, whole numbers from 1"], bad)
+
+    def test_a_position_the_plan_has_no_task_of(self):
+        self.assertEqual(team.dependency_problems(self.tasks(None, None, [5])),
+                         ["plan: task 3 depends on 5, which the plan has no task of"])
+
+    def test_a_task_that_depends_on_itself(self):
+        self.assertEqual(team.dependency_problems(self.tasks(None, [2])), ["plan: task 2 depends on itself"])
+
+    def test_a_cycle_names_its_positions_ascending(self):
+        self.assertEqual(team.dependency_problems(self.tasks([2], [1])),
+                         ["plan: tasks 1, 2 depend on each other in a cycle"])
+        self.assertEqual(team.dependency_problems(self.tasks(None, [3], [2])),
+                         ["plan: tasks 2, 3 depend on each other in a cycle"])
+        self.assertEqual(team.dependency_problems(self.tasks([3], [1], [2], [1])),
+                         ["plan: tasks 1, 2, 3 depend on each other in a cycle"])
+
+    def test_the_first_problem_found_is_the_one_reported_first(self):
+        problems = team.dependency_problems(self.tasks(["x"], [9], [3]))
+        self.assertEqual(problems[0], "plan: task 1's depends_on must list positions, whole numbers from 1")
+        self.assertEqual(len(problems), 3)
+
+
 class PlanSchemaTest(unittest.TestCase):
     def test_a_task_goes_to_a_registered_worker_or_with_none_to_anyone(self):
         given = team.plan_schema(["alice", "nightly"])
         task = given["properties"]["tasks"]["items"]
         self.assertEqual(task["properties"]["owner"], {"type": "string", "enum": ["alice", "nightly"]})
         self.assertEqual(task["required"], ["title", "owner", "files", "body"])
+        self.assertEqual(task["properties"]["depends_on"], {
+            "type": "array", "items": {"type": "integer", "minimum": 1}, "uniqueItems": True,
+            "description": ("positions of the tasks of this plan that must close before this one "
+                            "can be taken, counted from 1 in the order the tasks are listed")})
         self.assertEqual(given["required"], ["plan", "tasks"])
         self.assertEqual(team.plan_schema([])["properties"]["tasks"]["items"]["properties"]["owner"], {"type": "string"})
 

@@ -214,17 +214,44 @@ class BoardLiveRun(unittest.TestCase):
              mock.patch.object(github, "unread_claim_lines", lambda snap: ["unread"]), \
              mock.patch.object(github, "pushed_refused_lines", lambda snap: ["unpushed"]), \
              mock.patch.object(github, "began_refused_lines", lambda snap: ["undated"]), \
+             mock.patch.object(github, "dependencies_skipped_lines", lambda snap: ["undrawn"]), \
              mock.patch.object(github, "coordinate", lambda api, snap, now: ["coordinated"]), \
              mock.patch.object(github, "release_claims", lambda api, snap: [f"released at {snap.sha}"]), \
-             mock.patch.object(github, "post_comments", lambda api, due: ["posted"]):
+             mock.patch.object(github, "post_comments", lambda api, due: ["posted"]), \
+             mock.patch.object(github, "write_graphs", lambda api, snap, blocks: [f"drew {sorted(blocks)}"]):
             snap, page = cli.plan_board(FakeBoardApi("t", REPO), "abc", "main", None, say=said.append)
-            self.assertEqual((snap.sha, said), ("abc", ["unread", "unpushed", "undated", "coordinated"]))
+            self.assertEqual((snap.sha, said), ("abc", ["unread", "unpushed", "undated", "undrawn", "coordinated"]))
             self.assertEqual(page, board.render(snap))
             cli.act_on_board(FakeBoardApi("t", REPO), snap, "schedule", "", None, say=said.append)
-            self.assertEqual(said, ["unread", "unpushed", "undated", "coordinated", "released at abc", "posted"])
+            self.assertEqual(said, ["unread", "unpushed", "undated", "undrawn", "coordinated", "released at abc",
+                                    "posted", "drew []"])
             said.clear()
             cli.plan_board(FakeBoardApi("t", REPO), "abc", "main", None, render_only=True, say=said.append)
-            self.assertEqual(said, ["unread", "unpushed", "undated"])
+            self.assertEqual(said, ["unread", "unpushed", "undated", "undrawn"])
+
+    def test_the_second_half_writes_each_epics_graph_last_and_the_first_says_why_none_was_drawn(self):
+        """The epic bodies are written after the comments, from the
+        snapshot's own blocks, and only where the run read sub-issues;
+        a run that left the section out says so in its first half."""
+        said, written = [], []
+        snap = board.Snapshot(sha="abc", issues=[board.Issue(20, "Draw", ["epic"]), board.Issue(21, "Read", ["todo"])],
+                              sub_issues={20: [21]})
+        with mock.patch.object(github, "release_claims", lambda api, snap: []), \
+             mock.patch.object(github, "post_comments", lambda api, due: ["posted"]), \
+             mock.patch.object(github, "write_graphs", lambda api, snap, blocks: written.append(blocks) or ["drew"]):
+            cli.act_on_board(FakeBoardApi("t", REPO), snap, "schedule", "", None, say=said.append)
+        self.assertEqual(said, ["posted", "drew"])
+        self.assertEqual(written, [board.epic_blocks(snap)])
+        self.assertEqual(list(written[0]), [20])
+        said.clear()
+        skipped = board.Snapshot(sha="abc", dependencies_skipped="reserve",
+                                 dependencies_notice="301 of 1000 calls left, the reserve is 300")
+        with mock.patch.object(github, "snapshot", lambda api, sha, default_branch, now, started_by="": skipped), \
+             mock.patch.object(github, "coordinate", lambda api, snap, now: []):
+            _, page = cli.plan_board(FakeBoardApi("t", REPO), "abc", "main", None, say=said.append)
+        self.assertEqual(said, ["board: Dependencies left out: 301 of 1000 calls left, the reserve is 300"])
+        self.assertIn("Not drawn this run: its reads would reach the calls the board keeps in reserve; "
+                      "the next run tries again.", page)
 
     def test_render_only_posts_nothing_and_the_sha_defaults_to_github_sha(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -344,7 +371,7 @@ class FakeClient:
     def __init__(self, token="t", repo=REPO):
         self.token, self.repo = token, repo
         self.issues, self.branches, self.labels, self.sub_issues = {}, set(), {"todo", "epic"}, []
-        self.claims = {}
+        self.claims, self.blocked_by = {}, []
         self.next_number = 100
 
     def add_issue(self, number, labels=(), body="", state="open", title="t"):
@@ -382,6 +409,9 @@ class FakeClient:
 
     def add_sub_issue(self, parent, child_id):
         self.sub_issues.append((parent, child_id))
+
+    def add_blocked_by(self, number, blocker_id):
+        self.blocked_by.append((number, blocker_id))
 
     def set_body(self, number, body):
         self.issues[number]["body"] = body
@@ -466,6 +496,37 @@ class TeamRun(unittest.TestCase):
         code, out, err = self.through_the_adapter(["next", "--agent", "w1"], FakeClient(), environ)
         self.assertEqual((code, out), (1, ""))
         self.assertTrue(err.startswith("team: CLAUDE_TEAM"))
+
+    def seed_with(self, api, plan):
+        environ = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": REPO, "CLAUDE_TEAM": '["w1", "w2"]'}
+        with tempfile.TemporaryDirectory() as folder:
+            where = Path(folder) / "plan.json"
+            where.write_text(json.dumps(plan), encoding="utf-8")
+            return self.through_the_adapter(["seed", "--epic", "1", "--plan", str(where)], api, environ)
+
+    def test_seed_writes_the_plans_dependencies_and_says_what_github_refused(self):
+        api = FakeClient()
+        api.add_issue(1, ["epic"], body="Build it.")
+        plan = {"plan": "p", "tasks": [{"title": "A", "owner": "w1"}, {"title": "B", "owner": "w2", "depends_on": [1]}]}
+        self.assertEqual(self.seed_with(api, plan), (0, "seeded 101 102\n", ""))
+        self.assertEqual(api.blocked_by, [(102, 9101)])
+        self.assertIn("- [ ] #102 B (worker:w2), blocked by #101\n", api.issues[1]["body"])
+
+        class Refusing(FakeClient):
+            def add_blocked_by(self, number, blocker_id):
+                raise github.GitHubError("POST dependencies: HTTP 422", 422)
+        api = Refusing()
+        api.add_issue(1, ["epic"])
+        self.assertEqual(self.seed_with(api, plan),
+                         (0, "seeded 101 102; #102 blocked by #101 not written: GitHub answered 422\n", ""))
+
+    def test_a_plan_whose_dependencies_do_not_hold_is_one_line_and_exit_1(self):
+        api = FakeClient()
+        api.add_issue(1, ["epic"])
+        plan = {"plan": "p", "tasks": [{"title": "A", "owner": "w1", "depends_on": [2]},
+                                       {"title": "B", "owner": "w2", "depends_on": [1]}]}
+        self.assertEqual(self.seed_with(api, plan), (1, "", "team: plan: tasks 1, 2 depend on each other in a cycle\n"))
+        self.assertEqual(len(api.issues), 1)
 
 
 def registry(folder, *files):
