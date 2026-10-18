@@ -1,4 +1,4 @@
-"""The regression traces of DESIGN.md 5.3, one per finding, F1 to F28, F30 and F31
+"""The regression traces of DESIGN.md 5.3, one per finding, F1 to F31
 (validation/traces/, played by validation/replay.py), and known.json, the
 record of what is red on purpose: every trace loads and plays with no
 mismatch; its red results are exactly what known.json records, as built
@@ -281,10 +281,49 @@ BUDGET_SECONDS = 10
 # as the keyword alone; and, from its second review, at its seventh guard
 # step, step 12, env -S with ${NOPE} -u ${HOME} before the push, which
 # passes once the string's names are read all set or all unset; and,
-# from its third review, at b's lease inside an -S string of seven names
-# with push spelled pu""sh, step 13, taken once push is looked for only as
-# written. F30's at b's marking ready, step 5, where #100 keeps its claim
-# file, once the protocol check lets such a pull request through, on
+# from its third review, at b's lease inside an -S string of seven names,
+# the last after -u, with push spelled pu""sh, step 13, taken once push is
+# looked for only as written. Since F29's fix three mutants of F24 and
+# F25 name new targets or switch a reading off with them: the substitution
+# in double quotes is read_apart's, the quoted span ansi_c_close's, and
+# arithmetic opens no substitution anywhere inside it, since the scan steps
+# into it now; F25's double parentheses and backquoted quotes are undone
+# with the reading of the command's own text off, which reads the words
+# around a misread span as bash does whatever the rule made of the span.
+# F29's at its first guard step, step 1, git $'pu\x73h', its second, step
+# 2, env -S $'git push ...', and b's lease onto claude/$'1', step 29, each
+# passing once a $'...' is read as a $ and a quoted span; step 3, a push to
+# $"main", once a $"..." is read so; step 4, git pu$(true)sh, once the
+# command's own text is not read; steps 5 and 6, git $(echo push) and
+# $(which git) push, once a word bash builds is read as its text alone;
+# step 7, $NOPE git push, once no word is read unset; step 8, git {push,},
+# once braces are read as written; step 9, git push -$(echo f), once an
+# option bash builds is read as written; step 10, a push to ma$(echo i)n,
+# once a name bash builds is; step 11, the push after echo \, a newline and
+# #', once a continuation ends a word's start; steps 12 and 13, the push in
+# a here-document's substitution in $(( )), once the scan jumps over
+# arithmetic; step 28, b's lease after GIT_DIR=x alone, taken once that
+# assignment is read as naming the repository for good; and step 30, b's
+# lease after a body whose delimiter is E$(echo x)F, taken once the
+# delimiter is cut at the substitution. From its first review: step 14, a
+# push by --no-verify to $(echo HEAD):$(echo claude/)$(echo 7), refused
+# once a name of more than one expansion is read as built or the refspec
+# as : where each is nothing; step 15, --no-verify$(true), refused once
+# every built option is; step 16, git pu\, a newline and sh, let through
+# once the hook's gate reads the continuation in; steps 17 and 18, coproc
+# before the push and coproc X before braces around it, once coproc or its
+# name is read as the command; step 19, ${NOPE:-git push} origin main,
+# once a ${ } closes at its word's end; step 20, ${NOPE[0]:-main}, once a
+# subscript is not read; step 21, a $'...' in a quoted default, once it is
+# read as written; and step 22, @(main) after shopt -s extglob, once
+# extended patterns are left unread. From its second review: step 23,
+# ${A:-ma}$(echo in), once a default is read as a hole alone; step 24,
+# $(echo -)f, once only a word that opens with - is read as an option;
+# step 25, ?claude/7 beside a file +claude/7, once no pattern gives a +;
+# step 26, [:]main beside a file :main, once no pattern gives a colon; and
+# step 27, :$X after X=main, once every built word whose unset value is
+# only colons is kept as written. F30's at b's marking ready, step 5,
+# where #100 keeps its claim file, once the protocol check lets such a pull request through, on
 # which GitHub's refusal of the owner's merge rests. F31's at carol's
 # pull request from notes/1, step 2, which adds #1's claim file, once the
 # check reads no claim file the change adds or changes, or none on a
@@ -408,6 +447,27 @@ UNDONE = {
             ("a time the guard cannot tell read as the keyword alone", 11, "G11a"),
             ("every ${NAME} read all set or all unset", 12, "G11a"),
             ("a push env's -S spells read only as written", 13, "G11a")],
+    "F29": [("a $'...' read as a $ and a quoted span", 1, "G11a"), ("a $'...' read as a $ and a quoted span", 2, "G11a"),
+            ('a $"..." read as a $ and a quoted span', 3, "G11a"), ("a command's own text left unread", 4, "G11a"),
+            ("a word bash builds read as its text alone", 5, "G11a"),
+            ("a word bash builds read as its text alone", 6, "G11a"), ("every word read set, none unset", 7, "G11a"),
+            ("braces read as written", 8, "G11a"), ("an option bash builds read as written", 9, "G11a"),
+            ("a name bash builds read as written", 10, "G11a"),
+            ("a line continuation read as ending a word's start", 11, "G11a"),
+            ("arithmetic jumped over by the scan", 12, "G11a"), ("arithmetic jumped over by the scan", 13, "G11a"),
+            ("a word of expansions alone read as built", 14, "G11a"),
+            ("a refspec of holes read as : where each is nothing", 14, "G11a"),
+            ("a built option refused after a whole flag", 15, "G11a"),
+            ("the hook's gate read with continuations in", 16, "G11a"), ("coproc read as the command", 17, "G11a"),
+            ("coproc's name read as the command", 18, "G11a"), ("a ${ } read as closing at its word's end", 19, "G11a"),
+            ("an array's ${ } read as giving nothing", 20, "G11a"), ("a $'...' in a default read as written", 21, "G11a"),
+            ("extended patterns left unread", 22, "G11a"), ("a default read as a hole alone", 23, "G11a"),
+            ("a word that may open with a dash read as no option", 24, "G11a"),
+            ("a pattern read as giving no +", 25, "G11a"), ("a colon a pattern gives read as none", 26, "G11a"),
+            ("a colon beside one hole kept as written", 27, "G11a"),
+            ("a lone assignment read as naming the repository for good", 28, "G11a"),
+            ("a $'...' read as a $ and a quoted span", 29, "G11a"),
+            ("a here-document's delimiter cut at a substitution", 30, "G11a")],
     "F30": [("a ready pull request's claim file let through", 5, "G12")],
     "F31": [("a claim file of another issue let through", 2, "G12"),
             ("a claim file of another issue let through", 5, "G12"),
@@ -417,13 +477,13 @@ UNDONE = {
 # The findings with a trace, every one settled since F25's fix: F1, F3,
 # F5, F6, F10 and F11 fixed in 0.4.1; F2, F4, F7, F8, F9, F12, F13, F14,
 # F15, F17, F18, F19 and F20 fixed in 0.5.0, and F21, F22, F26, F23, F25,
-# F27, F24, F28 and F31 on main after it (known.json's fixed_after); and F16,
+# F27, F24, F28, F29 and F31 on main after it (known.json's fixed_after); and F16,
 # fixed in the spec's words, which the library as built already keeps,
 # so known.json names no version for it; and F30, fixed in the harness,
 # whose model let the owner make a merge GitHub refuses, the library
 # unchanged, so known.json names no version for it either.
 FIXED = ("F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "F15", "F16", "F17",
-         "F18", "F19", "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F30",
+         "F18", "F19", "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F29", "F30",
          "F31")
 # Findings red as built, which no rule of the library answers: none since
 # F4's fix; the test keeps the case for the next one.
@@ -608,7 +668,7 @@ class KnownJson(unittest.TestCase):
                          {"F2": "0.4.1", "F4": "0.4.1", "F7": "0.4.1", "F8": "0.4.1", "F9": "0.4.1", "F12": "0.4.1",
                           "F13": "0.4.1", "F14": "0.4.1", "F15": "0.4.1", "F17": "0.4.1", "F18": "0.4.1",
                           "F19": "0.4.1", "F20": "0.4.1", "F21": "0.5.0", "F22": "0.5.0", "F23": "0.5.0", "F24": "0.5.0",
-                          "F25": "0.5.0", "F26": "0.5.0", "F27": "0.5.0", "F28": "0.5.0",
+                          "F25": "0.5.0", "F26": "0.5.0", "F27": "0.5.0", "F28": "0.5.0", "F29": "0.5.0",
                           "F31": "0.5.0"})
         current = known.version_key(sdlc_protocol.__version__)
         for finding, version in known.FIXED_AFTER.items():
@@ -619,7 +679,7 @@ class KnownJson(unittest.TestCase):
                 self.assertLessEqual(known.version_key(version), current,
                                      "the last version with a finding is one main has stated, never a later one")
         fixed_in_0_5_0 = {"F2", "F4", "F7", "F8", "F9", "F12", "F13", "F14", "F15", "F17", "F18", "F19", "F20"}
-        fixed_after_0_5_0 = {"F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F31"}
+        fixed_after_0_5_0 = {"F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F29", "F31"}
         self.assertEqual(known.as_built_for("0.4.1"), known.AS_BUILT | fixed_in_0_5_0 | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.4.0"), known.AS_BUILT | fixed_in_0_5_0 | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.4.2"), known.AS_BUILT | fixed_after_0_5_0,
@@ -627,7 +687,7 @@ class KnownJson(unittest.TestCase):
         self.assertEqual(known.as_built_for("0.5.0"), known.AS_BUILT | fixed_after_0_5_0)
         self.assertEqual(known.as_built_for("0.5.1"), known.AS_BUILT,
                          "the release after 0.5.0 carries F21's, F22's, F23's, F24's, F25's, F26's, F27's, "
-                         "F28's and F31's fixes")
+                         "F28's, F29's and F31's fixes")
         self.assertEqual(known.as_built_for("1.0.0"), known.AS_BUILT)
         for none in (None, "", "unknown", "0.4", "0.4.1-dirty", "1" * 10 + ".0.0"):
             self.assertEqual(known.as_built_for(none), known.AS_BUILT, none)

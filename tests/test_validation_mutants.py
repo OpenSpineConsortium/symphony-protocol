@@ -184,6 +184,33 @@ TRACES = {
     "a time the guard cannot tell read as the keyword alone": "the regression traces",
     "every ${NAME} read all set or all unset": "the regression traces",
     "a push env's -S spells read only as written": "the regression traces",
+    "a $'...' read as a $ and a quoted span": "the regression traces",
+    'a $"..." read as a $ and a quoted span': "the regression traces",
+    "a command's own text left unread": "the regression traces",
+    "a word bash builds read as its text alone": "the regression traces",
+    "every word read set, none unset": "the regression traces",
+    "braces read as written": "the regression traces",
+    "an option bash builds read as written": "the regression traces",
+    "a name bash builds read as written": "the regression traces",
+    "a line continuation read as ending a word's start": "the regression traces",
+    "arithmetic jumped over by the scan": "the regression traces",
+    "a lone assignment read as naming the repository for good": "the regression traces",
+    "a here-document's delimiter cut at a substitution": "the regression traces",
+    "a word of expansions alone read as built": "the regression traces",
+    "a refspec of holes read as : where each is nothing": "the regression traces",
+    "a default read as a hole alone": "the regression traces",
+    "a word that may open with a dash read as no option": "the regression traces",
+    "a pattern read as giving no +": "the regression traces",
+    "a colon a pattern gives read as none": "the regression traces",
+    "a colon beside one hole kept as written": "the regression traces",
+    "a built option refused after a whole flag": "the regression traces",
+    "the hook's gate read with continuations in": "the regression traces",
+    "coproc read as the command": "the regression traces",
+    "coproc's name read as the command": "the regression traces",
+    "a ${ } read as closing at its word's end": "the regression traces",
+    "an array's ${ } read as giving nothing": "the regression traces",
+    "a $'...' in a default read as written": "the regression traces",
+    "extended patterns left unread": "the regression traces",
     "an epic gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "epic"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocker gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocker"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocked task gets no todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocked"))] + HELD + [WAIT, BOARD],
@@ -450,14 +477,36 @@ class TheLane(unittest.TestCase):
         read as commands, a single quote in $[ ] read as a quote, a body's
         arithmetic left out of what it runs, substitutions told alike by
         their own texts alone and a backquoted span's hidden bodies left
-        in, 194; and F30's fix, in the harness, one of the rule its
-        refusal of the owner's merge rests on, a ready pull request's
-        claim file let through, 195; and F31's fix three, one for each
+        in, 194; and F29's fix twelve, one for each rule of the words bash
+        builds: a $'...' read as a $ and a quoted span, a $"..." read so, a
+        command's own text left unread, a word bash builds read as its text
+        alone, every word read set, none unset, braces read as written, an
+        option bash builds read as written, a name bash builds read as
+        written, a line continuation read as ending a word's start,
+        arithmetic jumped over by the scan, a lone assignment read as naming
+        the repository for good and a here-document's delimiter cut at a
+        substitution, 206; and its first review ten: a word of expansions
+        alone read as built, a refspec of holes read as : where each is
+        nothing, a built option refused after a whole flag, the hook's gate
+        read with continuations in, coproc read as the command, coproc's
+        name read as the command, a ${ } read as closing at its word's end,
+        an array's ${ } read as giving nothing, a $'...' in a default read
+        as written and extended patterns left unread, 216; and its second
+        review five: a default read as a hole alone, a word that may open
+        with a dash read as no option, a pattern read as giving no +, a
+        colon a pattern gives read as none and a colon beside one hole
+        kept as written, 221; and F30's fix, in the harness, one of the rule
+        its refusal of the owner's merge rests on, a ready pull request's
+        claim file let through, 222; and F31's fix three, one for each
         rule of the change a pull request makes: a claim file of another
         issue let through, a claim branch's every claim file its own and
-        a pull request that is no claim's let carry a claim file, 198."""
-        self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 198)
+        a pull request that is no claim's let carry a claim file, 225. 206
+        passed 200, so the bound was widened to 250 with F29's fix, as
+        F23's fix widened it from 150: the lane grows by a mutant for each
+        rule a fix adds, and the guard's reading of bash is the part of the
+        library that grows most."""
+        self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
+        self.assertEqual(len(mutants.MUTANTS), 225)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
@@ -472,6 +521,8 @@ class TheLane(unittest.TestCase):
                 else:
                     self.assertIs(type(target), type(mutant.replacement))
                 self.assertIn(mutant.guarantee, invariants.GUARANTEES)
+                for module, also, replacement in mutant.also:
+                    self.assertTrue(callable(getattr(module, also)) and callable(replacement), also)
 
     def test_the_copies_of_releases_follow_the_library_but_for_the_rule_each_changes(self):
         """A mutant that copies github.releases to change one rule tests an

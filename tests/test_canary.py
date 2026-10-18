@@ -41,7 +41,7 @@ NO_HEAD = "0" * 40
 COMMIT = "438844fbaca69df9e38a59ce4aa09635e39baf09"
 # A release that carries every fix on main, so a copy of it knows no
 # finding: the release after 0.5.0, whose fixes stop at F20's and which
-# still has F21, F22, F23, F24, F25, F26, F27, F28 and F31 (known.json's
+# still has F21, F22, F23, F24, F25, F26, F27, F28, F29 and F31 (known.json's
 # fixed_after).
 EVERY_FIX = "0.5.1"
 
@@ -1224,10 +1224,10 @@ class TheRecords(unittest.TestCase):
         self.assertEqual(canary.known_for(first_line),
                          canary.known.AS_BUILT | {"F2", "F4", "F7", "F8", "F9", "F12", "F13", "F14", "F15", "F17",
                                                   "F18", "F19", "F20", "F21", "F22", "F23", "F24", "F25",
-                                                  "F26", "F27", "F28", "F31"})
+                                                  "F26", "F27", "F28", "F29", "F31"})
         self.assertEqual(canary.known.AS_BUILT, frozenset(), "no finding is read as built since F2's fix")
         self.assertEqual(canary.known_for(f"sdlc-protocol 0.5.0 {COMMIT}"),
-                         canary.known.AS_BUILT | {"F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F31"})
+                         canary.known.AS_BUILT | {"F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F29", "F31"})
         self.assertEqual(canary.known_for(f"sdlc-protocol {EVERY_FIX} {COMMIT}"), canary.known.AS_BUILT)
         self.assertEqual(canary.known_for("unreadable"), canary.known.AS_BUILT)
         self.assertEqual(canary.known_words(frozenset({"F12", "F2", "F13", "F99"})),
@@ -1242,19 +1242,19 @@ class TheRecords(unittest.TestCase):
             data = json.loads(path.read_text())
             self.assertEqual(data["known_for"],
                              ["F2", "F4", "F7", "F8", "F9", "F12", "F13", "F14", "F15", "F17", "F18", "F19",
-                              "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F31"])
+                              "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F29", "F31"])
             self.assertEqual(data["results"][0]["status"], "known")
             self.assertIn("F12 (fixed after 0.4.1)", out.getvalue())
             self.assertEqual(canary.run_site(FakeSite(vendoring="0.5.0"), ["C2"], path, None, out), 1)
             data = json.loads(path.read_text())
-            self.assertEqual(data["known_for"], ["F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F31"],
+            self.assertEqual(data["known_for"], ["F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F29", "F31"],
                              "0.5.0 carries every fix up to F20's")
             self.assertEqual(data["results"][0]["status"], "failed")
             self.assertEqual(canary.run_site(FakeSite(vendoring=EVERY_FIX), ["C2"], path, None, out), 1)
             data = json.loads(path.read_text())
             self.assertEqual(data["known_for"], [],
                              "the release after 0.5.0 carries every fix, F21's, F22's, F23's, F24's, F25's, F26's, "
-                             "F27's, F28's and F31's")
+                             "F27's, F28's, F29's and F31's")
             self.assertEqual(data["results"][0]["status"], "failed")
             text = canary.issue_text(data, None)
             self.assertNotIn("This run reads a missed expectation as known", text)

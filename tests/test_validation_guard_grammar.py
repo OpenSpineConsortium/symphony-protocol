@@ -16,7 +16,12 @@ sys.path.insert(0, str(ROOT))
 
 from validation import guard_grammar as g  # noqa: E402
 
-BUDGET_SECONDS = 15
+# Raised from 15 with F29's fix: the grammar grew by 4,129 commands, and
+# each command is read in up to three more ways, its own text with each
+# substitution a hole, every word unset and its braces expanded, which on 4
+# processors took the judge from 11 s to 15 s; the 1,126 its first review
+# added keep it near 16 s.
+BUDGET_SECONDS = 20
 
 
 class TheGrammar(unittest.TestCase):
@@ -34,14 +39,27 @@ class TheGrammar(unittest.TestCase):
                       "env -S 'git push origin main'", "env - --sp=x git push origin main",
                       "env -S '${NOPE} git push origin main'", "env -S '${NOPE} -u ${HOME} git push origin main'",
                       "git commit -F - <<'EOF'\nDon't stop\nEOF\ngit push origin main\ncat <<'EOF'\nIt's done\nEOF",
-                      'x="$(git push origin main)"', "cat <(git push origin +claude/7)"):
+                      'x="$(git push origin main)"', "cat <(git push origin +claude/7)",
+                      "$NOPE git push origin main", "env -S $'git push origin main'", "git $'pu\\x73h' origin main",
+                      "git pu$(true)sh origin main", "git {push,} origin main", "$(which git) push origin main",
+                      "git push -$(echo f) origin claude/7", "git push origin ma$(echo i)n",
+                      "git push origin $\"main\"", "echo \\\n#'\ngit push origin main\n'",
+                      "git pu\\\nsh origin main", "coproc git push origin main", "coproc X { git push origin main ; }",
+                      "${NOPE:-git push} origin main", "git push origin ${NOPE[0]:-main}",
+                      "git push origin \"${NOPE:-$'\\x6dain'}\"", "shopt -s extglob\ngit push origin @(main)",
+                      "git push --no-verify origin $(echo HEAD):$(echo claude/)$(echo 7)",
+                      "git push --no-verify$(true) origin claude/7", "git push origin ${A:-ma}$(echo in)",
+                      "git push $(echo -)f origin claude/7", "mkdir +claude; touch +claude/7; git push origin ?claude/7",
+                      "touch :main; git push origin [:]main", "X=main; git push origin :$X"):
             with self.subTest(shape=shape):
                 self.assertIn(shape, texts)
         self.assertEqual(len(set(texts)), len(texts))
         self.assertEqual(len(g.argument_lists()), 1398, "a prefix changes what the guard reads, never git's words")
-        self.assertEqual(len(texts), 69667, "since F28's fix and its reviews env's assignments and its -S, 1,631 "
-                                            "more, and since F24's a seventh and an eighth wrapper, a quoted and a "
-                                            "process substitution, 16,776")
+        self.assertEqual(len(texts), 75034, "since F28's fix and its reviews env's assignments and its -S, 1,631 "
+                                            "more, since F24's a seventh and an eighth wrapper, a quoted and a "
+                                            "process substitution, 16,776, since F29's the words bash builds, "
+                                            "4,129, since its first review coproc and seven spellings, 1,126, and "
+                                            "since its second five spellings, 112")
         self.assertFalse(any(c.prefix in g.ABBREVIATED + g.ENV_ASSIGNED and (c.wrapper != "{}" or c.argv.startswith("-"))
                              for c in g.commands()), "an abbreviated wrapper is taken with the command alone")
         self.assertFalse(any(c.wrapper in (g.SPLIT, g.SPLIT_UNSET, g.SPLIT_MIXED) and (c.prefix or c.argv.startswith("-")) for c in g.commands()),
@@ -99,7 +117,7 @@ class TheGuardJudged(unittest.TestCase):
         self.assertLess(time.perf_counter() - began, BUDGET_SECONDS)
         self.assertEqual(judgement.missing, ())
         self.assertEqual(judgement.failures, {}, g.report(judgement))
-        self.assertEqual(judgement.commands, 69667)
+        self.assertEqual(judgement.commands, 75034)
         let_through = {d.why for d in judgement.classes if d.kind == "let through"}
         self.assertTrue(let_through)
         self.assertTrue(all("G11b" in why for why in let_through), let_through)
@@ -196,6 +214,66 @@ class TheGuardJudged(unittest.TestCase):
             self.assertEqual(sum(g.judge(commands=unset).failures.values()), 157,
                              "F28's review: ${NOPE} read only as written is the command")
 
+    def test_the_lane_bites_on_a_guard_that_reads_the_words_bash_builds_as_written(self):
+        """F29: under each mutant that undoes a part of the fix, the rows
+        of the grammar that part reads let forbidden pushes through, as on
+        the guard before the fix, and none on the fix."""
+        from validation import mutants
+
+        rows = {"every word read set, none unset": lambda c: c.prefix in ("$NOPE ", "${NOPE:-} ", "env $NOPE "),
+                "a $'...' read as a $ and a quoted span": lambda c: c.wrapper == g.ANSI_C_SPLIT,
+                "a line continuation read as ending a word's start": lambda c: c.wrapper == g.CONTINUED_COMMENT,
+                "arithmetic jumped over by the scan": lambda c: c.wrapper in (g.ARITHMETIC_BODY,
+                                                                                 g.QUOTED_ARITHMETIC_BODY),
+                "a word bash builds read as its text alone": lambda c: c.spelled and c.spelled.git != "git",
+                "braces read as written": lambda c: c.spelled and c.spelled.verb == "{push,}",
+                "an option bash builds read as written": lambda c: c.spelled and c.spelled.option[0],
+                "a name bash builds read as written": lambda c: c.spelled and "$(" in c.spelled.name[1]}
+        for name, row in rows.items():
+            with self.subTest(mutant=name):
+                commands = [c for c in g.commands() if row(c)]
+                self.assertTrue(commands)
+                self.assertEqual(g.judge(commands=commands).failures, {})
+                with mutants.switched_on(mutants.MUTANTS[name]):
+                    self.assertGreater(sum(g.judge(commands=commands).failures.values()), 0)
+
+    def test_the_lane_bites_on_a_guard_without_the_first_review_s_rules(self):
+        """F29's first and second reviews: under each mutant that undoes one of its
+        rules, the rows of the grammar that rule reads let a forbidden push
+        through, or refuse an allowed one, and none on the fix."""
+        from validation import mutants
+
+        def spelled(part, text):
+            """The commands whose spelling of part, as bash reads it, holds text."""
+            def holds(c):
+                written = getattr(c.spelled, part, "")
+                return text in (written[-1] if isinstance(written, tuple) else written)
+            return lambda c: bool(c.spelled) and holds(c)
+
+        rows = {"the hook's gate read with continuations in": spelled("verb", "\\\n"),
+                "coproc read as the command": lambda c: c.prefix in g.COPROCS or c.wrapper == g.NAMED_COPROC,
+                "coproc's name read as the command": lambda c: c.wrapper == g.NAMED_COPROC,
+                "a ${ } read as closing at its word's end": spelled("git", "${NOPE:-git"),
+                "an array's ${ } read as giving nothing": spelled("name", "[0]"),
+                "a $'...' in a default read as written": spelled("name", "$'"),
+                "extended patterns left unread": spelled("name", "@("),
+                "a word of expansions alone read as built": spelled("name", "$(echo HEAD)"),
+                "a refspec of holes read as : where each is nothing": spelled("name", "$(echo HEAD)"),
+                "a built option refused after a whole flag": spelled("option", "$(true)"),
+                # F29's second review.
+                "a default read as a hole alone": spelled("name", "${A:-ma}"),
+                "a word that may open with a dash read as no option": spelled("option", "$(echo -)f"),
+                "a pattern read as giving no +": spelled("name", "?claude/7"),
+                "a colon a pattern gives read as none": spelled("name", "[:]main"),
+                "a colon beside one hole kept as written": spelled("name", ":$X")}
+        for name, row in rows.items():
+            with self.subTest(mutant=name):
+                commands = [c for c in g.commands() if row(c)]
+                self.assertTrue(commands)
+                self.assertEqual(g.judge(commands=commands).failures, {})
+                with mutants.switched_on(mutants.MUTANTS[name]):
+                    self.assertGreater(sum(g.judge(commands=commands).failures.values()), 0)
+
     def test_the_lane_bites_on_a_guard_that_reads_a_command_whole_or_not_at_all(self):
         """F25: read whole and strictly, with no body told, the session's
         here-documents pair their bodies' apostrophes around the push, so
@@ -230,7 +308,7 @@ class TheGuardJudged(unittest.TestCase):
             with self.subTest(wrapper=wrapper):
                 self.assertEqual(g.judge(commands=commands).failures, {})
                 self.assertTrue(all(g.guard_refuses(c.text) == bare[c.prefix, c.argv] for c in commands[::7]))
-                with mock.patch.object(guard, "substituted", lambda command: ""):
+                with mock.patch.object(guard, "read_apart", lambda command: (command, "")):
                     self.assertEqual(sum(g.judge(commands=commands).failures.values()), 5670)
 
 
