@@ -76,9 +76,9 @@ SETTINGS = (("commit.gpgsign", "false"), ("init.defaultBranch", MAIN), ("gc.auto
 # The verbs a store makes with git; every other verb changes the model
 # alone, or reaches the store through the model's own methods (a rename,
 # a delete, a fetch).
-GIT_VERBS = frozenset({"claim", "claim-misnamed", "push-by-hand", "commit", "drop-claim-file", "merge-main",
-                       "rebase-main", "lease-onto", "lease-elsewhere", "push-old-head", "drop-commits", "carry-on",
-                       "merge", "merge-keep", "move-main"})
+GIT_VERBS = frozenset({"claim", "claim-misnamed", "claim-stacked", "stray-pull", "push-by-hand", "commit",
+                       "drop-claim-file", "merge-main", "rebase-main", "lease-onto", "lease-elsewhere", "push-old-head",
+                       "drop-commits", "carry-on", "merge", "merge-keep", "move-main"})
 EPOCH = int(T0.timestamp())
 # How many conflicts a rebase may stop at before the store calls it stuck.
 MOST_CONFLICTS = 50
@@ -335,6 +335,12 @@ class GitStore:
             return self.claim(model, actor, number, scope.files_of(number), when, name=args[1])
         if name == "push-by-hand":
             return self.claim(model, actor, number, scope.files_of(number), when, name=args[1], guarded=False)
+        if name == "claim-stacked":
+            return self.claim(model, actor, number, scope.files_of(number), when, base=verbs.claim_ref(args[1]))
+        if name == "stray-pull":
+            pushed_branch = self.claim(model, actor, number, scope.files_of(number), when,
+                                       name=verbs.stray_ref(number), guarded=False)
+            return verbs.opened_stray(model, actor, number, pushed_branch)
         if name == "commit":
             skew = args[1] if len(args) > 1 else 0
             return self.commit(model, actor, number, scope.files_of(number), iso(model.now + skew))
@@ -398,10 +404,13 @@ class GitStore:
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(text, encoding="utf-8")
 
-    def claim(self, model, worker, number, files, when, name=None, guarded=True):
+    def claim(self, model, worker, number, files, when, name=None, guarded=True, base=MAIN):
+        """The claim commit, the claim file alone, on main, or on another
+        claim's branch for a claim stacked on it (F31), pushed as
+        verbs.claim pushes it."""
         ref = name or verbs.claim_ref(number)
-        self.fetch_refs(worker, MAIN)
-        clone = self.start_from(worker, ref, f"origin/{MAIN}")
+        self.fetch_refs(worker, base)
+        clone = self.start_from(worker, ref, f"origin/{base}")
         self.write(clone, f"{CLAIM_DIR}/{number}.md", claim_text(number, worker, files))
         git(clone, "add", "-A", CLAIM_DIR, actor=worker)
         git(clone, "commit", "-q", "-m", f"Claim #{number}", actor=worker, when=when)
@@ -559,8 +568,11 @@ class GitStore:
         main, the branch's text before main's where both changed a path,
         the issue closed and the head deleted, unless the repository keeps
         head branches (keep_head, F22); the four events at once, or three
-        with the head kept (verbs.merge)."""
+        with the head kept (verbs.merge). GitHub refuses the merge of a
+        pull request the required check fails, as verbs.merge does (F30)."""
         pull = model.pulls[number]
+        if model.checked_merges and not verbs.passes_check(model, pull):
+            return verbs.REFUSED_MERGE
         self.fetch_refs(GITHUB, MAIN, pull.head)
         clone = self.start_from(GITHUB, MAIN, f"origin/{MAIN}")
         attempt = git(clone, "merge", "--no-ff", "--no-edit", "-m", f"Merge #{number}", f"origin/{pull.head}",

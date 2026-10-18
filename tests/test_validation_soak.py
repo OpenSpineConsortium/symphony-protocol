@@ -132,7 +132,11 @@ class TheFirstRunsLeads(unittest.TestCase):
             with self.subTest(lead=file.stem):
                 guarantee, detail = json.loads(file.read_text(encoding="ascii"))["violated"].split(" ", 1)
                 self.assertEqual(guarantee, file.stem.split("-")[0])
+                # The soak met the leads under the model before F30, whose
+                # owner merged what the required check fails, as two of them
+                # do on the way to their faults.
                 trace = replay.load(file)
+                trace = trace._replace(scenario=trace.scenario._replace(checked_merges=False))
                 with mock.patch.object(M.RepoModel, "delete_ref", delete_ref_keeping_pulls), \
                         mock.patch.object(invariants, "one_name_one_holder", holder_whatever_the_file), \
                         mock.patch.object(coordinator, "kept_released", mutants.kept_released_by_the_comment):

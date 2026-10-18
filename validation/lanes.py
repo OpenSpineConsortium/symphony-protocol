@@ -99,7 +99,7 @@ COUNTEREXAMPLES = "counterexamples"
 PARTS = ("search", "soak", "gate", "git", "guard", "conformance")
 
 # What --quick runs: a few steps of everything, for a look and for the tests.
-QUICK = {"depths": {"E-two": 3, "E-deep": 4, "E-faults": 2, "E-activity": 2}, "soak_seeds": 4, "soak_steps": 40,
+QUICK = {"depths": {"E-two": 3, "E-deep": 4, "E-faults": 2, "E-activity": 2, "E-reopen": 2}, "soak_seeds": 4, "soak_steps": 40,
          "soak_chunk": 2, "conformance_paths": 6, "conformance_length": 4, "gate_depth": 4, "gate_sequences": 3,
          "gate_length": 8}
 

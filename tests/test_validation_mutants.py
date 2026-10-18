@@ -122,6 +122,16 @@ TRACES = {
     "claimed put back after the close read as the ended claim's": "the regression traces",
     "a claim made since the close read as an undo": "the regression traces",
     "an undo after an ended claim read as the claim's": "the regression traces",
+    # F30's one, the rule GitHub's refusal of the owner's merge rests on:
+    # F30's trace is its catcher, at b's marking ready.
+    "a ready pull request's claim file let through": "the regression traces",
+    # F31's three, one for each rule of the change a pull request makes:
+    # F31's trace is their catcher, at carol's pull request and at b's
+    # stacked draft, and the search of claim files that stray catches
+    # each of them too.
+    "a claim file of another issue let through": "the regression traces",
+    "a claim branch's every claim file its own": "the regression traces",
+    "a pull request that is no claim's let carry a claim file": "the regression traces",
     "a long option read only in full": "the regression traces",
     "env's abbreviated --chdir not read": "the regression traces",
     "an optional value taken from the next word": "the regression traces",
@@ -485,13 +495,18 @@ class TheLane(unittest.TestCase):
         review five: a default read as a hole alone, a word that may open
         with a dash read as no option, a pattern read as giving no +, a
         colon a pattern gives read as none and a colon beside one hole
-        kept as written, 221. 206 passed 200, so the bound was widened to
-        250 with F29's fix,
-        as F23's fix widened it from 150: the lane grows by a mutant for each
+        kept as written, 221; and F30's fix, in the harness, one of the rule
+        its refusal of the owner's merge rests on, a ready pull request's
+        claim file let through, 222; and F31's fix three, one for each
+        rule of the change a pull request makes: a claim file of another
+        issue let through, a claim branch's every claim file its own and
+        a pull request that is no claim's let carry a claim file, 225. 206
+        passed 200, so the bound was widened to 250 with F29's fix, as
+        F23's fix widened it from 150: the lane grows by a mutant for each
         rule a fix adds, and the guard's reading of bash is the part of the
         library that grows most."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
-        self.assertEqual(len(mutants.MUTANTS), 221)
+        self.assertEqual(len(mutants.MUTANTS), 225)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
@@ -603,16 +618,17 @@ class TheLane(unittest.TestCase):
 
     def test_the_lanes_come_first_then_the_searches_cheapest_first_then_the_two_widest_lanes(self):
         self.assertEqual([c.name for c in mutants.CATCHERS[:len(LANES)]], list(LANES))
-        self.assertEqual(mutants.SEARCHES[-9].name, "a stranger's pull request from a fork on a due claim")
-        self.assertEqual(mutants.SEARCHES[-8].name, "a stranger's pull request from a due claim's own branch")
-        self.assertEqual(mutants.SEARCHES[-7].name, "a stranger's pull request from a due claim's own branch, GitHub "
+        self.assertEqual(mutants.SEARCHES[-10].name, "a stranger's pull request from a fork on a due claim")
+        self.assertEqual(mutants.SEARCHES[-9].name, "a stranger's pull request from a due claim's own branch")
+        self.assertEqual(mutants.SEARCHES[-8].name, "a stranger's pull request from a due claim's own branch, GitHub "
                                                     "refusing to say who may write")
-        self.assertEqual(mutants.SEARCHES[-6].name, "the holder back between the halves of a run")
-        self.assertEqual(mutants.SEARCHES[-5].name, "a stranger's marker on overlapping claims")
-        self.assertEqual(mutants.SEARCHES[-4].name, "a reopened issue after a release and a later claim")
-        self.assertEqual(mutants.SEARCHES[-3].name, "a release undone on a reopened issue")
-        self.assertEqual(mutants.SEARCHES[-2].name, "a claim since a reopen ended by deleting its branch")
-        self.assertEqual(mutants.SEARCHES[-1].name, "an undo after a claim since a reopen ended")
+        self.assertEqual(mutants.SEARCHES[-7].name, "the holder back between the halves of a run")
+        self.assertEqual(mutants.SEARCHES[-6].name, "a stranger's marker on overlapping claims")
+        self.assertEqual(mutants.SEARCHES[-5].name, "a reopened issue after a release and a later claim")
+        self.assertEqual(mutants.SEARCHES[-4].name, "a release undone on a reopened issue")
+        self.assertEqual(mutants.SEARCHES[-3].name, "a claim since a reopen ended by deleting its branch")
+        self.assertEqual(mutants.SEARCHES[-2].name, "an undo after a claim since a reopen ended")
+        self.assertEqual(mutants.SEARCHES[-1].name, "claim files that stray")
         self.assertEqual(mutants.CATCHERS[len(LANES):-2], mutants.SEARCHES)
         self.assertIs(mutants.CATCHERS[-2], mutants.PICKING)
         self.assertIs(mutants.CATCHERS[-1], mutants.LABEL_MIXES)

@@ -41,7 +41,7 @@ from typing import NamedTuple
 
 from sdlc_protocol import board, claims, protocol_check, team
 
-from . import cycle, oracle, page
+from . import cycle, oracle, page, verbs
 from .fake_github import head_repo
 from .model import BOT, REPO, T0, iso
 
@@ -67,10 +67,8 @@ FAILED_READ = 500
 # branch stands (F9) and when a branch began (F13), so a run that fails
 # over one of them breaks G15.
 READS_DONE_WITHOUT = ("/compare/", "/activity")
-# A body that closes issue N, as GitHub reads one: a closing keyword, in
-# any case, then #N and no further digit (spec, Finish: the body says
-# "Closes #N"; Rules: "the body closes its issue").
-CLOSES = r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#%d\b"
+# A body that closes issue N, as GitHub reads one (oracle.CLOSES).
+CLOSES = oracle.CLOSES
 # The client's waits for a rate limit as README.md's What a board run
 # costs promises them, written out here so the harness reads none of the
 # library's constants (adapters.github.RATE_*): where GitHub asks for no
@@ -303,21 +301,32 @@ def markers_once(model):
 
 
 def protocol_check_agrees(model):
-    """G12: the check's verdict on each open claim pull request is the
-    spec's, its claim file read at the head the pull request carries; one
-    from a fork fails it whatever else holds, since the branch lives in the
-    repository itself, never in a fork (spec, Rules)."""
+    """G12: the check's verdict on each open pull request is the spec's.
+    A claim's is judged by its claim file, read at the head the pull
+    request carries; one from a fork fails it whatever else holds, since
+    the branch lives in the repository itself, never in a fork; and one
+    from a branch that reads as a claim and claims nothing fails it (spec,
+    Rules). Every pull request, a claim's or not, fails it where it adds or
+    changes against main a claim file other than its own issue's on its own
+    claim branch (spec, Rules; F31), the change read as the check reads it:
+    the branch's own change and the test merge's (verbs.claim_files_changed)."""
     problems = []
     for pull in sorted(model.pulls.values(), key=lambda p: p.number):
         number, head = oracle.claim_number(pull.head), model.pull_head(pull)
-        if pull.state != "open" or number is None or not head:
+        if pull.state != "open" or not head:
             continue
-        has_file = model.tree(head).get(f"{oracle.CLAIM_DIR}{number}.md") is not None
+        changed = verbs.claim_files_changed(model, pull)
+        strays = [n for n in changed if pull.fork or n != number]
+        has_file = number is not None and model.tree(head).get(f"{oracle.CLAIM_DIR}{number}.md") is not None
         found = protocol_check.problems_for({"head": {"ref": pull.head, "repo": head_repo(pull)},
                                              "base": {"repo": {"full_name": REPO}}, "draft": pull.draft,
-                                             "body": pull.body}, has_file)
-        closes = re.search(CLOSES % number, pull.body) is not None
-        owed = pull.fork or (pull.draft and not has_file) or (not pull.draft and has_file) or not closes
+                                             "body": pull.body}, has_file, changed)
+        if number is None:
+            owed = oracle.reads_as_claim(pull.head) or bool(strays)
+        else:
+            closes = re.search(CLOSES % number, pull.body) is not None
+            owed = (pull.fork or (pull.draft and not has_file) or (not pull.draft and has_file) or not closes
+                    or bool(strays))
         if bool(found) != owed:
             problems.append(Violation("G12", f"the protocol check says {found or 'no problem'} on #{pull.number}"))
     return problems

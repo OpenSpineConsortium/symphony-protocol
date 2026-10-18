@@ -216,12 +216,19 @@ SPEC = {
                      "activity lists for `claude/<issue>` at or after it",
     "read again": "It reads the issue again first and frees none that is closed by then",
     "same run": "which is released once its branch has gone a day without a commit, in the same run where it has",
+    "strays": "No pull request adds or changes a claim file other than its own issue's on its own claim branch",
+    "stray deleted": "A pull request that deletes a claim file, or any of those, passes",
 }
 
 CLAIM_PREFIX = "claude/"
 CLAIM_NUMBER = re.compile(r"[1-9][0-9]{0,8}")
 CLAIM_DIR = "docs/agents/claims/"
 FILES_HEADING = "## Files to touch"
+# A body that closes issue N, as GitHub reads one: a closing keyword, in
+# any case, then #N and no further digit (spec, Finish: the body says
+# "Closes #N"; Rules: "the body closes its issue"); the invariants and the
+# owner's merge (verbs.passes_check) read it alike.
+CLOSES = r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#%d\b"
 TODO, CLAIMED, IN_REVIEW, BLOCKER, EPIC, BLOCKED = "todo", "claimed", "in-review", "blocker", "epic", "blocked"
 WORKER_SPELLINGS = ("worker:", "account:", "agent:")
 # The lines of a claim file that name its worker (SPEC["worker line"]),

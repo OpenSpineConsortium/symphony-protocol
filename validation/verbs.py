@@ -39,7 +39,10 @@ no claim's either, and the claim's holder may close one to open its own
 GitHub then says was reopened, and may merge a pull request in a
 repository that keeps its head branches (F22); where its deletes is on,
 the owner closes a claim's pull request without a merge and deletes its
-branch while the issue stays open (F22's third review).
+branch while the issue stays open (F22's third review). The owner merges
+only a pull request the required check passes, as the default branch's
+ruleset, which no one bypasses, makes GitHub hold it to: one marked ready
+whose claim file is gone and whose body closes its issue (F30).
 
 Two comments a person can write that look like the coordinator's, offered
 where the scope has more than one issue: a worker's comment that quotes
@@ -63,6 +66,7 @@ between them.
 """
 
 import os
+import re
 from typing import NamedTuple
 
 from sdlc_protocol import guard
@@ -490,9 +494,12 @@ class Scope(NamedTuple):
     opens pull requests from a fork whose branch bears a claim's name
     (F17), whether a stranger opens them from a claim's own branch
     here (F19), whether the owner reopens closed issues and merges
-    keeping the head branch (F22), and whether the owner closes a claim's
+    keeping the head branch (F22), whether the owner closes a claim's
     pull request unmerged and deletes its branch on an open issue (F22's
-    third review)."""
+    third review), and whether claim files stray (F31): carol, who may
+    write, opens a pull request that is no claim's carrying an issue's
+    claim file, and a worker claims an issue from another claim's branch,
+    whose claim file its own then carries."""
 
     workers: tuple = ("a", "b")
     issues: tuple = (1,)
@@ -508,6 +515,7 @@ class Scope(NamedTuple):
     strangers: bool = False
     reopens: bool = False
     deletes: bool = False
+    strays: bool = False
 
     def files_of(self, number):
         return dict(self.files).get(number, (f"src/{number}.py",))
@@ -664,15 +672,16 @@ def apply_pull_change(model, pull):
 
 # --- the verbs ----------------------------------------------------------------
 
-def claim(model, worker, number, files, skew=0, name=None, guarded=True):
-    """Push the claim commit, the claim file alone, from main. A name that
+def claim(model, worker, number, files, skew=0, name=None, guarded=True, base=MAIN):
+    """Push the claim commit, the claim file alone, from main, or from
+    another claim's branch for a claim stacked on it (F31). A name that
     reads as a claim and claims nothing, as claude/03, is a shape the rules
     forbid (spec/PROTOCOL.md, Claim); a person's push by hand, outside a
     session, meets no guard."""
     ref = name or claim_ref(number)
-    tree = model.tree(model.refs[MAIN])
+    tree = model.tree(model.refs[base])
     tree[f"{CLAIM_DIR}/{number}.md"] = claim_text(number, worker, files)
-    sha = model.commit((model.refs[MAIN],), worker, tree, f"Claim #{number}", skew)
+    sha = model.commit((model.refs[base],), worker, tree, f"Claim #{number}", skew)
     return pushed(model, worker, ref, sha, f"git push origin {ref}", allowed=not oracle.reads_as_claim(ref),
                   guarded=guarded)
 
@@ -954,6 +963,37 @@ def close_pull(model, number):
     return Outcome(True, "closed", events=((cycle.PULL_REQUEST, ""),))
 
 
+def stray_ref(number):
+    """The branch of carol's own that carries issue number's claim file
+    (F31)."""
+    return f"notes/{number}"
+
+
+def stray_pull(model, writer, number, files):
+    """carol, who may write, pushes a branch of her own from main whose one
+    commit adds issue number's claim file, as a careless copy of a claim
+    would, and opens a pull request from it to main, ready and closing
+    nothing: a pull request that is no claim's, which the protocol check
+    fails since F31, so no merge of it puts a claim on the issue on the
+    default branch. She pushes by hand, as a person outside a session
+    does."""
+    return opened_stray(model, writer, number, claim(model, writer, number, files, name=stray_ref(number),
+                                                     guarded=False))
+
+
+def opened_stray(model, writer, number, pushed_branch):
+    """The ready pull request from carol's branch, once the push is taken."""
+    if not pushed_branch.taken:
+        return pushed_branch
+    pull = PullRequest(model.next_pull, stray_ref(number), writer, f"Notes for issue {number}.",
+                       f"Notes for issue {number}", draft=False, opened_at=model.now, updated_at=model.now,
+                       association=ASSOCIATIONS[writer])
+    model.pulls[pull.number] = pull
+    model.next_pull += 1
+    return pushed_branch._replace(note=f"pushed {pull.head} and opened #{pull.number}",
+                                  events=pushed_branch.events + ((cycle.PULL_REQUEST, ""),))
+
+
 def open_fork_pull(model, number):
     """sam's open pull request from the fork's claude/<number>, or None."""
     return next((p for p in model.pulls.values() if p.fork and p.state == "open" and p.head == claim_ref(number)),
@@ -967,12 +1007,95 @@ def mark_ready(model, number):
     return Outcome(True, "marked ready")
 
 
+def passes_check(model, pull):
+    """Whether the required check passes a pull request ready to merge, as
+    the protocol check it runs reads one (spec, Rules: "the claim file is
+    there while the pull request is a draft, gone once it is ready, the
+    body closes its issue, and the branch lives in the repository itself,
+    never in a fork"): a
+    claim's branch here, its claim file gone at the head and its body
+    closing the issue; one from a branch that reads as a claim and claims
+    nothing, as claude/03, fails it (spec, Rules: "a pull request from a
+    branch that reads as a claim and claims nothing, as `claude/03`, fails
+    it"), and one from any other branch passes it where it is ready,
+    since GitHub merges no draft. The default branch takes only a pull
+    request the check passes, with no one to bypass the rule
+    (symphony-template's docs/setup/ruleset-main.json and ruleset-org.json:
+    required_status_checks "check", bypass_actors empty), so GitHub
+    refuses the owner's merge of any other (F30). A claim file still
+    reaches main where the check lets it through: a pull request that is
+    no claim's adding one, or a claim's carrying another issue's, until
+    the check judged the change a pull request makes to main (F31): since
+    then one that adds or changes a claim file other than its own issue's
+    on its own claim branch fails it too (oracle.SPEC["strays"]), and one
+    that deletes a claim file is judged as any other
+    (oracle.SPEC["stray deleted"]; claim_files_changed).
+    This reads the claim file at the pull request's head where the real
+    check reads the merge ref's checkout; the two agree while main holds
+    no claim file."""
+    number = oracle.claim_number(pull.head)
+    if strays_of(model, pull):
+        return False
+    if number is None:
+        return not pull.draft and not oracle.reads_as_claim(pull.head)
+    has_file = model.tree(model.pull_head(pull)).get(f"{CLAIM_DIR}/{number}.md") is not None
+    closes = re.search(oracle.CLOSES % number, pull.body) is not None
+    return not pull.fork and not pull.draft and not has_file and closes
+
+
+def claim_files_changed(model, pull):
+    """The issues whose claim file a pull request adds or changes, as the
+    protocol check reads its change (F31 and its review): the branch's own
+    change, from where it left main to its head, and the change of the
+    merge GitHub tests against main, either one counting. A path counts
+    where it is docs/agents/claims/<n>.md, n spelled as a claim's number
+    is, and the newer side holds it with a text the older does not; a file
+    deleted counts for nothing, so a pull request that takes a stale claim
+    file off main is judged as any other."""
+    head = model.pull_head(pull)
+    if not head:
+        return ()
+    main = model.refs[MAIN]
+    left = model.merge_base(head, main)
+    return tuple(sorted(claim_numbers_added(model.tree(left), model.tree(head))
+                        | claim_numbers_added(model.tree(main), merged_tree(model, head, main))))
+
+
+def claim_numbers_added(before, after):
+    """The claim files a tree after holds with a text the tree before does
+    not, by issue."""
+    found = set()
+    for path, text in after.items():
+        folder, _, name = path.rpartition("/")
+        if (folder == CLAIM_DIR and name.endswith(".md") and oracle.CLAIM_NUMBER.fullmatch(name[:-len(".md")])
+                and before.get(path) != text):
+            found.add(int(name[:-len(".md")]))
+    return found
+
+
+def strays_of(model, pull):
+    """The claim files a pull request adds or changes that are not its own:
+    every one, but its own issue's on its own claim branch here, never in a
+    fork (spec, Rules; F31)."""
+    own = oracle.claim_number(pull.head) if not pull.fork else None
+    return tuple(n for n in claim_files_changed(model, pull) if n != own)
+
+
+# What GitHub does with the merge of a pull request the required check
+# fails: nothing (passes_check; F30).
+REFUSED_MERGE = Outcome(False, "the required check fails, so GitHub refuses the merge")
+
+
 def merge(model, number, keep_head=False):
     """The owner merges a pull request: main gets a merge commit, the issue
     its body closes is closed, and the repository deletes the head, unless
     it keeps head branches (keep_head, F22); GitHub fires the four events
-    at once (DESIGN.md, F12), or three with the head kept."""
+    at once (DESIGN.md, F12), or three with the head kept. GitHub refuses
+    the merge of a pull request the required check fails (passes_check;
+    F30), and nothing changes."""
     pull = model.pulls[number]
+    if model.checked_merges and not passes_check(model, pull):
+        return REFUSED_MERGE
     head, main = model.refs[pull.head], model.refs[MAIN]
     model.refs[MAIN] = model.commit((main, head), OWNER, merged_tree(model, head, main), f"Merge #{number}")
     pull.state, pull.merged_at = "merged", model.now
@@ -1036,7 +1159,13 @@ def delete_claim_branch(model, number):
 
 def rename_back(model, number, released_ref):
     """A person renames the branch back by hand: a branch made and one
-    deleted, as GitHub tells the workflow of a rename."""
+    deleted, as GitHub tells the workflow of a rename. GitHub refuses a
+    rename to the name of a branch that stands, as git refuses to make a
+    second branch of one name, so where claude/<n> stands, as it does where
+    GitHub refused the merge that would have deleted it (F30), nothing
+    changes; the checker offers the verb only where the name is free."""
+    if claim_ref(number) in model.refs:
+        return Outcome(False, "a branch of that name stands, so GitHub refuses the rename")
     model.rename_ref(released_ref, claim_ref(number))
     return Outcome(True, "renamed back", events=((cycle.CREATE, claim_ref(number)), (cycle.DELETE, MAIN)))
 
@@ -1116,6 +1245,10 @@ def act(model, verb, scope):
         return claim(model, actor, number, scope.files_of(number), *args[1:])
     if name == "claim-misnamed":
         return claim(model, actor, number, scope.files_of(number), name=args[1])
+    if name == "claim-stacked":
+        return claim(model, actor, number, scope.files_of(number), base=claim_ref(args[1]))
+    if name == "stray-pull":
+        return stray_pull(model, actor, number, scope.files_of(number))
     if name == "push-by-hand":
         return claim(model, actor, number, scope.files_of(number), name=args[1], guarded=False)
     if name == "commit":
@@ -1238,6 +1371,8 @@ def issue_verbs(model, scope, number):
         found += fork_verbs(model, number)
     if scope.strangers and issue.state == "open":
         found += stranger_verbs(model, number, pull)
+    if scope.strays and CAROL in scope.people and issue.state == "open" and stray_ref(number) not in model.refs:
+        found.append(Verb("stray-pull", CAROL, (number,)))
     if OWNER in scope.people:
         found += owner_verbs(model, number, pull, scope)
         misnamed = f"{CLAIM_PREFIX}0{number}"
@@ -1255,6 +1390,9 @@ def worker_verbs(model, scope, number, worker, pull):
         for old in released_refs(model, number):
             if model.creators.get(old) == worker:
                 found.append(Verb("push-old-head", worker, (number, old)))
+        if scope.strays:
+            found += [Verb("claim-stacked", worker, (number, other)) for other in others(scope, number)
+                      if claim_ref(other) in model.refs]
     if scope.careless and issue.state == "open":
         if ref in model.refs and holder(model, number) != worker:
             found.append(Verb("lease-onto", worker, (number,)))
@@ -1319,7 +1457,7 @@ def others(scope, number):
 def owner_verbs(model, number, pull, scope=Scope()):
     issue, ref = model.issues[number], claim_ref(number)
     found = []
-    if pull is not None and not pull.draft and model.standing(ref) != "dirty":
+    if pull is not None and model.standing(ref) != "dirty" and passes_check(model, pull):
         found.append(Verb("merge", OWNER, (pull.number,)))
         if scope.reopens:
             found.append(Verb("merge-keep", OWNER, (pull.number,)))
