@@ -19,12 +19,18 @@ forgot them cannot merge however the session that made it was feeling:
   branch, once it brought the default branch in, as that file's worker's
   (F31). Deleting a claim file passes, so a stale one on the default
   branch can always be taken off.
+- Nor does one make the claim folder, or a folder above it, anything but
+  a folder, make a claim file a link, or add a path that is the claim
+  folder's but for its letters' case: each would have a checkout show
+  claim files git does not hold (claim_folder_problems).
 
 Any other head branch, dependabot's or a person's, is not a claim and
 passes but for the claim files it adds or changes. The pull request is
 the object GitHub's event carries; whether the claim file exists in the
 checkout, and which claim files the change adds or changes, are the
-caller's to say, so nothing here reads a file.
+caller's to say, so nothing here reads a file; a caller that names no
+changed claim files (problems_for's two-argument form, as a consumer
+written before F31 calls it) is judged on the head's own claim file alone.
 """
 
 import re
@@ -67,19 +73,71 @@ def claim_file_number(path):
     return number_in(name[:-len(".md")])
 
 
-def claim_files_changed(name_status):
-    """The issues whose claim files a diff adds or changes, in number
-    order, from `git diff --no-renames --name-status -z` output (bytes or
-    text): a status, then its path, each ended by a NUL. A deleted file
-    is left out, since taking a claim file off frees what it held."""
-    text = name_status.decode("utf-8", "surrogateescape") if isinstance(name_status, bytes) else name_status
+# The folders a claim file's path runs through, the claim folder last: a
+# change that makes one of them anything but a folder, a symbolic link
+# above all, makes the files the default branch shows there other than
+# the ones git holds (F31's review).
+CLAIM_FOLDERS = tuple("/".join(CLAIM_DIR.split("/")[:n]) for n in range(1, CLAIM_DIR.count("/") + 2))
+# The modes of a file git holds as its own text: a claim file is one of
+# them, never a symbolic link (120000) or a submodule (160000).
+FILE_MODES = ("100644", "100755")
+
+
+def raw_changes(raw):
+    """Each entry of `git diff --raw --no-renames -z` output (bytes or
+    text) as (status, old mode, new mode, path): a colon, the two modes,
+    the two object names and the status, then the path, each ended by a
+    NUL. An entry that does not hold together is left out."""
+    text = raw.decode("utf-8", "surrogateescape") if isinstance(raw, bytes) else raw
     fields = text.split("\0")
-    found = set()
-    for status, path in zip(fields[0::2], fields[1::2]):
-        number = claim_file_number(path)
-        if number is not None and not status.startswith("D"):
-            found.add(number)
-    return sorted(found)
+    found = []
+    for meta, path in zip(fields[0::2], fields[1::2]):
+        parts = meta[1:].split() if meta.startswith(":") else []
+        if len(parts) == 5 and path:
+            found.append((parts[4], parts[0], parts[1], path))
+    return found
+
+
+def claim_files_changed(raw):
+    """The issues whose claim files a diff adds or changes, in number
+    order, from `git diff --raw --no-renames -z` output (raw_changes). A
+    deleted file is left out, since taking a claim file off frees what it
+    held."""
+    return sorted({claim_file_number(path) for status, _, _, path in raw_changes(raw)
+                   if not status.startswith("D") and claim_file_number(path) is not None})
+
+
+def claim_folder_problems(raw):
+    """The problems of a diff that changes what the claim files are rather
+    than which (F31's review): the claim folder, or a folder above it,
+    made a file, a symbolic link or a submodule, so the default branch's
+    checkout would show claim files git does not hold; a claim file made a
+    symbolic link or a submodule; and a path that is a claim folder's or a
+    claim file's but for the case of its letters, which a checkout on a
+    file system that folds case reads as the claim folder. Deleting any of
+    them passes, as deleting a claim file does."""
+    problems = []
+    for status, _, mode, path in raw_changes(raw):
+        if status.startswith("D"):
+            continue
+        if path in CLAIM_FOLDERS:
+            problems.append(f"{path} is made something other than a folder here (mode {mode}), so the claim files "
+                            f"the default branch shows would not be the ones git holds ({PROTOCOL}, Rules)")
+        elif claim_file_number(path) is not None and mode not in FILE_MODES:
+            problems.append(f"{path} is made a link or a submodule here (mode {mode}), and a claim file is a file "
+                            f"git holds ({PROTOCOL}, Rules)")
+        elif folds_into_claims(path):
+            problems.append(f"{path} is the claim folder's path but for the case of its letters, which a checkout "
+                            f"that folds case reads as {CLAIM_DIR} ({PROTOCOL}, Rules)")
+    return problems
+
+
+def folds_into_claims(path):
+    """Whether a path is a claim folder's, or lies in the claim folder,
+    when case is folded, and is not, as it is written."""
+    folded, own = path.casefold(), (path in CLAIM_FOLDERS or path.startswith(CLAIM_DIR + "/"))
+    inside = folded in {f.casefold() for f in CLAIM_FOLDERS} or folded.startswith(CLAIM_DIR.casefold() + "/")
+    return inside and not own
 
 
 def stray_claim_files(pull, changed_claims):

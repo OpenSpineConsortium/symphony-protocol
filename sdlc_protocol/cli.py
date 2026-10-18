@@ -261,47 +261,132 @@ def git_output(args, root):
     return done.stdout if done.returncode == 0 else None
 
 
-def merge_base_of(root, pull):
-    """The commit a pull request's change is read against: the checked-out
-    merge commit's first parent, the base branch as GitHub merged it into
-    refs/pull/<n>/merge, which is what actions/checkout gives a
-    pull_request event, a fork's among them; else, for a checkout of one
-    commit, the event's base.sha. The commit's own object names its
-    parents even in a clone of depth 1, where HEAD^1 is not there."""
-    commit = git_output(["cat-file", "commit", "HEAD"], root)
-    if commit is None:
+UNREAD = "the claim files this pull request changes could not be read: "
+# How far a shallow clone is deepened, in turn, to find where a pull
+# request's branch left its base; the last step takes the whole history.
+DEEPENINGS = (("--deepen=64",), ("--deepen=512",), ("--unshallow",))
+
+
+def event_sha(side):
+    """A commit an event's head or base names, or None where it names
+    none git could take as one."""
+    sha = (side or {}).get("sha")
+    return sha if isinstance(sha, str) and 7 <= len(sha) <= 64 and sha.isascii() and sha.isalnum() else None
+
+
+def parents_of(root, commit):
+    """The parents a commit's own object names, which a clone of depth 1
+    still holds where commit^1 is not there; None where git cannot read
+    it."""
+    text = git_output(["cat-file", "commit", commit], root)
+    if text is None:
         return None
-    parents = [line.split()[1] for line in commit.decode("ascii", "replace").splitlines()
-               if line.startswith("parent ") and len(line.split()) == 2]
-    if len(parents) >= 2:
-        return parents[0]
-    sha = ((pull.get("base") or {}).get("sha") or "")
-    return sha if isinstance(sha, str) and sha.isascii() and sha.isalnum() else None
+    return [line.split()[1] for line in text.decode("ascii", "replace").splitlines()
+            if line.startswith("parent ") and len(line.split()) == 2]
+
+
+def has_commit(root, sha):
+    return git_output(["cat-file", "-e", f"{sha}^{{commit}}"], root) is not None
+
+
+def fetched(root, sha):
+    """Whether the commit is in the clone, fetched one deep from origin
+    where it was not, as actions/checkout's default depth of 1 leaves it
+    out; origin is the base repository, which holds a fork's head too."""
+    if not has_commit(root, sha):
+        git_output(["fetch", "--quiet", "--no-tags", "--depth=1", "origin", sha], root)
+    return has_commit(root, sha)
+
+
+def merge_base(root, one, two):
+    """Where the branch at two left one, git's merge base, deepening a
+    shallow clone step by step until git finds it; None where it never
+    does, which the check fails on rather than guess."""
+    for deepening in ((),) + DEEPENINGS:
+        if deepening:
+            shallow = git_output(["rev-parse", "--is-shallow-repository"], root)
+            if shallow is None or shallow.strip() != b"true":
+                return None
+            git_output(["fetch", "--quiet", "--no-tags", *deepening, "origin", one, two], root)
+        found = git_output(["merge-base", one, two], root)
+        if found is not None and found.strip():
+            return found.decode("ascii", "replace").strip()
+    return None
+
+
+def tip_of(root, pull, base):
+    """The commit whose change is the pull request's own, and whether the
+    checkout is GitHub's test merge: where HEAD is a merge whose first
+    parent is the base and whose second is the head the event names (or
+    the event names none), the head is that second parent; any other
+    checkout, a head commit that is itself a merge among them, is the
+    tip itself."""
+    parents = parents_of(root, "HEAD")
+    if parents is None:
+        return None, False
+    head = event_sha(pull.get("head"))
+    if len(parents) == 2 and parents[0] == base and (head is None or parents[1] == head):
+        return parents[1], True
+    return "HEAD", False
+
+
+def changes_between(root, older, newer):
+    """`git diff --raw` from older to newer over every path that is the
+    claim folder's or a folder above it, in any case, or None."""
+    return git_output(["diff", "--no-renames", "--raw", "-z", older, newer, "--",
+                       f":(icase){claims.CLAIM_DIR.split('/')[0]}"], root)
+
+
+def change_of(root, pull):
+    """The diffs a pull request's change is judged by, read with git from
+    the checkout the check runs in, or why they could not be read: the
+    branch's own change, from where it left the base to its tip (git's
+    three dots), so a file the base also holds, which the merge leaves
+    alone, still counts where the branch added it; and, in GitHub's test
+    merge, the merge's change against the base as well."""
+    base = event_sha(pull.get("base"))
+    if base is None:
+        return None, "the event names no base commit"
+    if not fetched(root, base):
+        return None, f"the base commit {base[:12]} could not be fetched"
+    tip, test_merge = tip_of(root, pull, base)
+    if tip is None:
+        return None, "git could not read the checked-out commit"
+    if tip != "HEAD" and not fetched(root, tip):
+        return None, f"the head commit {tip[:12]} could not be fetched"
+    left = merge_base(root, base, tip)
+    if left is None:
+        return None, f"git found no commit where the branch left {base[:12]}"
+    pairs = [(left, tip)] + ([(base, "HEAD")] if test_merge else [])
+    diffs = [changes_between(root, older, newer) for older, newer in pairs]
+    if any(d is None for d in diffs):
+        return None, f"git could not compare {base[:12]} with the checkout"
+    return diffs, ""
 
 
 def changed_claims_in(root, pull):
-    """The issues whose claim files the pull request adds or changes
-    against its base, read with git from the checkout (protocol_check.
-    claim_files_changed), and what went wrong where they could not be:
-    ((), "") where root is no git checkout's top, as a test's folder is,
-    where nothing is judged; (numbers, "") where the diff was read; and ((), why) where
-    the checkout is git's but the diff could not be read, which the check
-    then fails on, since a claim file it cannot see may be the one it is
-    there to stop (F31). The base is fetched, one commit deep, where the
-    checkout lacks it, as actions/checkout's default depth of 1 does."""
+    """The issues whose claim files the pull request adds or changes and
+    the problems of what it does to the claim folder, read from the
+    checkout (change_of), as (numbers, problems): ((), []) where root holds
+    no .git, as a test's scratch folder does, where nothing is judged;
+    and where it holds one, every problem, a reason the change could not
+    be read among them, since a claim file the check cannot see may be the
+    one it is there to stop (F31 and its review): git missing or refusing
+    the checkout, a checkout whose top is another folder, a base or head
+    that cannot be fetched or a branch whose merge base is never found."""
+    if not (Path(root) / ".git").exists():
+        return (), []
     top = git_output(["rev-parse", "--show-toplevel"], root)
-    if top is None or Path(os.fsdecode(top.strip())).resolve() != Path(root).resolve():
-        return (), ""
-    base = merge_base_of(root, pull)
-    if base is None:
-        return (), "the claim files this pull request changes could not be read: no base commit to compare with"
-    if git_output(["cat-file", "-e", f"{base}^{{tree}}"], root) is None:
-        git_output(["fetch", "--quiet", "--no-tags", "--depth=1", "origin", base], root)
-    diff = git_output(["diff", "--no-renames", "--name-status", "-z", base, "HEAD", "--", claims.CLAIM_DIR], root)
-    if diff is None:
-        return (), f"the claim files this pull request changes could not be read: git could not compare {base[:12]} " \
-                   f"with the checkout"
-    return tuple(protocol_check.claim_files_changed(diff)), ""
+    if top is None:
+        return (), [UNREAD + "git is missing or will not read the checkout"]
+    if Path(os.fsdecode(top.strip())).resolve() != Path(root).resolve():
+        return (), [UNREAD + f"the checkout's top is {os.fsdecode(top.strip())}, not the folder the check runs in"]
+    diffs, why = change_of(root, pull)
+    if diffs is None:
+        return (), [UNREAD + why]
+    numbers = sorted({n for diff in diffs for n in protocol_check.claim_files_changed(diff)})
+    problems = list(dict.fromkeys(p for diff in diffs for p in protocol_check.claim_folder_problems(diff)))
+    return tuple(numbers), problems
 
 
 def run_check(argv, environ=None, root="."):
@@ -318,10 +403,10 @@ def run_check(argv, environ=None, root="."):
         print(why_not)
         return 0
     pull = event.get("pull_request") or {}
-    changed, unread = changed_claims_in(root, pull) if pull else ((), "")
+    changed, unread = changed_claims_in(root, pull) if pull else ((), [])
     problems = protocol_check.problems_for(
         pull, lambda number: (Path(root) / claims.claim_path(number)).is_file(), changed)
-    problems += [unread] if unread else []
+    problems += unread
     for problem in problems:
         print(problem)
     if problems:

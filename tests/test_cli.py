@@ -768,84 +768,285 @@ class Check(unittest.TestCase):
             self.assertEqual(self.check(raw=raw)[:2], (0, "the event is not readable; nothing checked\n"), raw)
 
 
+# Git's own housekeeping, off in every scratch repository and in the
+# environment, so a detached gc never races a test's cleanup.
+QUIET_GIT = (("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false"),
+             ("maintenance.autoDetach", "false"), ("receive.autogc", "false"))
+
+
 def git(where, *args):
-    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "gc.auto=0",
-                           "-c", "maintenance.auto=false", "-c", "protocol.file.allow=always", *args],
-                          cwd=where, capture_output=True, check=True, text=True).stdout
+    settings = [word for key, value in QUIET_GIT for word in ("-c", f"{key}={value}")]
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always",
+                           *settings, *args], cwd=where, capture_output=True, check=True, text=True).stdout
+
+
+def quiet(repository):
+    for key, value in QUIET_GIT:
+        git(repository, "config", key, value)
+    git(repository, "config", "protocol.file.allow", "always")
+
+
+class Origin:
+    """A repository a pull request is made in: main with a claim folder
+    holding only its README, and commits made on any branch."""
+
+    def __init__(self, folder):
+        self.folder = Path(folder)
+        self.path = self.folder / "origin"
+        self.path.mkdir()
+        git(self.path, "init", "-q", "-b", "main")
+        quiet(self.path)
+        self.commit("main", {"docs/agents/claims/README.md": "r\n", "a.txt": "a\n"})
+
+    def sha(self, ref):
+        return git(self.path, "rev-parse", ref).strip()
+
+    def commit(self, branch, files, links=()):
+        """A commit on branch, made from main where the branch is new:
+        files maps a path to its text, or to None to delete it; links
+        maps a path to the target of a symbolic link made there."""
+        known = git(self.path, "branch", "--list", branch).strip()
+        if git(self.path, "branch", "--list", "main").strip():
+            git(self.path, "checkout", "-q", *(["-B", branch, "main"] if not known else [branch]))
+        for path, text in files.items():
+            target = self.path / path
+            if text is None:
+                git(self.path, "rm", "-q", "-r", "--", path)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="ascii")
+        for path, aim in dict(links).items():
+            git(self.path, "rm", "-q", "-r", "--ignore-unmatch", "--", path)
+            target = self.path / path
+            if target.is_dir() and not target.is_symlink():
+                target.rmdir() if not any(target.iterdir()) else None
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(aim)
+        git(self.path, "add", "-A")
+        git(self.path, "commit", "-q", "--allow-empty", "-m", f"on {branch}")
+        sha = self.sha(branch)
+        git(self.path, "checkout", "-q", "main")
+        return sha
+
+    def merge_in(self, branch, other):
+        """The branch brings other in by a merge commit of its own."""
+        git(self.path, "checkout", "-q", branch)
+        git(self.path, "merge", "-q", "--no-ff", "--no-edit", other)
+        git(self.path, "checkout", "-q", "main")
+        return self.sha(branch)
+
+    def test_merge(self, branch):
+        """refs/pull/1/merge as GitHub makes it: main first, the head
+        second."""
+        git(self.path, "checkout", "-q", "--detach", "main")
+        git(self.path, "merge", "-q", "--no-ff", "--no-edit", branch)
+        git(self.path, "update-ref", "refs/pull/1/merge", "HEAD")
+        git(self.path, "checkout", "-q", "main")
+        return self.sha("refs/pull/1/merge")
+
+    def checkout(self, ref, name="clone", depth=1):
+        """A checkout of one commit as actions/checkout makes it: a clone
+        of that commit alone, depth commits deep, or the whole history."""
+        clone = self.folder / name
+        git(self.folder, "init", "-q", str(clone))
+        quiet(clone)
+        git(clone, "remote", "add", "origin", self.path.as_uri())
+        git(clone, "fetch", "-q", *([f"--depth={depth}"] if depth else []), "origin", ref)
+        git(clone, "checkout", "-q", "FETCH_HEAD")
+        return clone
+
+
+def check_in(clone, branch, base, head=None, draft=False, body="", environ=None):
+    where = clone.parent / f"{clone.name}-event.json"
+    pull = {"head": {"ref": branch, "repo": {"full_name": "o/r"}, **({"sha": head} if head else {})},
+            "base": {"sha": base, "repo": {"full_name": "o/r"}}, "body": body, "draft": draft}
+    where.write_text(json.dumps({"pull_request": pull}), encoding="utf-8")
+    return run(["check"], environ={"GITHUB_EVENT_PATH": str(where), **(environ or {})}, root=clone)
+
+
+STRAY = "docs/agents/claims/9.md is added or changed here"
 
 
 class CheckReadsTheChange(unittest.TestCase):
     """F31: the check reads which claim files the pull request adds or
-    changes from the checkout of refs/pull/<n>/merge, whose first parent
-    is the base, in a clone one commit deep as actions/checkout makes by
-    default, fetching the base, and fails where it cannot read them."""
+    changes, and what it does to the claim folder, from the checkout:
+    the branch's own change from where it left the base, and in GitHub's
+    test merge, refs/pull/<n>/merge, the merge's change against its first
+    parent too, in a clone one commit deep as actions/checkout makes by
+    default, fetching and deepening as it needs; and it fails where it
+    cannot read them. Each case of F31's first review is one test here."""
 
-    def checkout(self, folder, branch_files, deleted=()):
-        """A repository whose main holds a stale claim file, and the merge
-        of a branch that adds or deletes files, cloned one commit deep."""
-        source = Path(folder) / "source"
-        source.mkdir()
-        git(source, "init", "-q", "-b", "main")
-        claims_dir = source / "docs" / "agents" / "claims"
-        claims_dir.mkdir(parents=True)
-        (claims_dir / "9.md").write_text("- Worker: a\n", encoding="ascii")
-        (source / "README.md").write_text("main\n", encoding="ascii")
-        git(source, "add", "-A")
-        git(source, "commit", "-q", "-m", "main")
-        git(source, "checkout", "-q", "-b", "work")
-        for path in branch_files:
-            (source / path).parent.mkdir(parents=True, exist_ok=True)
-            (source / path).write_text("text\n", encoding="ascii")
-        for path in deleted:
-            (source / path).unlink()
-        git(source, "add", "-A")
-        git(source, "commit", "-q", "-m", "work")
-        git(source, "checkout", "-q", "main")
-        (source / "README.md").write_text("main moved\n", encoding="ascii")
-        git(source, "commit", "-q", "-am", "moved")
-        git(source, "merge", "-q", "--no-ff", "-m", "merge", "work")
-        clone = Path(folder) / "clone"
-        git(folder, "clone", "-q", "--depth", "1", source.as_uri(), str(clone))
-        return clone
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        environ = mock.patch.dict(os.environ, {f"GIT_CONFIG_KEY_{n}": key for n, (key, _) in enumerate(QUIET_GIT)}
+                                  | {f"GIT_CONFIG_VALUE_{n}": value for n, (_, value) in enumerate(QUIET_GIT)}
+                                  | {"GIT_CONFIG_COUNT": str(len(QUIET_GIT))})
+        environ.start()
+        self.addCleanup(environ.stop)
+        self.origin = Origin(scratch.name)
 
-    def check(self, branch, files, deleted=(), draft=False, body=""):
-        with tempfile.TemporaryDirectory() as folder:
-            clone = self.checkout(folder, files, deleted)
-            where = Path(folder) / "event.json"
-            pull = {"head": {"ref": branch, "repo": {"full_name": "o/r"}}, "base": {"repo": {"full_name": "o/r"}},
-                    "body": body, "draft": draft}
-            where.write_text(json.dumps({"pull_request": pull}), encoding="utf-8")
-            return run(["check"], environ={"GITHUB_EVENT_PATH": str(where)}, root=clone)
+    def merged(self, branch, files, links=(), stale=None):
+        """main, perhaps holding a stale claim file, moved on past the
+        branch, and the test merge's checkout, one commit deep."""
+        if stale:
+            self.origin.commit("main", stale)
+        head = self.origin.commit(branch, files, links)
+        self.origin.commit("main", {"b.txt": "main moved\n"})
+        base = self.origin.sha("main")
+        self.origin.test_merge(branch)
+        return self.origin.checkout("refs/pull/1/merge"), base, head
 
     def test_a_pull_request_that_is_no_claim_s_adding_a_claim_file_fails(self):
-        code, out, _ = self.check("notes", ["docs/agents/claims/1.md"])
+        clone, base, head = self.merged("notes", {"docs/agents/claims/1.md": "- Worker: c\n"})
+        code, out, _ = check_in(clone, "notes", base, head)
         self.assertEqual(code, 1, out)
         self.assertIn("docs/agents/claims/1.md is added or changed here", out)
 
     def test_a_stacked_claim_carrying_the_claim_it_sits_on_fails(self):
-        code, out, _ = self.check("claude/2", ["docs/agents/claims/1.md", "docs/agents/claims/2.md"], draft=True,
-                                  body="Closes #2")
+        clone, base, head = self.merged("claude/2", {"docs/agents/claims/1.md": "- Worker: a\n",
+                                                     "docs/agents/claims/2.md": "- Worker: b\n"})
+        code, out, _ = check_in(clone, "claude/2", base, head, draft=True, body="Closes #2")
         self.assertEqual(code, 1, out)
-        self.assertEqual(out.splitlines()[0][:len("docs/agents/claims/1.md")], "docs/agents/claims/1.md")
+        self.assertTrue(out.startswith("docs/agents/claims/1.md is added"), out)
         self.assertNotIn("claims/2.md is added", out)
 
-    def test_a_claim_s_own_draft_and_a_stale_file_on_main_pass(self):
-        self.assertEqual(self.check("claude/2", ["docs/agents/claims/2.md"], draft=True, body="Closes #2")[:2],
+    def test_a_claim_s_own_draft_and_other_work_pass_beside_a_stale_file_on_main(self):
+        stale = {"docs/agents/claims/9.md": "- Worker: old\n"}
+        clone, base, head = self.merged("claude/2", {"docs/agents/claims/2.md": "- Worker: b\n"}, stale=stale)
+        self.assertEqual(check_in(clone, "claude/2", base, head, draft=True, body="Closes #2")[:2],
                          (0, "protocol ok\n"))
-        self.assertEqual(self.check("notes", ["src/x.py"])[:2], (0, "protocol ok\n"))
+        self.origin.commit("main", {"docs/agents/claims/9.md": None})
+
+    def test_other_work_passes_beside_a_stale_file_on_main(self):
+        clone, base, head = self.merged("notes", {"src/x.py": "x\n"},
+                                        stale={"docs/agents/claims/9.md": "- Worker: old\n"})
+        self.assertEqual(check_in(clone, "notes", base, head)[:2], (0, "protocol ok\n"))
 
     def test_deleting_a_stale_claim_file_passes(self):
-        self.assertEqual(self.check("notes", [], deleted=["docs/agents/claims/9.md"])[:2], (0, "protocol ok\n"))
+        self.origin.commit("main", {"docs/agents/claims/9.md": "- Worker: old\n"})
+        clone, base, head = self.merged("notes", {"docs/agents/claims/9.md": None})
+        self.assertEqual(check_in(clone, "notes", base, head)[:2], (0, "protocol ok\n"))
+
+    def test_a_head_that_is_itself_a_merge_is_judged_from_where_it_left_main(self):
+        """The review's c.sh: a branch adds a stray, then brings main in by
+        a merge of its own, so its head's first parent already holds the
+        stray; judged in the test merge, at the head one commit deep and
+        at the head in a full clone, it fails each time."""
+        self.origin.commit("feature", {"docs/agents/claims/9.md": "- Worker: mallory\n"})
+        self.origin.commit("main", {"b.txt": "main moved\n"})
+        head = self.origin.merge_in("feature", "main")
+        base = self.origin.sha("main")
+        self.origin.test_merge("feature")
+        for name, ref, depth in (("merge", "refs/pull/1/merge", 1), ("head", head, 1), ("full", head, 0)):
+            with self.subTest(checkout=name):
+                clone = self.origin.checkout(ref, name, depth)
+                code, out, _ = check_in(clone, "feature", base, head)
+                self.assertEqual(code, 1, out)
+                self.assertIn(STRAY, out)
+
+    def test_a_branch_adding_a_copy_of_a_stale_file_on_main_fails(self):
+        """The review's e.sh: the branch adds a claim file identical to a
+        stale one main holds, which the merge leaves alone; once main
+        deletes its copy, merging the branch would put it back, so the
+        branch's own change fails it now."""
+        stray = {"docs/agents/claims/9.md": "- Worker: mallory\n"}
+        head = self.origin.commit("feature", {**stray, "x.txt": "x\n"})
+        self.origin.commit("main", stray)
+        base = self.origin.sha("main")
+        self.origin.test_merge("feature")
+        code, out, _ = check_in(self.origin.checkout("refs/pull/1/merge"), "feature", base, head)
+        self.assertEqual(code, 1, out)
+        self.assertIn(STRAY, out)
+
+    def test_main_deleting_a_stale_file_after_a_branch_left_it_is_not_the_branch_s(self):
+        """The review's f.sh: a branch made while main held a stale file,
+        checked out at its head after main deleted it, passes, since git's
+        three dots read main's delete as main's, not as the branch adding
+        the file."""
+        self.origin.commit("main", {"docs/agents/claims/3.md": "- Worker: old\n"})
+        head = self.origin.commit("feature", {"y.txt": "y\n"})
+        self.origin.commit("main", {"docs/agents/claims/3.md": None})
+        self.assertEqual(check_in(self.origin.checkout(head), "feature", self.origin.sha("main"), head)[:2],
+                         (0, "protocol ok\n"))
+
+    def test_a_claim_folder_made_a_link_fails(self):
+        """The review's g.sh: the claim folder, or a folder above it, made a
+        symbolic link, so the merge's checkout shows claim files git does
+        not hold; and a claim file made one."""
+        self.origin.commit("main", {"evil/9.md": "- Worker: mallory\n", "evil/README.md": "r\n"})
+        cases = (("docs/agents/claims", "../../evil", "docs/agents/claims is made something other than a folder"),
+                 ("docs/agents", "../evil", "docs/agents is made something other than a folder"),
+                 ("docs/agents/claims/7.md", "../../../evil/9.md", "docs/agents/claims/7.md is made a link"))
+        for number, (path, aim, words) in enumerate(cases):
+            with self.subTest(path=path):
+                branch = f"link{number}"
+                head = self.origin.commit(branch, {}, links={path: aim})
+                base = self.origin.sha("main")
+                git(self.origin.path, "update-ref", "-d", "refs/pull/1/merge") if number else None
+                self.origin.test_merge(branch)
+                code, out, _ = check_in(self.origin.checkout("refs/pull/1/merge", f"clone{number}"), branch, base,
+                                        head)
+                self.assertEqual(code, 1, out)
+                self.assertIn(words, out)
+
+    def test_a_claim_path_spelled_in_another_case_fails(self):
+        clone, base, head = self.merged("notes", {"Docs/Agents/claims/9.md": "- Worker: mallory\n"})
+        code, out, _ = check_in(clone, "notes", base, head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("Docs/Agents/claims/9.md is the claim folder's path but for the case of its letters", out)
+
+    def test_git_missing_fails_where_the_checkout_is_git_s(self):
+        """The review's d.sh: with no git on PATH the check cannot read the
+        change, and a folder holding .git is a checkout, so it fails."""
+        clone, base, head = self.merged("notes", {"docs/agents/claims/9.md": "- Worker: mallory\n"})
+        with mock.patch.dict(os.environ, {"PATH": str(clone.parent / "no-such-folder")}):
+            code, out, _ = check_in(clone, "notes", base, head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("could not be read: git is missing or will not read the checkout", out)
+
+    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0 and Path("/etc/passwd").exists(),
+                         "making a checkout another user's needs root")
+    def test_a_checkout_git_will_not_read_fails(self):
+        """The review's d.sh: a checkout another user owns, which git
+        refuses as of dubious ownership, fails the check."""
+        import pwd
+        clone, base, head = self.merged("notes", {"docs/agents/claims/9.md": "- Worker: mallory\n"})
+        nobody = pwd.getpwnam("nobody").pw_uid
+        for place in (clone, *clone.rglob("*")):
+            os.lchown(place, nobody, -1)
+        code, out, _ = check_in(clone, "notes", base, head)
+        for place in (clone, *clone.rglob("*")):
+            os.lchown(place, os.geteuid(), -1)
+        self.assertEqual(code, 1, out)
+        self.assertIn("git is missing or will not read the checkout", out)
+
+    def test_a_folder_with_no_git_is_judged_on_its_claim_file_alone(self):
+        folder = self.origin.folder / "plain"
+        folder.mkdir()
+        self.assertEqual(check_in(folder, "notes", self.origin.sha("main"))[:2], (0, "protocol ok\n"))
 
     def test_a_checkout_whose_base_cannot_be_read_fails(self):
-        with tempfile.TemporaryDirectory() as folder:
-            clone = self.checkout(folder, ["src/x.py"])
-            git(clone, "remote", "set-url", "origin", (Path(folder) / "nowhere").as_uri())
-            where = Path(folder) / "event.json"
-            where.write_text(json.dumps({"pull_request": {"head": {"ref": "notes"}, "base": {}}}), encoding="utf-8")
-            code, out, _ = run(["check"], environ={"GITHUB_EVENT_PATH": str(where)}, root=clone)
+        clone, base, head = self.merged("notes", {"src/x.py": "x\n"})
+        git(clone, "remote", "set-url", "origin", (self.origin.folder / "nowhere").as_uri())
+        code, out, _ = check_in(clone, "notes", "0" * 40, head)
         self.assertEqual(code, 1, out)
-        self.assertIn("could not be read", out)
+        self.assertIn("could not be read: the base commit 000000000000 could not be fetched", out)
+        code, out, _ = check_in(clone, "notes", None, head)
+        self.assertIn("could not be read: the event names no base commit", out)
+
+    def test_a_branch_whose_history_cannot_be_deepened_fails(self):
+        """In a clone one commit deep of a head checkout, the merge base is
+        found by deepening; where origin is gone, it is never found."""
+        head = self.origin.commit("feature", {"y.txt": "y\n"})
+        self.origin.commit("main", {"b.txt": "main moved\n"})
+        base = self.origin.sha("main")
+        clone = self.origin.checkout(head)
+        git(clone, "fetch", "-q", "--depth=1", "origin", base)
+        git(clone, "remote", "set-url", "origin", (self.origin.folder / "nowhere").as_uri())
+        code, out, _ = check_in(clone, "feature", base, head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("git found no commit where the branch left", out)
 
 
 class Guard(unittest.TestCase):
