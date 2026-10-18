@@ -174,6 +174,18 @@ TRACES = {
     "a time the guard cannot tell read as the keyword alone": "the regression traces",
     "every ${NAME} read all set or all unset": "the regression traces",
     "a push env's -S spells read only as written": "the regression traces",
+    "a $'...' read as a $ and a quoted span": "the regression traces",
+    'a $"..." read as a $ and a quoted span': "the regression traces",
+    "a command's own text left unread": "the regression traces",
+    "a word bash builds read as its text alone": "the regression traces",
+    "every word read set, none unset": "the regression traces",
+    "braces read as written": "the regression traces",
+    "an option bash builds read as written": "the regression traces",
+    "a name bash builds read as written": "the regression traces",
+    "a line continuation read as ending a word's start": "the regression traces",
+    "arithmetic jumped over by the scan": "the regression traces",
+    "a lone assignment read as naming the repository for good": "the regression traces",
+    "a here-document's delimiter cut at a substitution": "the regression traces",
     "an epic gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "epic"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocker gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocker"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocked task gets no todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocked"))] + HELD + [WAIT, BOARD],
@@ -440,9 +452,20 @@ class TheLane(unittest.TestCase):
         read as commands, a single quote in $[ ] read as a quote, a body's
         arithmetic left out of what it runs, substitutions told alike by
         their own texts alone and a backquoted span's hidden bodies left
-        in, 194."""
-        self.assertTrue(10 <= len(mutants.MUTANTS) <= 200)
-        self.assertEqual(len(mutants.MUTANTS), 194)
+        in, 194; and F29's fix twelve, one for each rule of the words bash
+        builds: a $'...' read as a $ and a quoted span, a $"..." read so, a
+        command's own text left unread, a word bash builds read as its text
+        alone, every word read set, none unset, braces read as written, an
+        option bash builds read as written, a name bash builds read as
+        written, a line continuation read as ending a word's start,
+        arithmetic jumped over by the scan, a lone assignment read as naming
+        the repository for good and a here-document's delimiter cut at a
+        substitution, 206. That passes 200, so the bound is widened to 250,
+        as F23's fix widened it from 150: the lane grows by a mutant for each
+        rule a fix adds, and the guard's reading of bash is the part of the
+        library that grows most."""
+        self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
+        self.assertEqual(len(mutants.MUTANTS), 206)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
@@ -457,6 +480,8 @@ class TheLane(unittest.TestCase):
                 else:
                     self.assertIs(type(target), type(mutant.replacement))
                 self.assertIn(mutant.guarantee, invariants.GUARANTEES)
+                for module, also, replacement in mutant.also:
+                    self.assertTrue(callable(getattr(module, also)) and callable(replacement), also)
 
     def test_the_copies_of_releases_follow_the_library_but_for_the_rule_each_changes(self):
         """A mutant that copies github.releases to change one rule tests an

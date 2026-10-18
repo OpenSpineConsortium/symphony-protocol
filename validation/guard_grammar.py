@@ -112,9 +112,50 @@ QUOTED_SUBSTITUTION = 'x="$({})"'
 PROCESS_SUBSTITUTION = "cat <({})"
 WRAPPERS = ("{}", "bash -c '{}'", "true && {}", "( {} )", "echo $({})", HERE_DOCUMENTS, QUOTED_SUBSTITUTION,
             PROCESS_SUBSTITUTION)
+# The words bash builds (F29): a command word that is an expansion bash
+# makes nothing of, so the git after it is the command, before git and
+# behind env; env given the command as an -S string in ANSI-C quotes; the
+# push on the line after a # that a line continuation leaves at a word's
+# start, a comment that hides the quote after it; and the push in a
+# here-document's substitution inside arithmetic, quoted and not, whose
+# body's double quote the guard read as one; and git and its verb spelled
+# as bash builds them, by ANSI-C and locale quoting, a substitution inside
+# the word, one whole, a ${ } that gives its word where the name is unset,
+# and brace expansion; and an option and the default and the board branch
+# spelled with a substitution inside the word, -$(echo f), ma$(echo i)n and
+# bo$(echo a)rd, and the default branch in locale quotes, $"main", which a
+# reading of $ before a quoted span takes for a variable whole. The guard read each as some other word, or none, so it
+# read no push in any, or no option or branch the rules name. They are
+# taken with the command alone, as ABBREVIATED is.
+EMPTY_WORDS = ("$NOPE ", "$(true) ", "`true` ", "${NOPE:-} ", "env $NOPE ")
+ANSI_C_SPLIT = "env -S $'{}'"
+CONTINUED_COMMENT = "echo \\\n#'\n{}\n'"
+ARITHMETIC_BODY = "echo $(( '$(echo \"$(cat <<'E'\n\"\nE\n{})\")' ))"
+QUOTED_ARITHMETIC_BODY = '"'.join(("echo ", ARITHMETIC_BODY[len("echo "):], ""))
+
+
+class Spelling(NamedTuple):
+    """How a command of BUILT_WORDS spells git, its verb, and an option and
+    a branch where the command has them: each word as written, and in
+    place of the option's or the name's first part the second."""
+
+    git: str = "git"
+    verb: str = "push"
+    option: tuple = ("", "")
+    name: tuple = ("", "")
+
+
+AS_WRITTEN = Spelling()
+BUILT_WORDS = (tuple(Spelling(verb=verb) for verb in ("$'pu\\x73h'", '$"push"', "pu$(true)sh", "pu``sh",
+                                                      "$(echo push)", "${NOPE:-push}", "{push,}"))
+               + (Spelling(git="$(which git)"), Spelling(option=(" -f", " -$(echo f)")),
+                  Spelling(name=("main", "ma$(echo i)n")), Spelling(name=("board", "bo$(echo a)rd")),
+                  Spelling(name=("main", '$"main"'))))
 # The prefixes and wrappers taken with the command alone, no wrapper or
 # global option around it.
-ALONE = tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED) + (("", SPLIT), ("", SPLIT_UNSET), ("", SPLIT_MIXED))
+ALONE = (tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED + EMPTY_WORDS)
+         + tuple(("", wrapper) for wrapper in (SPLIT, SPLIT_UNSET, SPLIT_MIXED, ANSI_C_SPLIT, CONTINUED_COMMENT,
+                                                 ARITHMETIC_BODY, QUOTED_ARITHMETIC_BODY)))
 UNREADABLE = "bash -c '{}'"
 # git's own options before the verb: a directory, the empty one git -C
 # takes as no change, a setting, a setting from the environment, whose
@@ -146,6 +187,7 @@ class Command(NamedTuple):
     wrapper: str
     option: str
     spec: str
+    spelled: tuple = ()  # how the text spells git, its verb, an option and a name (BUILT_WORDS), the plain way empty
 
     @property
     def readable(self):
@@ -158,19 +200,29 @@ class Command(NamedTuple):
 
 def commands():
     """Every command of the grammar: each prefix with every wrapper and
-    global option, and each of ALONE, the ABBREVIATED and ENV_ASSIGNED
-    prefixes and the SPLIT, SPLIT_UNSET and SPLIT_MIXED wrappers, with the
-    command alone. A wholesale option takes no refspec and --delete needs one, as git reads them."""
-    alone = ((prefix, wrapper, "", option, spec) for (prefix, wrapper), option, spec
+    global option, and each of ALONE, the ABBREVIATED, ENV_ASSIGNED and
+    EMPTY_WORDS prefixes and the SPLIT, SPLIT_UNSET, SPLIT_MIXED and F29's
+    wrappers, and each of BUILT_WORDS's spellings of git and its verb, with
+    the command alone. A wholesale option takes no refspec and --delete
+    needs one, as git reads them."""
+    alone = ((prefix, wrapper, "", option, spec, AS_WRITTEN) for (prefix, wrapper), option, spec
              in itertools.product(ALONE, OPTIONS, REFSPECS))
-    parts = itertools.chain(itertools.product(PREFIXES, WRAPPERS, GLOBALS, OPTIONS, REFSPECS), alone)
-    for prefix, wrapper, glob, option, spec in parts:
+    spelled = (("", "{}", "", option, spec, spelling) for spelling, option, spec
+               in itertools.product(BUILT_WORDS, OPTIONS, REFSPECS)
+               if spelling.option[0] in ("", option) and spelling.name[0] in spec)
+    parts = itertools.chain(((*part, AS_WRITTEN) for part in itertools.product(PREFIXES, WRAPPERS, GLOBALS, OPTIONS,
+                                                                                 REFSPECS)), alone, spelled)
+    for prefix, wrapper, glob, option, spec, spelling in parts:
         if option in WHOLESALE_OPTIONS and spec:
             continue
         if option == " --delete" and (not spec or spec.startswith(" +") or spec.startswith(" :")):
             continue
         argv = f"{glob} push{option} origin{spec}".strip()
-        yield Command(wrapper.format(f"{prefix}git {argv}"), argv, prefix, wrapper, option, spec)
+        written = (option.replace(*spelling.option) if spelling.option[0] else option,
+                   spec.replace(*spelling.name) if spelling.name[0] else spec)
+        text = f"{prefix}{spelling.git} {glob} {spelling.verb}{written[0]} origin{written[1]}".replace("  ", " ")
+        yield Command(wrapper.format(text), argv, prefix, wrapper, option, spec,
+                      () if spelling == AS_WRITTEN else spelling)
 
 
 def argument_lists():

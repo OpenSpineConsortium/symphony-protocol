@@ -59,13 +59,19 @@ from .verbs import CAROL, DANA, SAM, Scope, Verb
 class Mutant(NamedTuple):
     """One rule changed: the attribute module.name replaced, while the
     mutant is on, by replacement; the guarantee it should break, which the
-    lane reports and does not require; and why the rule matters."""
+    lane reports and does not require; and why the rule matters. also names
+    attributes replaced with it, as (module, name, replacement): a reading
+    that since a later fix backs the rule up, switched off so the rule
+    itself is shown to bite (F29's reading of a command's own text reads
+    the words around a misread span as bash reads them, whatever the rule
+    made of the span)."""
 
     module: object
     name: str
     replacement: object
     guarantee: str
     why: str
+    also: tuple = ()
 
 
 class Lane(NamedTuple):
@@ -477,9 +483,10 @@ def substitutions_one_deep(command):
 
 def no_arithmetic_opens(command, i, contexts, memo):
     """guard.substitution_opens with arithmetic, (( )), read as text the
-    scan jumps over whole, as the scan of here-documents reads it, so a
-    $( ) inside it is never read."""
-    if command.startswith("((", i):
+    scan jumps over whole, as the scan of here-documents read it until
+    F29's fix, so a $( ) inside it is never read, nor one inside arithmetic
+    that scan steps into since."""
+    if command.startswith("((", i) or (contexts is not None and guard.ARITHMETIC in contexts):
         return None
     return SUBSTITUTION_OPENS(command, i, contexts, memo)
 
@@ -1742,7 +1749,8 @@ MUTANTS = {
         guard, "arithmetic_end", every_double_parenthesis_arithmetic,
         "G11a", "a (( whose second ( closes with no ) at once after it is a subshell in a subshell, as bash reads "
                 "it, so a lease between two such subshells' here-documents, onto a claim another worker holds, "
-                "is read and refused (F25)"),
+                "is read and refused (F25), with the reading of the command's own text off (F29)",
+        also=((guard, "own_text_reading", lambda own, cut: []),)),
     "a body that waits for a newline in the substitution that closed": Mutant(
         guard, "leave", lambda pending, before, after: None,
         "G11a", "a here-document whose substitution closes on its operator's own line, as x=$(cat <<'EOF') does, "
@@ -1787,9 +1795,11 @@ MUTANTS = {
         guard, "backquoted_span", lambda command, i: None,
         "G11a", "a backquoted span is read as one part of a word in the lenient reading, its quotes pairing with "
                 "nothing outside it, as bash reads it, so a lease after x=`echo \"` and before a comment with a "
-                "double quote, onto a claim another worker holds, is read and refused (F25)"),
+                "double quote, onto a claim another worker holds, is read and refused (F25), with the reading of "
+                "the command's own text off (F29)",
+        also=((guard, "own_text_reading", lambda own, cut: []),)),
     "a substitution in double quotes read as part of its word": Mutant(
-        guard, "substituted", lambda command: "",
+        guard, "read_apart", lambda command: (command, ""),
         "G11a", "the text of every command substitution bash runs is read as commands, in double quotes too, so "
                 "a lease in out=\"$(git push ...)\", onto a claim another worker holds, is read and refused (F24)"),
     "a process substitution read as a redirection": Mutant(
@@ -1809,7 +1819,7 @@ MUTANTS = {
         "G11a", "the substitutions inside arithmetic run, so a lease in (( \"$(git push ...)\" )), onto a claim "
                 "another worker holds, is read and refused (F24)"),
     "a $'...' read as a quoted span": Mutant(
-        guard, "ansi_c_end", lambda command, i: i - 1,
+        guard, "ansi_c_close", lambda command, i: command.find("'", i) + 1 or None,
         "G11a", "a backslash escapes an apostrophe in bash's $'...', so a lease after echo $'it\\'s' in a "
                 "substitution, onto a claim another worker holds, is read and refused (F24)"),
     "a single quote in a double-quoted ${ } read as a quote": Mutant(
@@ -1837,6 +1847,55 @@ MUTANTS = {
         guard, "backquoted_substitution", backquoted_bodies_left_in,
         "G11a", "a here-document a backquoted span's backslashes hid is read as bash reads it once they are "
                 "taken off, so a lease after one, onto a claim another worker holds, is read and refused (F24)"),
+    "a $'...' read as a $ and a quoted span": Mutant(
+        guard, "ansi_c_word", lambda command, i: None,
+        "G11a", "bash's $'...' gives the text it decodes to, so git $'pu\\x73h' origin main, env -S $'git push "
+                "origin main' and a lease onto claude/$'1', a claim another worker holds, are read and refused (F29)"),
+    "a $\"...\" read as a $ and a quoted span": Mutant(
+        guard, "locale_quoted", lambda command, i: False,
+        "G11a", "bash's $\"...\" is the double-quoted text after the $, so git push origin $\"main\" is read and "
+                "refused (F29)"),
+    "a command's own text left unread": Mutant(
+        guard, "own_text_reading", lambda own, cut: [],
+        "G11a", "a command is read as its own text too, each substitution a hole in its word, so git pu$(true)sh "
+                "origin main, a verb bash builds into push, is read and refused (F29)"),
+    "a word bash builds read as its text alone": Mutant(
+        guard, "may_be", lambda word, text: word == text,
+        "G11a", "a word with holes bash fills may be git, push or a branch the rules name, so git $(echo push) "
+                "origin main and $(which git) push origin main are read and refused (F29)"),
+    "every word read set, none unset": Mutant(
+        guard, "unset_value", lambda word: word,
+        "G11a", "bash drops an unquoted word that expands to nothing, so $NOPE git push origin main runs the push "
+                "and is read and refused (F29)"),
+    "braces read as written": Mutant(
+        guard, "brace_words", lambda word: [word],
+        "G11a", "bash expands braces, so git {push,} origin main runs git push origin main and is read and refused "
+                "(F29)"),
+    "an option bash builds read as written": Mutant(
+        guard, "built_option", lambda args: None,
+        "G11a", "an option whose name bash builds may be --force, so git push -$(echo f) origin claude/7 is "
+                "refused (F29)"),
+    "a name bash builds read as written": Mutant(
+        guard, "built_target", lambda name, default_branch: None,
+        "G11a", "a branch name bash builds may be the default or the board branch, so git push origin "
+                "ma$(echo i)n is refused (F29)"),
+    "a line continuation read as ending a word's start": Mutant(
+        guard, "joins_lines", lambda pair: False,
+        "G11a", "bash takes a line continuation out before it reads on, so a # after one that follows a blank "
+                "opens a comment, and the push after echo \\, a newline and #' is read and refused (F29)"),
+    "arithmetic jumped over by the scan": Mutant(
+        guard, "arithmetic_opened", lambda at, contexts, end: guard.Step(end, contexts, False, False),
+        "G11a", "the scan of here-documents reads into arithmetic, whose substitutions bash runs, so the push "
+                "after a here-document's body in a substitution in $(( )) is read and refused (F29)"),
+    "a lone assignment read as naming the repository for good": Mutant(
+        guard, "set_alone", lambda found: False,
+        "G11a", "GIT_DIR=x alone sets the shell's variable, which git sees only where it was exported before, so "
+                "a lease by git -C from another clone after it, onto a claim another worker holds, is judged "
+                "there and refused (F29)"),
+    "a here-document's delimiter cut at a substitution": Mutant(
+        guard, "expansion_in_word", lambda command, i: None,
+        "G11a", "bash reads a $( ) in a here-document's delimiter word as part of the word, so a lease after a "
+                "body <<E$(echo x)F ends, onto a claim another worker holds, is read and refused (F29)"),
     "dealing without its taken set": Mutant(
         team, "deal", deal_without_the_taken_set,
         "G14", "the workers of one run are dealt distinct issues"),
@@ -2475,7 +2534,9 @@ def violations(search):
 
 @contextlib.contextmanager
 def switched_on(mutant):
-    with mock.patch.object(mutant.module, mutant.name, mutant.replacement):
+    with contextlib.ExitStack() as patches:
+        for module, name, replacement in ((mutant.module, mutant.name, mutant.replacement), *mutant.also):
+            patches.enter_context(mock.patch.object(module, name, replacement))
         yield
 
 

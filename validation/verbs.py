@@ -127,7 +127,14 @@ CLONES = "/clones"
 # splits, and after env GIT_DIR=x alone, which sets nothing in the shell
 # (F28); and after /usr/bin/time GIT_DIR=x, which runs the assignment as
 # a command, and "time" GIT_DIR=x, which the guard cannot tell from bash's
-# keyword (F28's review).
+# keyword (F28's review). And since F29's fix, after GIT_DIR=x alone,
+# which sets the shell's variable and hands it to git only where it was
+# exported before, and to the claim's own name with its number in ANSI-C
+# quotes, which bash decodes to the number; or its own clone, between two
+# here-documents whose bodies hold apostrophes, the first's delimiter
+# E$(echo x)F, which bash reads whole and the guard cut at the ( until
+# F29's fix, so the body ran to the end and the two apostrophes paired
+# around the push.
 ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push}",
              "missing": "cd ../{clone}; cd ../{absent}; git {push}",
              "body": "cat > /dev/null <<'EOF'\ncd ..\nEOF\ngit {push}",
@@ -178,7 +185,10 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "env-alone": "env GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
              "time-path": "/usr/bin/time GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
              "time-quoted": '"time" GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}',
-             "env-names": "env -S '${{A}}${{B}}${{C}}${{D}}${{E}}${{F}}${{G}} git -C ../{clone} pu\"\"sh{rest}'"}
+             "env-names": "env -S '${{A}}${{B}}${{C}}${{D}}${{E}}${{F}} -u ${{G}} git -C ../{clone} pu\"\"sh{rest}'",
+             "set-alone": "GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "ansi-c-name": "git -C ../{clone} push --force-with-lease origin claude/$'{number}'",
+             "delimiter-substitution": "cat <<E$(echo x)F\nDon't\nE$(echo x)F\ngit {push}\ncat <<'EOF'\nIt's\nEOF"}
 # The ways whose push runs in the worker's own clone (leasing_clone).
 FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
                   "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",
@@ -187,7 +197,7 @@ FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe
                   "nested-substitutions", "backquote-in-substitution", "arithmetic-substitution",
                   "ansi-c-in-substitution", "braced-apostrophe", "braced-ansi-c", "arithmetic-apostrophe",
                   "bracket-apostrophe", "body-arithmetic", "body-after-ansi-c", "alike-substitutions",
-                  "hidden-body")
+                  "hidden-body", "delimiter-substitution")
 
 # A read of the activity with no type named: the read of the push that set
 # a claim's head (github.read_push), told from the reads of a
@@ -778,7 +788,8 @@ def lease_elsewhere(model, worker, number, files, how):
     push. Git would take it, so the guard must read the push and judge it
     in the clone it runs in and refuse it, as it refuses lease_onto's. No
     search offers it; F21's trace plays it, F26's its env, F25's its
-    here-documents and F28's env's assignments and -S."""
+    here-documents, F28's env's assignments and -S, and F29's lone GIT_DIR=x
+    and a claim's name in ANSI-C quotes."""
     pusher = leasing_clone(worker, how)
     model.fetch(pusher)
     ref = claim_ref(number)
@@ -798,9 +809,11 @@ def leasing_clone(worker, how):
 def leasing_command(worker, how, ref, root=CLONES):
     """The command lease_elsewhere's session runs from the worker's own
     clone (ELSEWHERE), naming the second clone, the absent one, the
-    worker's own and root, the directory that holds them."""
+    worker's own and root, the directory that holds them, and the claim's
+    issue number."""
     return ELSEWHERE[how].format(clone=other_clone(worker), absent=absent_clone(worker), own=worker, root=root,
-                                 push=f"push --force-with-lease origin {ref}", rest=f" --force-with-lease origin {ref}")
+                                 push=f"push --force-with-lease origin {ref}", rest=f" --force-with-lease origin {ref}",
+                                 number=ref.removeprefix("claude/"))
 
 
 def claim_commit(model, number):
