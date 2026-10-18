@@ -3640,6 +3640,8 @@ def placed_in(command, start, is_directory, depth):
     for text in dict.fromkeys(readings(command)):
         place(placed_parts(parts_of(text), start, is_directory, handed))
     for text, shell in dict.fromkeys(handed):
+        if not may_push(text):
+            continue
         if depth >= MAX_NESTING or too_many_handed(text, shell):
             raise TooDeep(HANDED_TOO_DEEP)
         place(placed_in(text, shell, is_directory, depth + 1))
@@ -3648,12 +3650,16 @@ def placed_in(command, start, is_directory, depth):
 
 def too_many_handed(text, shell):
     """Whether the text handed to a shell, counted once with the others of
-    the run under way (HANDED), passes MOST_HANDED."""
+    the run under way (HANDED), passes MOST_HANDED texts, or HANDED_BUDGET
+    characters in all (F32's first review: a long text handed on fifteen
+    times was read fifteen times and took the guard past its deadline)."""
     seen = HANDED.get()
     if seen is None:
         return False
-    seen.add((text, shell))
-    return len(seen) > MOST_HANDED
+    if (text, shell) not in seen:
+        seen[(text, shell)] = len(text)
+        seen[None] = seen.get(None, 0) + len(text)
+    return len(seen) - 1 > MOST_HANDED or seen[None] > HANDED_BUDGET
 
 
 def placed_parts(parts, start, is_directory, handed=None):
@@ -3667,25 +3673,26 @@ def placed_parts(parts, start, is_directory, handed=None):
     placed, shell, opened, piped, moves = [], start, [], False, {}
     list_start = pipe_start = shell
     handed = [] if handed is None else handed
-    printed, after_pipe = (), False
+    flow = Flow()
     for count, part in enumerate(parts):
         if not count % CHECKS_EVERY:
             in_time()
         if isinstance(part, list):
-            fed = standard_input(part, printed if after_pipe else ())
+            flow.opens_or_closes(part, before=True)
+            fed = standard_input(part, flow.feeding())
             for argv in env_readings(part):
                 placed.append((argv, shell))
                 handed += [(text, shell) for text in handed_texts(argv, fed)]
-            printed = printed_texts(part, fed)
+            flow.printed(printed_texts(part, fed))
+            flow.opens_or_closes(part, before=False)
             key = (tuple(part), shell)
             if key not in moves:
                 moves[key] = moved_to(part, shell, is_directory)
             shell = moves[key]
-            after_pipe = False
             continue
         for operator in operators(part):
-            after_pipe = operator in ("|", "|&") or after_pipe and operator == "("
-            if after_pipe:
+            flow.operator(operator)
+            if operator in ("|", "|&"):
                 shell, piped = pipe_start, True
                 continue
             if piped:
@@ -3700,6 +3707,64 @@ def placed_parts(parts, start, is_directory, handed=None):
                 list_start = shell
             pipe_start = shell
     return placed
+
+
+# The words that open a compound command, and those that close one, as
+# the first word of a simple command's part (Flow).
+COMPOUND_OPENS = frozenset({"{", "if", "while", "until", "for", "case", "select"})
+COMPOUND_CLOSES = frozenset({"}", "fi", "done", "esac"})
+
+
+class Flow:
+    """What reaches the standard input of the commands of one reading of a
+    command (placed_parts; F32's first review): what the stage before a
+    pipe prints, a group's or a subshell's every command's output joined,
+    fed to every command of the stage after it, at whatever depth, up to
+    the list operator that ends that stage at its own depth."""
+
+    def __init__(self):
+        self.depth, self.groups, self.last = 0, [], ()
+        self.feed, self.feed_depth = (), None
+
+    def feeding(self):
+        return self.feed
+
+    def printed(self, texts):
+        self.last = tuple(texts)
+        if self.groups:
+            self.groups[-1].extend(texts)
+
+    def opens_or_closes(self, part, before):
+        word = part[0] if part else ""
+        if before and word in COMPOUND_OPENS:
+            self.open()
+        elif not before and word in COMPOUND_CLOSES:
+            self.close()
+
+    def open(self):
+        self.depth += 1
+        self.groups.append([])
+
+    def close(self):
+        if not self.groups:
+            return
+        self.depth -= 1
+        texts = self.groups.pop()
+        self.last = ("\n".join(texts),) if texts else ()
+        if self.groups:
+            self.groups[-1].extend(self.last)
+
+    def operator(self, operator):
+        if operator in ("|", "|&"):
+            self.feed, self.feed_depth = self.last, self.depth
+        elif operator == "(":
+            self.open()
+        elif operator == ")":
+            self.close()
+        elif self.feed_depth is not None and self.depth <= self.feed_depth:
+            self.feed, self.feed_depth = (), None
+        if operator not in ("|", "|&", ")"):
+            self.last = ()
 
 
 # The shells a command may hand text to as commands, by name: a -c
@@ -3722,10 +3787,11 @@ SOURCES = frozenset({"source", "."})
 # command near MAX_COMMAND of distinct handings would take the guard past
 # its deadline (F32).
 MOST_HANDED = 256
+HANDED_BUDGET = 2 * MAX_COMMAND
 HANDED_TOO_DEEP = (f"a command that hands text to a shell to run (bash -c, eval, trap, a here-string or a pipe "
-                   f"into a shell) more than {MAX_NESTING} deep, or more than {MOST_HANDED} texts in all, is "
-                   "refused: the guard cannot read it in time to tell which of its commands run; write the text to "
-                   "a file first (.claude/rules/board.md)")
+                   f"into a shell) more than {MAX_NESTING} deep, or more than {MOST_HANDED} texts or "
+                   f"{HANDED_BUDGET} characters in all, is refused: the guard cannot read it in time to tell which "
+                   "of its commands run; write the text to a file first (.claude/rules/board.md)")
 # The texts handed to shells in the guard's run under way (placed_in),
 # None outside a run.
 HANDED = contextvars.ContextVar("HANDED", default=None)
@@ -3761,7 +3827,17 @@ def command_words(argv):
     found = launch(argv)
     if found.start is None or found.start >= len(found.argv):
         return None, []
-    return program(found.argv[found.start]), list(found.argv[found.start + 1:])
+    words = list(found.argv[found.start:])
+    while words and program(words[0]) in BUILTIN:
+        words = words[2:] if words[1:2] == ["--"] else words[1:]
+    if not words:
+        return None, []
+    return program(words[0]), words[1:]
+
+
+# The builtin that runs the builtin its next word names, as builtin eval
+# does (F32's first review).
+BUILTIN = frozenset({"builtin"})
 
 
 def trap_action(rest):
@@ -3832,22 +3908,21 @@ def printed_texts(argv, fed=()):
     its standard input (fed). Nothing for any other command, whose output
     this module does not know."""
     name, rest = command_words(argv)
-    if name == "cat" and not [word for word in rest if not word.startswith("-") or word == "-"]:
+    if name == "cat" and all(word.startswith("-") for word in rest):
         return tuple(fed)
     if name == "echo":
         while rest and ECHO_OPTIONS.fullmatch(rest[0]):
             rest = rest[1:]
         text = " ".join(rest)
-    elif name == "printf":
+        decoded = echo_text(text)
+        return (text,) if decoded == text else (text, decoded)
+    if name == "printf":
         if rest[:1] == ["--"]:
             rest = rest[1:]
         if not rest or rest[0].startswith("-v"):
             return ()
-        return (ansi_c_text(printf_text(rest[0], rest[1:])),)
-    else:
-        return ()
-    decoded = ansi_c_text(text)
-    return (text,) if decoded == text else (text, decoded)
+        return (printf_text(rest[0], rest[1:]),)
+    return ()
 
 
 def standard_input(part, piped):
@@ -3859,14 +3934,63 @@ def standard_input(part, piped):
 
 
 ECHO_OPTIONS = re.compile(r"-[neE]+")
-PRINTF_HOLE = re.compile(r"%[sb]")
+# echo -e's escapes, and %b's: \0 with up to three octal digits, where
+# printf's format takes \ and one to three; \c ends the output (F32's
+# first review).
+ECHO_OCTAL = re.compile(r"\\0([0-7]{0,3})")
+ECHO_STOP = "\\c"
+# A printf conversion: its flags, width and precision, and its letter.
+PRINTF_CONVERSION = re.compile(r"%([-+ #0]*)(\*|[0-9]*)(?:\.(\*|[0-9]*))?([a-zA-Z%])")
+# The most times printf's format is read again for its words, past which,
+# or past MAX_COMMAND characters printed, the rest is not read.
+MOST_PRINTF_PASSES = 256
+
+
+def echo_text(text):
+    """What echo -e, and sh's echo always, prints for text: its escapes
+    read as $'...' reads them, but \\0nnn as an octal byte, and nothing
+    after \\c."""
+    text = text.split(ECHO_STOP, 1)[0]
+    return ansi_c_text(ECHO_OCTAL.sub(lambda m: "\\" + (m.group(1) or "0").rjust(3, "0"), text))
 
 
 def printf_text(form, words):
-    """printf's format with each %s or %b given the next word in turn, the
-    rest nothing, and its other conversions left as written."""
-    given = iter(words)
-    return PRINTF_HOLE.sub(lambda hole: next(given, ""), form)
+    """What printf prints for its format and words: the format read again
+    while words remain, each conversion given the next word, %s and %b by
+    their width and precision, %b's escapes as echo's, %c its first
+    character, %q the word quoted, a numeric one the word as written, %%
+    a %, and the format's own escapes read as $'...' reads them."""
+    out, given, size, decoded = [], list(words), 0, ansi_c_text(form)
+    for _ in range(MOST_PRINTF_PASSES):
+        before = len(given)
+        out.append(PRINTF_CONVERSION.sub(lambda m: printf_conversion(m, given), decoded))
+        size += len(out[-1])
+        if not given or len(given) == before or size > MAX_COMMAND:
+            break
+    return "".join(out)
+
+
+def printf_conversion(match, given):
+    """One printf conversion filled from given, the words left, which it
+    takes from."""
+    flags, width, precision, letter = match.groups()
+    if letter == "%":
+        return "%"
+    for star in (width, precision):
+        if star == "*" and given:
+            given.pop(0)
+    word = given.pop(0) if given else ""
+    if letter == "b":
+        word = echo_text(word)
+    elif letter == "c":
+        word = word[:1]
+    elif letter == "q":
+        word = shlex.quote(word)
+    if letter in "bs" and precision and precision.isdigit():
+        word = word[:int(precision)]
+    if width.isdigit():
+        word = word.ljust(int(width)) if "-" in flags else word.rjust(int(width))
+    return word
 
 
 # What a refusal adds where the reading that refused the push is one the
@@ -4007,7 +4131,7 @@ def refused_push(command, here, branches_of=None, reader_of=None, is_directory=N
     if len(command) > MAX_COMMAND:
         return TOO_LONG
     deadline, launches = DEADLINE.set(clock() + DEADLINE_SECONDS), LAUNCHES.set({})
-    ways, built, handed = BUILT_WAYS.set({}), READINGS.set({}), HANDED.set(set())
+    ways, built, handed = BUILT_WAYS.set({}), READINGS.set({}), HANDED.set({None: 0})
     try:
         placed = placed_commands(command, here, is_directory or os.path.isdir)
         return first_refusal(placed, here, branches_of or branches, reader_of or claim_file_reader)
@@ -4571,8 +4695,17 @@ def where_to_ask(payload, cwd):
 def may_push(command):
     """Whether the hook reads the command at all (run): its text, each line
     continuation out, may spell push (holds_push), or bash may build a part
-    of a word of it (BUILDS_WORDS)."""
-    return holds_push([lines_joined(command)]) or not BUILDS_WORDS.isdisjoint(command)
+    of a word of it (BUILDS_WORDS), or it may hand a shell a text whose
+    escapes or printf's conversions spell push (HANDS_TEXT; F32's first
+    review: printf 'git pu\\163h origin main' | bash)."""
+    return (holds_push([lines_joined(command)]) or not BUILDS_WORDS.isdisjoint(command)
+            or not BUILDS_TEXT.isdisjoint(command) and bool(HANDS_TEXT.search(command)))
+
+
+# A word that may hand a shell a text to run (handed_texts), and what in a
+# text it hands lets echo or printf print what is not written out.
+HANDS_TEXT = re.compile(r"(?<![\w.-])(?:\w*sh|eval|trap|source|\.)(?![\w.-])")
+BUILDS_TEXT = frozenset("\\%")
 
 
 def lines_joined(command):
