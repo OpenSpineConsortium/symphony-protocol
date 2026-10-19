@@ -34,7 +34,7 @@
     {"verb": "guard", "actor": "a", "args": ["env -S '${NOPE} -u ${HOME} git push origin main'"], "expect": {"refused": true},
      "note": "where NOPE is not set and HOME is, env drops ${NOPE}, unsets the variable ${HOME} names and runs git push origin main; with both kept as written ${NOPE} is the command, and with both dropped -u takes git as its name and env runs push; under the mutant that reads the names all set or all unset, the push passes (F28's second review)"},
     {"verb": "lease-elsewhere", "actor": "b", "args": [1, "env-names"], "expect": {"taken": false, "holders": {"1": "a"}},
-     "note": "the same lease by git -C ../b-other, inside an -S string with seven ${NAME}s, more than the guard reads each mix of, and push spelled pu\"\"sh, which env splits into push; the guard refuses it unread, since its words may spell push; under the mutant that looks for push only as written, the lease is read as the command ${A}...${G} alone and taken (F28's third review)"},
+     "note": "the same lease by git -C ../b-other, inside an -S string with seven ${NAME}s, more than the guard reads each mix of, the last after -u, and push spelled pu\"\"sh, which env splits into push where A to F are not set and G is; the guard refuses it unread, since its words may spell push; under the mutant that looks for push only as written, the lease is read as the command ${A}...${F} alone, and with every name unset as env -u git -C ../b-other, which runs no git, and taken (F28's third review; since F29's fix the guard reads every name unset as bash's too, so the -u keeps the mix the mutant leaves unread the only one that runs the push)"},
     {"verb": "board", "expect": {"claims": {"claude/1": "a"}}}
   ]
 }

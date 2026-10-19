@@ -4,6 +4,7 @@ quoting it misreads: the hook is the first fence, branch protection the
 second, so it fails open."""
 
 import ast
+import contextlib
 import os
 import random
 import re
@@ -435,16 +436,28 @@ def plain_shell_before_f25(command):
     """guard.plain_shell as it was until F25's fix, word for word, which the
     pass must still give: the template's shim and its profile read it; but
     for \\$ and \\` inside double quotes, handed to shlex since F28's second
-    review as $ and `, as bash hands them on (as_quoted)."""
+    review as $ and `, as bash hands them on (as_quoted), and since F29's
+    fix bash's own quotings outside quotes, a $'...' that closes as the
+    text it decodes to, single-quoted, a $"..." as "...", and $$ as one
+    parameter, and a line continuation, which leaves whether a word starts
+    as it was."""
     out, quote, word_start, i = [], None, True, 0
     while i < len(command):
         ch = command[i]
-        if ch == "\\" and quote != "'":
+        if quote is None and command.startswith("$$", i):
+            out.append("$$")
+            i, word_start = i + 2, False
+        elif quote is None and command.startswith("$'", i) and (end := guard.ansi_c_close(command, i + 2)):
+            out.append(guard.single_quoted(guard.ansi_c_text(command[i + 2:end - 1])))
+            i, word_start = end, False
+        elif quote is None and command.startswith('$"', i):
+            i, word_start = i + 1, False
+        elif ch == "\\" and quote != "'":
             if quote == '"' and command[i + 1:i + 2] in ("$", "`"):
                 out.append(command[i + 1])
             elif command[i + 1:i + 2] != "\n":
                 out.append(command[i:i + 2])
-            i, word_start = i + 2, False
+            i, word_start = i + 2, word_start and quote is None and command[i + 1:i + 2] == "\n"
         elif quote:
             if ch == quote:
                 quote = None
@@ -474,10 +487,21 @@ def body_texts(command):
 
 
 def unsubstituted():
-    """The guard with no substitution read apart (guard.substituted), as
-    it read a command until F24's fix, for a test that plays a guard built
-    before it."""
-    return mock.patch.object(guard, "substituted", lambda command: "")
+    """The guard with no substitution read apart (guard.read_apart), as it
+    read a command until F24's fix, for a test that plays a guard built
+    before it: neither what the shell runs of each substitution nor the
+    command's own text with each standing as a hole (F29) is read."""
+    return mock.patch.object(guard, "read_apart", lambda command: (command, ""))
+
+
+@contextlib.contextmanager
+def built_words_unread():
+    """The guard with every word read as written, none built as bash builds
+    it (guard.word_ways, guard.may_be, F29), for a test that plays a guard
+    built before F29's fix."""
+    with mock.patch.object(guard, "word_ways", lambda argv: ([list(argv)], False)), \
+            mock.patch.object(guard, "may_be", lambda word, text: word == text):
+        yield
 
 
 # Pieces of shell to make commands of at random: quotes, backslashes,
@@ -685,7 +709,10 @@ class ReadingTest(unittest.TestCase):
         self.assertEqual(self.run_guard(nested(guard.MAX_NESTING + 1) + "git push -u origin claude/7"),
                          (2, TOO_DEEP))
         self.assertEqual(self.run_guard(nested(guard.MAX_NESTING) + "git push -u origin claude/7"), (0, ""))
-        self.assertEqual(self.run_guard(nested(guard.MAX_NESTING + 1)), (0, ""), "no push, no reading")
+        self.assertEqual(self.run_guard(nested(guard.MAX_NESTING + 1).replace("$(", "")), (0, ""),
+                         "no push, no reading")
+        self.assertEqual(self.run_guard(nested(guard.MAX_NESTING + 1)), (2, TOO_DEEP),
+                         "F29: a substitution may build a push, so the command is read, and refused unread")
 
     def test_a_case_patterns_parenthesis_closes_no_substitution(self):
         """bash reads a case command inside a substitution so that a
@@ -811,7 +838,7 @@ class ReadingTest(unittest.TestCase):
                 self.assertEqual(self.run_guard(command), (2, MAIN))
         self.assertEqual(guard.plain_text("git -C `pwd` push", lenient=True), "git -C '`pwd`' push ; ( pwd ) ")
         self.assertEqual(guard.plain_text("git -C `pwd` push"), "git -C `pwd` push", "strict: as before")
-        with mock.patch.object(guard, "backquoted_span", lambda command, i: None):
+        with mock.patch.object(guard, "backquoted_span", lambda command, i: None), unsubstituted():
             self.assertEqual(self.run_guard('x=`echo "`; git push origin main # "'), (0, ""), "as built until the fix")
 
     def test_a_backquote_in_a_substitution_in_double_quotes_is_left_to_it(self):
@@ -1022,7 +1049,7 @@ class ReadingTest(unittest.TestCase):
                     self.assertTrue(at <= body.start <= body.end <= len(command))
                     at = body.end
                 texts = guard.readings(command)
-                self.assertIn(len(texts), (1, 2))
+                self.assertIn(len(texts), (1, 2, 3), "whole, with the bodies cut out, and its own text (F29)")
                 for text in texts:
                     lexed(text)
 
@@ -1161,8 +1188,9 @@ class SubstitutionTest(unittest.TestCase):
         self.assertTrue(guard.Context("${", guard.Context("'", guard.Context("${", guard.Context('"'))), 2).quoted)
 
     def test_arithmetic_is_read_apart_to_its_closing_parentheses(self):
-        self.assertEqual(guard.substituted("echo $(( '$(git push)' + 1 ))"), " ; (  '$x' + 1  ; ( git push )  ) ")
-        self.assertEqual(guard.substituted("(( x = $(a) ))"), " ; (  x = $x  ; ( a )  ) ")
+        self.assertEqual(guard.substituted("echo $(( '$(git push)' + 1 ))"),
+                         " ; (  'HOLE' + 1  ; ( git push )  ) ".replace("HOLE", guard.SUBSTITUTED))
+        self.assertEqual(guard.substituted("(( x = $(a) ))"), " ; (  x = HOLE  ; ( a )  ) ".replace("HOLE", guard.SUBSTITUTED))
         self.assertEqual([body.runs for body in guard.here_document_bodies("cat <<E\n$(( $(a) )) $((1))\nE")],
                          [("$(( $(a) ))",)], "a body's arithmetic is kept where a substitution stands in it")
 
@@ -1171,18 +1199,21 @@ class SubstitutionTest(unittest.TestCase):
         shell stands after the text around it, so two that read alike, with
         those nested in them alike too, are judged alike and read once."""
         self.assertEqual(guard.substituted("$(a) $(a) `a` $(b) $(a)"), " ; ( a )  ; ( b ) ")
-        self.assertEqual(guard.substituted("$(c $(a)) $(c $(b))"), " ; ( c $x ; ( a )  )  ; ( c $x ; ( b )  ) ")
+        self.assertEqual(guard.substituted("$(c $(a)) $(c $(b))"),
+                         " ; ( c HOLE ; ( a )  )  ; ( c HOLE ; ( b )  ) ".replace("HOLE", guard.SUBSTITUTED))
         self.assertEqual(guard.substituted('"$("$(a)")"'), " ; ( a ) ", "a text with no word reads its nested")
 
     def test_each_substitution_is_read_apart_after_the_command(self):
         self.assertEqual(guard.substituted('a "$(b "$(c)" `d`)" <(e) x'),
-                         " ; ( b \"$x\" $x ; ( c )  ; ( d )  )  ; ( e ) ")
+                         " ; ( b \"HOLE\" HOLE ; ( c )  ; ( d )  )  ; ( e ) ".replace("HOLE", guard.SUBSTITUTED))
         self.assertEqual(guard.substituted("echo a 'b' \"c\""), "")
         self.assertEqual(guard.substituted('"$($(git push))"'), " ; ( git push ) ", "nothing of its own")
-        self.assertEqual(guard.substituted("`echo \\`git push\\``"), " ; ( echo $x ; ( git push )  ) ",
+        self.assertEqual(guard.substituted("`echo \\`git push\\``"),
+                         " ; ( echo HOLE ; ( git push )  ) ".replace("HOLE", guard.SUBSTITUTED),
                          "a backslash nests a backquoted span in another")
         self.assertEqual(guard.readings('echo "$(git push origin main)"'),
-                         ['echo "$(git push origin main)" ; ( git push origin main ) '])
+                         ['echo "$(git push origin main)" ; ( git push origin main ) ', f'echo "{guard.SUBSTITUTED}"'],
+                         "and its own text, the substitution a hole in its word (F29)")
 
     def test_a_push_in_a_substitution_is_judged_where_its_shell_stands(self):
         """A substitution runs in a subshell of the shell around it, so a cd
@@ -1214,6 +1245,288 @@ class SubstitutionTest(unittest.TestCase):
             with self.subTest(command=command[:40]):
                 started = time.monotonic()
                 self.assertEqual(self.run_guard(command + "\ngit push origin main")[0], 2)
+                self.assertLess(time.monotonic() - started, 3.0)
+
+
+# F29: the words bash builds, each with a push bash 5.2 runs, through a git
+# that records its arguments and runs nothing: ANSI-C and locale quoting, a
+# substitution inside a word or whole as git or its verb, an expansion bash
+# makes nothing of as a command word, braces, an option or a branch name a
+# substitution builds, a # that a line continuation leaves at a word's
+# start, a here-document's substitution inside arithmetic, and a
+# here-document whose delimiter word holds a substitution or a $'...',
+# bodies with apostrophes around the push.
+BUILT_PUSHES = (
+    "git push origin $'main'", "git push origin $'ma\\x69n'", "env -S $'git push origin main'",
+    "git $'push' origin main", "git push -$'f' origin claude/7", "git $'pu\\x73h' origin main",
+    "git push origin $'\\u006dain'", "git push origin $'m\\141in'", "git push origin $'main\\x00x'",
+    'git $"push" origin main', 'git push origin $"main"', 'git pu$(true)sh origin main', 'git pu``sh origin main',
+    'git $(echo push) origin main', 'env -S "git $(echo push) origin main"', 'git push origin ma$(true)in',
+    '$(which git) push origin main', '$NOPE git push origin main', '${NOPE:-} git push origin main',
+    '$(true) git push origin main', '`true` git push origin main', 'git $NOPE push origin main',
+    'env $NOPE git push origin main', 'git ${NOPE:-push} origin main', 'git pu${NOPE}sh origin main',
+    'git {push,} origin main', 'git push origin {main,}', 'git push -$(echo f) origin claude/7',
+    'git push origin ma$(echo i)n', 'git push origin bo$(echo a)rd:board', 'echo a \\\n# x\ngit push origin main',
+    "echo \\\n#'\ngit push origin main\n'", "cat <<E \\\n#'\nhi\nE\ngit push origin main\n'",
+    'echo "$(( \'$(echo "$(cat <<\'E\'\n"\nE\ngit push origin main)")\' ))"',
+    'echo $(( \'$(echo "$(cat <<\'E\'\n"\nE\ngit push origin main)")\' ))',
+    "cat <<E$(echo x)F\nDon't\nE$(echo x)F\ngit push origin main\ncat <<'EOF'\nIt's\nEOF",
+    "cat <<E`echo x`F\nDon't\nE`echo x`F\ngit push origin main\ncat <<'EOF'\nIt's\nEOF",
+    "cat <<$'E\\x4fF'\nDon't\nEOF\ngit push origin main\ncat <<'EOF'\nIt's\nEOF",
+    # F29's first review: a continuation inside a word, coproc, a default
+    # with blanks that bash splits, an array's default, a $'...' in a
+    # default, and extended patterns.
+    "git p\\\nush origin main", "git pu\\\nsh origin main", "coproc git push origin main",
+    "coproc X { git push origin main; }", "coproc { git push origin main; }", "${NOPE:-git push origin main}",
+    "${NOPE:-git push} origin main", "git ${NOPE:-push origin main}", 'git push origin "${NOPE[@]:-main}"',
+    "git push origin ${NOPE[0]:-main}", "git push origin \"${NOPE:-$'\\x6dain'}\"",
+    "shopt -s extglob\ntouch main; git push origin @(main)", "shopt -s extglob\ngit push origin @(main|x)",
+    "shopt -s extglob\ngit push origin ma?(x)in", "shopt -s extglob\ngit pu@(s)h origin main",
+    # F29's second review: a default's own text beside a hole, a word that
+    # may open with a - it builds, a pattern a file named +main or : fills,
+    # and a colon beside one hole.
+    "git push origin ${A:-ma}$(echo in)", "git push origin ${A:-b}$(echo oard)", "git push origin $(echo ma)${A:-in}",
+    "git push origin HEAD:${A:-ma}$(echo in)", "git push origin ${A:-:}$(echo main)",
+    "git push ${A:--}$(echo f) origin claude/7", "git push ${A:---for}$(echo ce) origin claude/7",
+    "B=main; git push origin ${A:-+}$B", 'B=main; git push origin "${A:-+}$B"', "B=main; git push origin ${A:-:}$B",
+    "git push origin ${A=ma}$(echo in)", "git push origin ${A:=ma}$(echo in)", "git push origin ${A-ma}$(echo in)",
+    "A=x; git push origin ${A:+ma}$(echo in)", "A=x; git push origin ${A+ma}$(echo in)",
+    "git push origin ${A:-$'\\x6d'a}$(echo in)", "git push $(echo -)f origin claude/7",
+    "touch -- -f; git push * origin claude/7", "touch +main; git push origin ?main",
+    "touch +main; git push origin [+]main", "touch : ; git push origin ?", "touch : ; git push origin [:]",
+    "git push origin :$X", "git push origin $D:", 'git push origin ":$X"',
+)
+# What sessions write most that bash runs no forbidden push of: a branch
+# or a lease's value by a substitution whole, a commit message in ANSI-C
+# quotes or a here-document, a pull request's body, a # after a
+# continuation that follows no blank, braces and arithmetic beside an
+# allowed push, and push named in a $'...' that echo prints.
+BUILT_TEXTS = (
+    'git push -u origin "$(git branch --show-current)"', 'git push -u origin $(git branch --show-current)',
+    'git push --force-with-lease=claude/7:$(git rev-parse origin/claude/7) origin claude/7',
+    'git push --force-with-lease=claude/7:"$(git rev-parse origin/claude/7)" origin HEAD:claude/7',
+    "git commit -m $'line1\\nline2' && git push origin claude/7", "echo $'a\\tb'; git push origin claude/7",
+    'printf \'%s\\n\' "$(git log -1 --format=%H)"; git push origin claude/7',
+    'git commit -m "$(cat <<\'EOF\'\nFix it\n\nCo-Authored-By: x\nEOF\n)" && git push -u origin claude/7',
+    'gh pr create --title t --body "$(cat <<\'EOF\'\n## Summary\n- git push origin main is refused\nEOF\n)"',
+    'git push origin "$(git rev-parse --abbrev-ref HEAD)"', 'echo a \\\n#x; git push origin main',
+    "echo $'git push origin main'", 'echo {push,pull} && git push origin claude/7',
+    'echo $(( 1 << 2 )) && git push origin claude/7',
+    # F29's first review: a refspec that is one name read twice, a name
+    # made of expansions alone, and a whole option with nothing after it.
+    'git push origin "$(git branch --show-current):$(git branch --show-current)"', "git push origin $B:$B",
+    'git push origin "${PREFIX}${N}"', 'git push origin HEAD:"$PREFIX$N"', "git push origin $A$B:$C$D",
+    "git push -u origin claude/7 --no-verify${NOPE}", "git push --no-verify$(true) origin claude/7",
+    'echo "${X:-git push origin main}"; git push origin claude/7',
+    # F29's second review: a default that names the session's own claim, a
+    # refspec with a hole on each side of its colon, and a pattern whose
+    # class gives neither a +, a colon nor a dash.
+    "git push origin $S:$D", "git push origin ${A:-claude/7}", "git push origin ${A:-claude/}$(echo 7)",
+    "git push origin HEAD:${B:-claude/7}", "git push origin claude/[7]", "git push origin [c]laude/7", 'git push origin "${BRANCH:-$(git branch '
+    '--show-current)}"', "git push -u origin ${1:-claude/7}",
+)
+
+
+class BuiltWordsTest(unittest.TestCase):
+    """The words bash builds (F29): the guard reads a word as bash may build
+    it, its quotings decoded, each substitution a hole in its word, every
+    variable unset and every substitution empty, its braces expanded, and
+    the scan of here-documents reads a continuation, arithmetic and a
+    delimiter word as bash does. bash 5.2 ran each push these tests say it
+    runs, and none of the texts' forbidden pushes."""
+
+    def test_each_push_bash_builds_is_refused(self):
+        for command in BUILT_PUSHES:
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+
+    def test_what_sessions_write_most_passes(self):
+        for command in BUILT_TEXTS:
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+
+    def test_what_the_fix_leaves(self):
+        """A branch by a substitution whole is a value the guard cannot
+        know, read as a variable is, so a push to $(echo main) passes, as
+        one to $BRANCH does; and a push named in a here-document's delimiter
+        word, which bash reads as text, is still read by the whole reading,
+        as one in a body is, and refused, too much."""
+        self.assertIsNone(refused("git push origin $(echo main)"))
+        self.assertIsNotNone(refused("cat <<E$(git push origin main)F\nhi\nE$(git push origin main)F\n"
+                                     "git push origin claude/7"))
+        self.assertIsNone(refused("cat <<E$(echo x)F\nhi\nE$(echo x)F\ngit push origin claude/7"))
+
+    def test_a_built_git_word_runs_nothing_after_an_option_git_does_not_know(self):
+        """A first word that may be git, with an option git refuses before
+        its verb, runs no push (GIT_FLAGS): env reads each ${NAME} of its
+        -S string as set in one reading, and git -u then runs nothing; one
+        of git's own options is read past."""
+        self.assertIsNone(refused("env -S '${NOPE} -u ${HOME} git push --force-with-lease origin HEAD'"))
+        self.assertIsNone(refused("$G -u x push origin main"))
+        self.assertIsNotNone(refused("$G --no-pager push origin main"))
+        self.assertIsNotNone(refused("$G -C /w push origin main"))
+
+    def test_a_built_option_passes_only_after_a_whole_flag_no_other_extends(self):
+        """A built option is refused unless the text before its first hole
+        is a whole option of git push that takes no value and that no other
+        option's name extends (guard.whole_flag), so --no-verify${NOPE} is
+        --no-verify or a word git refuses; --"$opt" may be --force,
+        --force$X --force-with-lease, -u$X -uf and --no-v$X a start."""
+        for command in ('git push --"$opt" origin claude/7', "git push --force$X origin claude/7",
+                        "git push -u$X origin claude/7", "git push --no-v$X origin claude/7",
+                        "git push --repo$X origin claude/7", "git push --no-force$X origin claude/7",
+                        "git push --all$NOPE origin"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+        for command in ("git push --thin$X origin claude/7", "git push --no-thin$X origin claude/7",
+                        "git push --verify${X} origin claude/7", "git push --atomic$(true)x origin claude/7"):
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+
+    def test_a_refspec_that_collapses_to_a_colon_or_a_plus_is_kept_as_written(self):
+        """In the world where every variable is unset, $B:$B is the
+        refspec :, which pushes every branch both sides have; the guard
+        reads it as written, a name it cannot know read twice, as it reads
+        $B, while a + in it still forces, and a written name beside it is
+        still judged. Since F29's second review only a word that opens and
+        ends with a hole is kept so, and +$B is read as the + it is where B
+        is nothing."""
+        self.assertEqual(guard.unset_words(["git", "push", "origin", "$B:$B", "+$B", "$B:main"]),
+                         ["git", "push", "origin", "$B:$B", "+", ":main"])
+        self.assertIsNotNone(refused("git push origin +$B"))
+        self.assertIsNotNone(refused("git push origin $B:main"))
+
+    def test_a_default_s_own_text_is_read_where_its_operator_gives_it(self):
+        """F29's second review: a ${NAME<op>word} whose operator gives its
+        word, -, :-, = and := where the name is unset and + and :+ where it
+        is set, gives the command's own text, so ${A:-ma}$(echo in) reads as
+        ma$(echo in), which bash makes main, while the name's own value
+        stays one the guard cannot know (guard.defaults_given)."""
+        for op in (":-", "-", ":=", "=", ":+", "+"):
+            with self.subTest(op=op):
+                self.assertEqual(guard.defaults_given("${A" + op + "ma}" + guard.SUBSTITUTED), "ma" + guard.SUBSTITUTED)
+                self.assertIsNotNone(refused("git push origin ${A" + op + "ma}$(echo in)"))
+        self.assertEqual(guard.defaults_given("${A:?ma}x${#B}${C}"), "${A:?ma}x${#B}${C}")
+        self.assertEqual(guard.defaults_way(["${A:-git", "push}", "origin"]), ["git", "push", "origin"])
+        self.assertIsNone(refused("git push origin ${A:-claude/7}"))
+        self.assertIsNone(refused("git push origin ${A:?unset}"))
+
+    def test_a_word_that_may_open_with_a_dash_is_read_as_a_built_option(self):
+        """F29's second review: $(echo -)f gives -f, and so does a * where a
+        file is named -f, so a built word that does not open with - as
+        written but may be --force or a short bundle holding f is a built
+        option (guard.may_force); one made of expansions alone, as
+        "$BRANCH", is a value the guard cannot know, as before."""
+        sub = guard.SUBSTITUTED
+        for word in (sub + "f", "*", "?f", sub + "uf", sub + "orce", "[-]f", "[-]" + sub):
+            with self.subTest(word=word):
+                self.assertTrue(guard.may_force(word))
+        for word in ("$B", sub, sub + sub, "claude/" + sub, sub + "x:y", "[!-]f", sub + "/u", "?", "origin"):
+            with self.subTest(word=word):
+                self.assertFalse(guard.may_force(word))
+
+    def test_a_pattern_may_give_a_plus_or_a_colon_where_its_class_holds_one(self):
+        """F29's second review: a file's name may hold a + or a colon, so ?main
+        and [+]main may be the forcing refspec +main, and ? and [:] the
+        refspec :, while a class that holds neither gives neither, and an
+        expansion's hole is read where it is nothing by the unset world
+        (guard.hole_allows, may_open_with_plus, colon_given); and [:]main
+        may be :main where a file is so named, which deletes main."""
+        for spec in ("?main", "[+]main", "*main", "[^a]main"):
+            with self.subTest(spec=spec):
+                self.assertTrue(guard.may_open_with_plus(spec))
+        for spec in ("[!+]main", "[ab]main", "m?in", "$B", "main"):
+            with self.subTest(spec=spec):
+                self.assertFalse(guard.may_open_with_plus(spec))
+        for spec, given in (("?", ":"), ("[:]", ":"), ("*", ":"), (":*", ":"), ("[:]main", "main"),
+                            ("*main", "main"), ("?refs/heads/main", "main"), ("*ard", "board"), ("[:]boa?d", "board")):
+            with self.subTest(spec=spec):
+                self.assertEqual(guard.colon_given(spec, ("main", "board")), given)
+        for spec in ("[a]", "??", "$B", "$B?", ":", "[:]feature", "[a]main", "x:?main", "$X[:]main"):
+            with self.subTest(spec=spec):
+                self.assertIsNone(guard.colon_given(spec, ("main", "board")))
+        self.assertIsNotNone(refused("touch :main; git push origin [:]main"))
+        self.assertFalse(guard.may_be("[xy]ain", "main"))
+        self.assertTrue(guard.may_be("[lm]ain", "main"))
+        self.assertIsNone(refused("git push --delete origin ?"))
+
+    def test_a_colon_beside_one_hole_is_read_as_the_colon_bash_makes(self):
+        """F29's second review: only a refspec that opens and ends with a
+        hole, as $S:$D, is kept as written; :$X, $D: and ${A:-:}$B are the
+        refspec : where the hole is nothing, which bash then pushes."""
+        self.assertEqual(guard.unset_words(["git", "push", "origin", ":$X", "$D:", "${A:-:}$B", "$S:$D"]),
+                         ["git", "push", "origin", ":", ":", ":", "$S:$D"])
+        for command in ("git push origin :$X", "git push origin $D:", 'git push origin ":$X"'):
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+        self.assertIsNone(refused("git push origin $S:$D"))
+
+    def test_an_unquoted_default_with_blanks_goes_on_into_the_words_after_it(self):
+        """shlex splits a ${ } at a blank inside it, as bash splits what it
+        gives where it is unquoted, so the words after it go on with it
+        until it closes; quoted it stays one word, which runs no git."""
+        self.assertEqual(guard.unset_words(["${NOPE:-git", "push}", "origin", "main"]), ["git", "push", "origin", "main"])
+        self.assertEqual(guard.unset_words(["${NOPE:+git", "push}", "origin"]), ["origin"])
+        self.assertIsNone(refused('"${NOPE:-git push origin main}"'))
+
+    def test_the_hook_reads_a_push_a_line_continuation_splits(self):
+        """run asks of the text with each line continuation out, as bash
+        takes it out, so a push it splits is read and refused; one that
+        spells no push still passes unread."""
+        for command in ("git p\\\nush origin main", "git pu\\\nsh origin main", "git push\\\n origin main"):
+            with self.subTest(command=command):
+                self.assertEqual(guard.run({"tool_input": {"command": command + "\ngit push origin main"},
+                                            "cwd": "/"})[0], guard.REFUSE)
+        self.assertEqual(guard.run({"tool_input": {"command": "git p\\\null origin main"}, "cwd": "/"}),
+                         (guard.PASS, ""))
+        self.assertEqual(guard.lines_joined("a \\\nb"), "a b")
+
+    def test_coproc_names_its_coprocess_only_before_a_compound_command(self):
+        self.assertEqual(guard.launch(["coproc", "X", "{", "git", "push"]).argv[guard.launch(
+            ["coproc", "X", "{", "git", "push"]).start:], ["git", "push"])
+        self.assertEqual(guard.launch(["coproc", "git", "push"]).argv[guard.launch(["coproc", "git", "push"]).start:],
+                         ["git", "push"])
+
+    def test_a_lone_assignment_may_name_the_repository(self):
+        """GIT_DIR=x alone sets the shell's variable, which git sees only
+        where it was exported before, so a push by -C after it is judged
+        where -C names and in the session's own clone."""
+        self.assertEqual(push_places("GIT_DIR=/w/s/.git; git -C /x push"), ["/x"])
+
+    def test_the_template_s_hook_raises_on_none_of_them(self):
+        for command in BUILT_PUSHES + BUILT_TEXTS:
+            with self.subTest(command=command):
+                template_hook(command)
+                guard.simple_commands(command)
+
+    def test_words_bash_builds_are_read_in_time(self):
+        """Each at the longest command the guard reads, under the bound."""
+        full = ReadingTest.at_full_size
+        for command in (full("echo ", "$'a\\x41\\'b' ", ""), full("echo $'", "\\x41", "'"),
+                        full("echo ", "{a,b} ", ""), full("git ", "{a,b}", " origin"),
+                        full("git p", "{u,", "}sh origin"), full("git ", "${x:-", "push} origin"), full("", "git pu$(true)sh x; ", ""),
+                        full("", "$NOPE ", "git push origin main;"), full("git push origin ", "ma?n ", ""),
+                        full("echo ", "a \\\n", ""), full("echo $(( ", "1+", "1 ))"), full("echo ", "$(( ", "1"),
+                        full("git push origin ", "$a$b$c", ""), full("git push origin ma", "$(x)", "in"),
+                        full("", "cat <<E$(x)F\nE$(x)F\n", ""), full("git push origin ", "@(", ""),
+                        full("echo ", "?(", ")"), full("", "${NOPE:-a ", ""), full("${NOPE:-", "git push x ", "}"),
+                        full("git push origin ", "$B:$B ", ""), full("git push ", "--no-verify$X ", "origin"),
+                        full("git push origin ", "${A[@]:-b} ", ""),
+                        # F29's second review: a subscript that never
+                        # closes, a run of parentheses after @, defaults
+                        # beside holes, and patterns a file may fill.
+                        full("git push origin ", "${A[", ""), full("git push origin ", "${#A[x", ""),
+                        full("git push origin @", "(", ""), full("git push origin ", "${A:-ma}$(x)", ""),
+                        full("git push origin ", "${A:-", ""), full("git push ", "$(echo -)f ", ""),
+                        full("git push origin ", "*", ""), full("git push origin ", "[+]", ""),
+                        full("git push origin ", "? ", ""), full("git push origin ", ":$X ", "")):
+            with self.subTest(command=command[:40]):
+                started = time.monotonic()
+                self.assertIsNotNone(refused(command + "\ngit push origin main"))
+                self.assertLess(time.monotonic() - started, 3.0)
+                started = time.monotonic()
+                self.assertEqual(guard.run({"tool_input": {"command": command + "\ngit push origin main"},
+                                            "cwd": "/"})[0], guard.REFUSE)
                 self.assertLess(time.monotonic() - started, 3.0)
 
 
@@ -1431,7 +1744,7 @@ class EnvAssignmentTest(unittest.TestCase):
         and runs nothing, left one word as before the fix."""
         for command in ("env FOO=bar make", "env -u X ls", "env 1x=2 printf ran", "1x=2 git push origin main",
                         "env FOO=1 - git push origin main", "env -S 'printf git push origin main'",
-                        "env -S 'echo push' main", "env -S '$x git push origin main'"):
+                        "env -S 'echo push' main"):
             with self.subTest(command=command):
                 self.assertEqual([guard.push_arguments(argv) for argv in guard.simple_commands(command)
                                   if guard.push_arguments(argv) is not None], [])
@@ -1458,7 +1771,12 @@ class EnvAssignmentTest(unittest.TestCase):
         self.assertEqual(push_places("env GIT_DIR=/r; git -C /x push"), ["/x"])
         self.assertEqual(push_places("env 1x=2 GIT_DIR=/r; git -C /x push"), ["/x"])
         self.assertEqual(push_places("nice env GIT_DIR=/r; git -C /x push"), ["/x"])
-        self.assertEqual(push_places("GIT_DIR=/r; git -C /x push"), [None])
+        self.assertEqual(push_places("GIT_DIR=/r; git -C /x push"), ["/x"],
+                         "F29: a lone assignment sets a variable git sees only where it was exported, so the push "
+                         "is judged where its -C names as well as by its words and in the session's own clone")
+        self.assertEqual([reading.place for reading in guard.push_places(
+            ["git", "-C", "/x", "push"], guard.moved_to(["GIT_DIR=/r"], guard.Shell("/w/s"), lambda place: True),
+            "/w/s")], ["/x", "/w/s", None])
         with self.subTest(shell="bash"):
             shown = subprocess.run(["bash", "-c", "env GIT_DIR=/r > /dev/null; echo \"[$GIT_DIR]\""],
                                    capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
@@ -1643,6 +1961,258 @@ def refused(command):
                               lambda place: True)
 
 
+# Pushes a command hands to a shell to run (F32): bash 5.2.21 ran each, by
+# -c with a git on PATH that records its arguments and runs nothing, and
+# the guard of f6ac177 passed each.
+HANDED_PUSHES = (
+    "bash -c 'git push origin main'",
+    "bash -lc 'git push origin main'",
+    "bash -c -- 'git push origin main'",
+    "bash -o pipefail -c 'git push origin main'",
+    "bash --norc -c 'git push origin main'",
+    "sh -ec 'git push origin main'",
+    "nohup bash -c 'git push origin main'",
+    "env bash -c 'git push origin main'",
+    "/bin/bash -c 'git push origin main'",
+    "eval 'git push origin main'",
+    'eval -- git push origin main',
+    'eval git push origin main',
+    "sh -c 'git push origin main'",
+    "bash <<<'git push origin main'",
+    "bash -s <<<'git push origin main'",
+    "bash /dev/stdin <<<'git push origin main'",
+    'sh <<< "git push origin main"',
+    "echo 'git push origin main' | bash",
+    'echo git push origin main | sh',
+    "echo -e 'git push origin ma\\x69n' | bash",
+    "printf 'git push origin main\\n' | sh",
+    "printf '%s %s\\n' 'git push' 'origin main' | bash",
+    "echo 'git push origin main' | cat | bash",
+    "cat <<<'git push origin main' | bash",
+    "trap 'git push origin main' EXIT",
+    "trap -- 'git push origin main' EXIT",
+    "source /dev/stdin <<<'git push origin main'",
+    ". /dev/stdin <<<'git push origin main'",
+    "echo 'git push origin main' | source /dev/stdin",
+    'bash -c \'eval "git push origin main"\'',
+    'bash -c "bash -c \'git push origin main\'"',
+    "bash -c 'cd /tmp && git push origin HEAD:main'",
+    "bash -c 'git push --force origin claude/7'",
+    "true && bash -c 'git push origin main'",
+    "x=$(bash -c 'git push origin main')",
+)
+# Commands that hand a shell no forbidden push, or hand it nothing: bash
+# ran none of their forbidden pushes, and the guard passes each.
+HANDED_TEXTS = (
+    "bash -c 'git push -u origin claude/7'",
+    "bash script.sh <<<'git push origin main'",
+    "echo 'git push origin main' > notes.md",
+    "echo 'git push origin main' | grep push",
+    'trap - EXIT',
+    "trap 'git push origin main'",
+    "printf -v x 'git push origin main' | bash",
+    "bash -c 'echo git push origin main'",
+    "echo 'git push origin main' | tee notes.md",
+    'sh -c \'git push origin "$(git branch --show-current)"\'',
+)
+
+# F32's first review's pushes, each run by bash 5.2.21; the last four the
+# hook's gate let pass unread.
+FIRST_REVIEW_PUSHES = (
+    "builtin eval 'git push origin main'", "builtin trap 'git push origin main' EXIT",
+    "builtin source /dev/stdin <<<'git push origin main'", "builtin . /dev/stdin <<<'git push origin main'",
+    "printf 'git push origin %s\\n' claude/7 main | bash", "printf '%s\\n' 'echo hi' 'git push origin main' | bash",
+    "printf 'echo %s\\n' hi 'x; git push origin main' | bash", "printf 'git pu%ch origin main' s | bash",
+    "printf 'git push origin %5s' main | bash", "printf 'git push origin %.4s' mainx | bash",
+    "cat - <<<'git push origin main' | bash", "echo 'git push origin main' | cat - | bash",
+    "echo -e 'git push origin \\0155ain' | bash", "sh -c \"echo 'git pu\\0163h origin main' | sh\"",
+    "{ echo x; echo 'git push origin main'; } | bash", "(echo 'git push origin main'; echo x) | bash",
+    "echo 'git push origin main' | (cd /tmp && bash)", "echo 'git push origin main' | if true; then bash; fi",
+    "printf 'git pu\\163h origin main' | bash", "printf 'git pu\\x73h origin main' | bash",
+    "printf 'git pu%sh origin main' s | bash", "echo -e 'git pu\\x73h origin main' | bash",
+)
+
+SECOND_REVIEW_PUSHES = (
+    "printf 'gi\\0t push origin main' | bash",
+    "echo -e 'git pu\\0sh origin main' | bash",
+    "printf '%b' 'git pu\\0sh origin main' | bash",
+    "printf '\\x00git push origin main' | bash",
+    "printf '%b%s\\n' 'git push origin main\\c' x | bash",
+    "printf '%bx\\n' 'git push origin main\\c' | bash",
+    "printf 'git push origin %ls\\n' main | bash",
+    "printf 'git push origin %jb\\n' main | bash",
+    "{ { echo 'git push origin main'; }; } | bash",
+    "if true; then if true; then echo 'git push origin main'; fi; fi | bash",
+    "if true; then { echo 'git push origin main'; }; fi | bash",
+    "for i in 1; do for j in 1; do echo 'git push origin main'; done; done | bash",
+    "! { echo 'git push origin main'; } | bash",
+    "time { echo 'git push origin main'; } | bash",
+    "case a in a) echo 'git push origin main';; esac | bash",
+    "{ printf 'git push '; echo origin main; } | bash",
+    "{ echo -n 'git push origin '; echo main; } | bash",
+    "( printf 'git pu'; echo 'sh origin main' ) | bash",
+    "echo 'git push origin main' |\n bash",
+    "printf 'git pu\\163h origin main' | ksh93",
+)
+
+
+class HandedTextTest(unittest.TestCase):
+    """What a command hands to a shell to run (F32): a shell's -c string,
+    eval's words, trap's action, and a here-string or what echo, printf or
+    cat prints into a shell or source of standard input, each read as a
+    command of its own from the shell that runs it."""
+
+    def test_each_push_handed_to_a_shell_is_refused(self):
+        for command in HANDED_PUSHES:
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+                with mock.patch.object(guard, "handed_texts", lambda argv, fed=(): []):
+                    self.assertIsNone(refused(command), "with no handed text read")
+
+    def test_what_hands_no_forbidden_push_passes(self):
+        for command in HANDED_TEXTS:
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+
+    def test_the_hook_refuses_them_too(self):
+        payload = {"tool_input": {"command": "bash -c 'git push origin main'"}, "cwd": str(ROOT)}
+        with mock.patch.object(guard, "branches", return_value=("claude/7", "main")):
+            self.assertEqual(guard.run(payload, str(ROOT)), (2, MAIN))
+
+    def test_what_the_fix_leaves(self):
+        """A text the command does not spell, a substitution's output, a
+        file or a variable, is a value the guard does not know and passes,
+        as a wrapper it does not name does."""
+        for command in ('eval "$(echo git push origin main)"', "cat push.sh | bash", "bash push.sh",
+                        'bash -c "$CMD"', "sudo bash -c 'git push origin main'"):
+            with self.subTest(command=command):
+                self.assertIsNone(refused(command))
+
+    def test_a_handing_is_read_from_the_shell_that_runs_it(self):
+        """A move inside the text is followed from where it starts and
+        changes nothing after it, as the shell bash -c starts ends with it."""
+        seen = []
+
+        def branches_of(place):
+            seen.append(place)
+            return ("claude/7", "main")
+
+        guard.refused_push("cd /w/a && bash -c 'cd b && git push origin HEAD'; git push origin HEAD", "/w",
+                           branches_of, lambda place: None, lambda place: True)
+        self.assertIn("/w/a/b", seen)
+        self.assertIn("/w", seen)
+
+    def test_texts_handed_on_too_deep_or_too_many_are_refused_unread(self):
+        self.assertEqual(refused("eval " * guard.MAX_NESTING + "'git push origin main'"), MAIN)
+        self.assertEqual(refused("eval " * (guard.MAX_NESTING + 1) + "'git push origin claude/7'"),
+                         guard.HANDED_TOO_DEEP)
+        many = "".join(f"bash -c 'git push origin claude/7 #{i}'; " for i in range(guard.MOST_HANDED))
+        self.assertIsNone(refused(many + "git push origin claude/7"))
+        self.assertEqual(refused(many + "bash -c 'git push origin claude/7 #last'"), guard.HANDED_TOO_DEEP)
+        self.assertIsNone(refused("".join(f"bash -c 'echo {i}'; " for i in range(2 * guard.MOST_HANDED))),
+                          "a text the hook's gate would not read is not read, nor counted")
+        self.assertEqual(refused("eval " * 15 + "'git push origin claude/7 " + "`a` " * 55000 + "'"),
+                         guard.HANDED_TOO_DEEP, "a long text handed on is counted by its characters")
+
+    def test_the_reading_takes_time_in_proportion_to_the_command(self):
+        """Each handed text is read once per shell, and the placed commands
+        are kept in a set, so a command near MAX_COMMAND of handings is read
+        and refused in a few seconds; until the set, it took ten. A text
+        with no push is not read at all, as the hook's gate reads none."""
+        for form in ("bash -c 'git push #{i}'; ", "echo 'git push #{i}' | sh; ", "bash <<<'git push #{i}'\n",
+                     "trap 'git push #{i}' EXIT; ", "eval git push \\#{i}; ", "eval eval 'git push \\#{i}'; "):
+            command, i = "", 0
+            while len(command) < guard.MAX_COMMAND - 40:
+                command += form.format(i=i)
+                i += 1
+            with self.subTest(form=form):
+                began = time.monotonic()
+                self.assertEqual(refused(command), guard.HANDED_TOO_DEEP)
+                self.assertLess(time.monotonic() - began, 3)
+
+    def test_the_first_review_s_pushes_are_refused(self):
+        """F32's first review: builtin before eval, trap and source; printf's
+        format read again while words remain, and its widths, precisions
+        and %c; cat - reading standard input; echo's \\0nnn; a group's or a
+        subshell's whole output into a pipe, and a pipe into a group; and
+        the hook's gate reading a text whose escapes spell push. bash
+        5.2.21 ran each push, and the guard of 4d86c07 passed each, through
+        the hook where the last four say so."""
+        for command in FIRST_REVIEW_PUSHES:
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+        for command in FIRST_REVIEW_PUSHES[-4:]:
+            with self.subTest(command=command):
+                self.assertTrue(guard.may_push(command))
+
+    def test_each_first_review_rule_bites(self):
+        cases = {"BUILTIN": (frozenset(), "builtin eval 'git push origin main'"),
+                 "MOST_PRINTF_PASSES": (1, "printf 'git push origin %s\\n' claude/7 main | bash"),
+                 "ECHO_OCTAL": (re.compile("(?!)"), "echo -e 'git push origin \\0155ain' | bash"),
+                 "COMPOUND_OPENS": (frozenset(), "{ echo x; echo 'git push origin main'; } | bash"),
+                 "BUILDS_TEXT": (frozenset(), "printf 'git pu\\163h origin main' | bash")}
+        for name, (value, command) in cases.items():
+            with self.subTest(name=name), mock.patch.object(guard, name, value):
+                self.assertFalse(refused(command) and guard.may_push(command))
+
+    def test_a_subshell_after_a_pipe_keeps_its_moves_to_itself(self):
+        """F32's first review: reading what a pipe feeds lost the subshell
+        after it, so its cd was read as the shell's own and its ) closed
+        the wrong one; each push here runs in /o, where main is checked
+        out."""
+        def branches_of(place):
+            return ("main", "main") if place == "/o" else ("claude/7", "main")
+
+        for command in ("true | ( cd /o; git push )", "true | ( cd /o && git push )", "true |& ( cd /o; git push )",
+                        "( cd /o; true | ( true ); git push )"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(guard.refused_push(command, "/w", branches_of, lambda place: None,
+                                                        lambda place: True))
+
+    def test_the_second_review_s_pushes_are_refused(self):
+        """F32's second review: a NUL a pipe's shell drops, %b's \\c ending
+        all of printf's output, printf's length modifiers, a compound
+        command's second opener and the reserved words before it, a case
+        pattern's ), a group's outputs joined as printed, and a newline
+        after a pipe. bash 5.2.21 ran each push, and the guard of 0c224c3
+        passed each."""
+        for command in SECOND_REVIEW_PUSHES:
+            with self.subTest(command=command):
+                self.assertIsNotNone(refused(command))
+                self.assertTrue(guard.may_push(command))
+
+    def test_each_second_review_rule_bites(self):
+        cases = {"COMPOUND_LEADS": (frozenset(), "if true; then { echo 'git push origin main'; }; fi | bash"),
+                 "PRINTF_CONVERSION": (re.compile(r"%([-+ #0]*)(\*|[0-9]*)(?:\.(\*|[0-9]*))?([a-zA-Z%])"),
+                                       "printf 'git push origin %ls\\n' main | bash"),
+                 "ECHO_STOP": ("\\c\\c", "printf '%b%s\\n' 'git push origin main\\c' x | bash")}
+        for name, (value, command) in cases.items():
+            with self.subTest(name=name), mock.patch.object(guard, name, value):
+                self.assertIsNone(refused(command))
+
+    def test_a_width_too_wide_to_build_is_read_in_time(self):
+        """F32's second review: printf '%999999999999999s' raised
+        MemoryError out of the hook, which Claude Code reads as no
+        objection, and 5,000 digits raised ValueError; each width is cut to
+        what the guard reads, and anything the guard cannot build refuses."""
+        for width in ("999999999999999", "9" * 30, "9" * 5000):
+            command = "printf '%" + width + "s' x >/dev/null; git push origin main"
+            with self.subTest(width=width[:20]):
+                start = time.monotonic()
+                self.assertEqual(guard.run({"tool_input": {"command": command}}, "/w")[0], guard.REFUSE)
+                self.assertLess(time.monotonic() - start, 3)
+        self.assertLessEqual(len(guard.printf_text("%999999s" * 20000, ["x"] * 20000)), 3 * guard.MAX_COMMAND)
+        with mock.patch.object(guard, "printed_texts", side_effect=MemoryError):
+            self.assertEqual(guard.refused_push("echo x | bash", "/w", lambda place: ("claude/7", "main"),
+                                                lambda place: None, lambda place: True), guard.UNREADABLE)
+
+    def test_the_template_s_helpers_still_give_lists(self):
+        """parts_of keeps a here-string on the words it feeds (Words), a
+        list the template's hook reads as before."""
+        self.assertEqual(guard.simple_commands("bash <<<'git push origin main'"), [["bash"]])
+        self.assertEqual(guard.parts_of("bash <<<'git push origin main'")[0].fed, "git push origin main")
+
+
 class EnvSecondReviewTest(unittest.TestCase):
     """F28's second review: the template's hook, which calls the public
     helpers itself, meets every reading and every bound; a backslash in
@@ -1683,7 +2253,7 @@ class EnvSecondReviewTest(unittest.TestCase):
         self.assertEqual(guard.simple_commands('env -S "\\${X} \\`y\\` \\a"'), [["env", "-S", "${X} `y` \\a"]])
         shown = subprocess.run(["bash", "-c", 'printf %s "\\${X}\\`"'], capture_output=True, text=True)
         self.assertEqual(shown.stdout, "${X}`")
-        with mock.patch.object(guard, "QUOTED_PAIRS", {"\n": ""}):
+        with mock.patch.object(guard, "QUOTED_PAIRS", {"\n": ""}), built_words_unread():
             self.assertIsNone(refused('env -S "\\${NOPE}git push origin main"'))
 
     def test_set_and_unset_names_are_read_in_every_mix(self):
@@ -1700,7 +2270,8 @@ class EnvSecondReviewTest(unittest.TestCase):
         self.assertEqual(refused(many), guard.SPLIT_TOO_MANY_NAMES)
         self.assertEqual(template_hook(many), guard.SPLIT_TOO_MANY_NAMES)
         self.assertEqual([reading.argv for reading in guard.readings_of(["env", "-S", "${A}${B}${C}${D}${E}${F}${G} ls"])],
-                         [["env", "${A}${B}${C}${D}${E}${F}${G}", "ls"]], "no push: read as written alone")
+                         [["env", "${A}${B}${C}${D}${E}${F}${G}", "ls"], ["env", "ls"]],
+                         "no push: read as written, and with every variable unset (F29)")
         self.assertEqual(len(guard.unset_subsets(["${A}", "${B}", "${C}"])), 8)
         with mock.patch.object(guard, "unset_subsets",
                                lambda names: [frozenset(), frozenset(name[2:-1] for name in names)]):
@@ -1729,7 +2300,8 @@ class EnvSecondReviewTest(unittest.TestCase):
         self.assertFalse(guard.holds_push(["pu\\_sh", "pu sh", "pul"]))
         self.assertIsNotNone(refused("env " + "-S" * 17 + "ls; git push origin claude/7"),
                              "nested too deep: the words env runs are not read")
-        with mock.patch.object(guard, "holds_push", lambda argv: any("push" in word for word in argv)):
+        with mock.patch.object(guard, "holds_push", lambda argv: any("push" in word for word in argv)), \
+                built_words_unread():
             self.assertIsNone(refused("env -S '${A}${B}${C}${D}${E}${F}${G} git pu\"\"sh origin main'; echo push"))
 
     def test_every_mix_is_read_up_to_the_bound(self):
@@ -1884,19 +2456,20 @@ class PlaceTest(unittest.TestCase):
                         "GIT_REFERENCE_BACKEND=files://../other/.git git push",
                         "env GIT_REFERENCE_BACKEND=files:///w/other/.git git -C /w/s push"):
             with self.subTest(command=command):
-                self.assertEqual(push_places(command), [None])
+                self.assertEqual(set(push_places(command)), {None}, "once for each reading that finds it")
 
     def test_a_variable_that_names_the_repository_holds_whatever_cd_or_minus_c_comes_after(self):
         """A move changes the directory and not the variable, so a push after
-        GIT_DIR, or GIT_REFERENCE_BACKEND, set alone or exported, runs where
-        this module cannot tell, through an absolute cd or -C too, until a
+        GIT_DIR, or GIT_REFERENCE_BACKEND, exported, runs where this module
+        cannot tell, and after one set alone, which git sees only where it
+        was exported before, where the shell stands too (F29), through an absolute cd or -C too, until a
         subshell's ) or the end of a pipeline's part (F21's fourth review:
         an absolute -C after the export was taken for where the push runs).
         GIT_COMMON_DIR moves no ref (OtherCloneTest shows it over git)."""
         for command, places in (("export GIT_DIR=/w/s/.git; git -C /w/other push", [None]),
                                 ("export GIT_DIR=/w/s/.git; env -C /w/other git push", [None]),
                                 ("export GIT_DIR=/w/s/.git; cd /w/other && git push", [None]),
-                                ("GIT_DIR=/w/s/.git; pushd /w/other && popd && git push", [None]),
+                                ("GIT_DIR=/w/s/.git; pushd /w/other && popd && git push", ["/w/s"]),
                                 ("declare -x GIT_REFERENCE_BACKEND=files:///w/s/.git; git -C /w/other push", [None]),
                                 ("export GIT_REFERENCE_BACKEND; cd /w/other; git push", [None]),
                                 ("(export GIT_DIR=/w/s/.git); git -C /w/other push", ["/w/other"]),
@@ -1944,7 +2517,7 @@ class PlaceTest(unittest.TestCase):
         for command in ("cd - && git push", "cd -P ../other && git push", "cd -LP ../other && git push",
                         "cd $X && git push", "cd ~/$X && git push", "pushd && git push",
                         "pushd +1 && git push", "popd && git push", "export GIT_DIR=../o/.git; git push",
-                        "GIT_DIR=../o/.git; git push", "declare -x GIT_DIR=../o/.git; git push"):
+                        "declare -x GIT_DIR=../o/.git; git push"):
             with self.subTest(command=command):
                 self.assertEqual(push_places(command), [None])
 
@@ -2123,8 +2696,8 @@ class CloneTest(unittest.TestCase):
                                            there), "as built until F21's fourth review: judged in /w alone")
 
     def test_a_variable_that_names_the_repository_has_the_push_judged_in_the_session_s_own_clone(self):
-        """GIT_DIR, or GIT_REFERENCE_BACKEND, set alone or exported names the
-        repository whatever cd or -C comes after, so the push is judged by
+        """GIT_DIR, or GIT_REFERENCE_BACKEND, exported, or set alone, where it
+        may (F29), names the repository whatever cd or -C comes after, so the push is judged by
         its words and in the session's own clone, as one with GIT_DIR on it
         is, with UNTOLD's advice and never UNMOVED's, a cd before it or not
         (F21's fourth review: after the export an absolute -C was judged
@@ -2299,13 +2872,12 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.run_guard("git push origin :heads/board"), (2, BOARD))
         self.assertEqual(self.run_guard("git push -u origin heads/claude/7"), (0, ""))
 
-    def test_a_command_handed_to_another_shell_as_text_is_out_of_reach(self):
-        """The trade the docstring states: what bash -c or eval runs is text
-        to this module, and a wrapper it does not name is no git, so each
-        passes, and branch protection stands behind it. env -S, which env
-        splits itself, is read since F28's fix (EnvAssignmentTest)."""
-        for command in ("bash -c 'git push origin main'", "eval 'git push origin main'",
-                        "sudo git push origin main"):
+    def test_a_wrapper_this_module_does_not_name_is_out_of_reach(self):
+        """The trade the docstring states: a wrapper this module does not name
+        is no git, so the push behind it passes, and branch protection stands
+        behind it. What bash -c and eval run is read since F32's fix
+        (HandedTextTest), as env -S is since F28's (EnvAssignmentTest)."""
+        for command in ("sudo git push origin main", "echo main | xargs git push origin"):
             self.assertEqual(self.run_guard(command), (0, ""), command)
 
     def test_command_without_push_passes_without_git(self):

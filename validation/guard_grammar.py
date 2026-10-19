@@ -112,10 +112,87 @@ QUOTED_SUBSTITUTION = 'x="$({})"'
 PROCESS_SUBSTITUTION = "cat <({})"
 WRAPPERS = ("{}", "bash -c '{}'", "true && {}", "( {} )", "echo $({})", HERE_DOCUMENTS, QUOTED_SUBSTITUTION,
             PROCESS_SUBSTITUTION)
+# The words bash builds (F29): a command word that is an expansion bash
+# makes nothing of, so the git after it is the command, before git and
+# behind env; env given the command as an -S string in ANSI-C quotes; the
+# push on the line after a # that a line continuation leaves at a word's
+# start, a comment that hides the quote after it; and the push in a
+# here-document's substitution inside arithmetic, quoted and not, whose
+# body's double quote the guard read as one; and git and its verb spelled
+# as bash builds them, by ANSI-C and locale quoting, a substitution inside
+# the word, one whole, a ${ } that gives its word where the name is unset,
+# and brace expansion; and an option and the default and the board branch
+# spelled with a substitution inside the word, -$(echo f), ma$(echo i)n and
+# bo$(echo a)rd, and the default branch in locale quotes, $"main", which a
+# reading of $ before a quoted span takes for a variable whole. The guard read each as some other word, or none, so it
+# read no push in any, or no option or branch the rules name. They are
+# taken with the command alone, as ABBREVIATED is.
+EMPTY_WORDS = ("$NOPE ", "$(true) ", "`true` ", "${NOPE:-} ", "env $NOPE ")
+ANSI_C_SPLIT = "env -S $'{}'"
+CONTINUED_COMMENT = "echo \\\n#'\n{}\n'"
+ARITHMETIC_BODY = "echo $(( '$(echo \"$(cat <<'E'\n\"\nE\n{})\")' ))"
+QUOTED_ARITHMETIC_BODY = '"'.join(("echo ", ARITHMETIC_BODY[len("echo "):], ""))
+# Since F29's first review: coproc before the command, and before a
+# compound command with the coprocess's name.
+COPROCS = ("coproc ",)
+NAMED_COPROC = "coproc X {{ {} ; }}"
+
+
+class Spelling(NamedTuple):
+    """How a command of BUILT_WORDS spells git, its verb, and an option and
+    a branch where the command has them: each word as written, and in
+    place of the option's or the name's first part the second."""
+
+    git: str = "git"
+    verb: str = "push"
+    option: tuple = ("", "")
+    name: tuple = ("", "")
+
+
+AS_WRITTEN = Spelling()
+# The spellings since F29's first review, after the first twelve: the verb
+# split by a line continuation, which the hook's own gate read as no push;
+# git and its verb inside one ${ } that a blank stands in, which bash
+# splits; the default branch as an array's default, as a $'...' in a
+# default inside double quotes, and as an extended pattern a file named
+# main fills; and two the guard must let through, a refspec of
+# substitutions alone, which reads as : where each is nothing, beside a
+# whole option no other extends, and that option with a substitution after
+# it.
+# Since its second review: the default branch built from a default's own
+# text and a substitution; -f from a substitution that prints the dash; a
+# + and a colon that a file's name gives a pattern, a file being made for
+# each; and a colon beside one variable, set to main.
+BUILT_WORDS = (tuple(Spelling(verb=verb) for verb in ("$'pu\\x73h'", '$"push"', "pu$(true)sh", "pu``sh",
+                                                      "$(echo push)", "${NOPE:-push}", "{push,}"))
+               + (Spelling(git="$(which git)"), Spelling(option=(" -f", " -$(echo f)")),
+                  Spelling(name=("main", "ma$(echo i)n")), Spelling(name=("board", "bo$(echo a)rd")),
+                  Spelling(name=("main", '$"main"')))
+               + (Spelling(verb="pu\\\nsh"), Spelling(git="${NOPE:-git", verb="push}"),
+                  Spelling(name=("main", "${NOPE[0]:-main}")), Spelling(name=("main", "\"${NOPE:-$'\\x6dain'}\"")),
+                  Spelling(git="shopt -s extglob\ngit", name=("main", "@(main)")),
+                  Spelling(option=(" --no-verify", " --no-verify"),
+                           name=("HEAD:claude/7", "$(echo HEAD):$(echo claude/)$(echo 7)")),
+                  Spelling(option=(" --no-verify", " --no-verify$(true)")))
+               + (Spelling(name=("main", "${A:-ma}$(echo in)")), Spelling(option=(" -f", " $(echo -)f")),
+                  Spelling(git="mkdir +claude; touch +claude/7; git", name=("+claude/7", "?claude/7")),
+                  Spelling(git="touch :main; git", name=(" :main", " [:]main")),
+                  Spelling(git="X=main; git", name=(" :main", " :$X"))))
+# Since F32's fix the guard reads what a command hands to a shell to run,
+# so no wrapper of the grammar is one it cannot read; bash -c was until
+# then (G11b). The wrappers that hand the command over in the other ways,
+# taken with the command alone: eval, another shell's -c, a here-string
+# into a shell, a pipe from echo and from printf into one, trap's action
+# and source of standard input.
+UNREADABLE = ()
+HANDED = ("eval '{}'", "sh -c '{}'", "bash <<<'{}'", "echo '{}' | bash", "printf '%s\\n' '{}' | sh",
+          "trap '{}' EXIT", "source /dev/stdin <<<'{}'")
 # The prefixes and wrappers taken with the command alone, no wrapper or
 # global option around it.
-ALONE = tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED) + (("", SPLIT), ("", SPLIT_UNSET), ("", SPLIT_MIXED))
-UNREADABLE = "bash -c '{}'"
+ALONE = (tuple((prefix, "{}") for prefix in ABBREVIATED + ENV_ASSIGNED + EMPTY_WORDS + COPROCS)
+         + tuple(("", wrapper) for wrapper in (SPLIT, SPLIT_UNSET, SPLIT_MIXED, ANSI_C_SPLIT, CONTINUED_COMMENT,
+                                                 ARITHMETIC_BODY, QUOTED_ARITHMETIC_BODY, NAMED_COPROC)
+                                                 + HANDED))
 # git's own options before the verb: a directory, the empty one git -C
 # takes as no change, a setting, a setting from the environment, whose
 # value is the next word (F21's review), and a shallow file, whose value
@@ -146,10 +223,11 @@ class Command(NamedTuple):
     wrapper: str
     option: str
     spec: str
+    spelled: tuple = ()  # how the text spells git, its verb, an option and a name (BUILT_WORDS), the plain way empty
 
     @property
     def readable(self):
-        return self.wrapper != UNREADABLE
+        return self.wrapper not in UNREADABLE
 
     @property
     def allowed_shape(self):
@@ -158,19 +236,29 @@ class Command(NamedTuple):
 
 def commands():
     """Every command of the grammar: each prefix with every wrapper and
-    global option, and each of ALONE, the ABBREVIATED and ENV_ASSIGNED
-    prefixes and the SPLIT, SPLIT_UNSET and SPLIT_MIXED wrappers, with the
-    command alone. A wholesale option takes no refspec and --delete needs one, as git reads them."""
-    alone = ((prefix, wrapper, "", option, spec) for (prefix, wrapper), option, spec
+    global option, and each of ALONE, the ABBREVIATED, ENV_ASSIGNED and
+    EMPTY_WORDS prefixes and the SPLIT, SPLIT_UNSET, SPLIT_MIXED and F29's
+    wrappers, and each of BUILT_WORDS's spellings of git and its verb, with
+    the command alone. A wholesale option takes no refspec and --delete
+    needs one, as git reads them."""
+    alone = ((prefix, wrapper, "", option, spec, AS_WRITTEN) for (prefix, wrapper), option, spec
              in itertools.product(ALONE, OPTIONS, REFSPECS))
-    parts = itertools.chain(itertools.product(PREFIXES, WRAPPERS, GLOBALS, OPTIONS, REFSPECS), alone)
-    for prefix, wrapper, glob, option, spec in parts:
+    spelled = (("", "{}", "", option, spec, spelling) for spelling, option, spec
+               in itertools.product(BUILT_WORDS, OPTIONS, REFSPECS)
+               if spelling.option[0] in ("", option) and spelling.name[0] in spec)
+    parts = itertools.chain(((*part, AS_WRITTEN) for part in itertools.product(PREFIXES, WRAPPERS, GLOBALS, OPTIONS,
+                                                                                 REFSPECS)), alone, spelled)
+    for prefix, wrapper, glob, option, spec, spelling in parts:
         if option in WHOLESALE_OPTIONS and spec:
             continue
         if option == " --delete" and (not spec or spec.startswith(" +") or spec.startswith(" :")):
             continue
         argv = f"{glob} push{option} origin{spec}".strip()
-        yield Command(wrapper.format(f"{prefix}git {argv}"), argv, prefix, wrapper, option, spec)
+        written = (option.replace(*spelling.option) if spelling.option[0] else option,
+                   spec.replace(*spelling.name) if spelling.name[0] else spec)
+        text = f"{prefix}{spelling.git} {glob} {spelling.verb}{written[0]} origin{written[1]}".replace("  ", " ")
+        yield Command(wrapper.format(text), argv, prefix, wrapper, option, spec,
+                      () if spelling == AS_WRITTEN else spelling)
 
 
 def argument_lists():
@@ -208,9 +296,10 @@ def guard_refuses(text):
     (guard.refused_push) from the scratch world's clone, which is on
     CURRENT, with DEFAULT its default branch, wherever the command's -C
     takes it, since every directory it names is that clone, and with no
-    claim-file reader; the grammar makes no cd."""
-    return guard.refused_push(text, HERE, lambda place: (CURRENT, DEFAULT), lambda place: None,
-                              lambda place: True) is not None
+    claim-file reader; the grammar makes no cd. A command the hook does
+    not read at all (guard.may_push) passes, as guard.run lets it pass."""
+    return guard.may_push(text) and guard.refused_push(text, HERE, lambda place: (CURRENT, DEFAULT),
+                                                       lambda place: None, lambda place: True) is not None
 
 
 class Disagreement(NamedTuple):

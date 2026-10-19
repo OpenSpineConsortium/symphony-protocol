@@ -131,7 +131,14 @@ CLONES = "/clones"
 # splits, and after env GIT_DIR=x alone, which sets nothing in the shell
 # (F28); and after /usr/bin/time GIT_DIR=x, which runs the assignment as
 # a command, and "time" GIT_DIR=x, which the guard cannot tell from bash's
-# keyword (F28's review).
+# keyword (F28's review). And since F29's fix, after GIT_DIR=x alone,
+# which sets the shell's variable and hands it to git only where it was
+# exported before, and to the claim's own name with its number in ANSI-C
+# quotes, which bash decodes to the number; or its own clone, between two
+# here-documents whose bodies hold apostrophes, the first's delimiter
+# E$(echo x)F, which bash reads whole and the guard cut at the ( until
+# F29's fix, so the body ran to the end and the two apostrophes paired
+# around the push.
 ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push}",
              "missing": "cd ../{clone}; cd ../{absent}; git {push}",
              "body": "cat > /dev/null <<'EOF'\ncd ..\nEOF\ngit {push}",
@@ -182,7 +189,12 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "env-alone": "env GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
              "time-path": "/usr/bin/time GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
              "time-quoted": '"time" GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}',
-             "env-names": "env -S '${{A}}${{B}}${{C}}${{D}}${{E}}${{F}}${{G}} git -C ../{clone} pu\"\"sh{rest}'"}
+             "env-names": "env -S '${{A}}${{B}}${{C}}${{D}}${{E}}${{F}} -u ${{G}} git -C ../{clone} pu\"\"sh{rest}'",
+             "set-alone": "GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "ansi-c-name": "git -C ../{clone} push --force-with-lease origin claude/$'{number}'",
+             "delimiter-substitution": "cat <<E$(echo x)F\nDon't\nE$(echo x)F\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
+             "shell-string": "bash -c 'git -C ../{clone} {push}'",
+             "piped-shell": "echo 'git -C ../{clone} {push}' | sh"}
 # The ways whose push runs in the worker's own clone (leasing_clone).
 FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
                   "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",
@@ -191,7 +203,7 @@ FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe
                   "nested-substitutions", "backquote-in-substitution", "arithmetic-substitution",
                   "ansi-c-in-substitution", "braced-apostrophe", "braced-ansi-c", "arithmetic-apostrophe",
                   "bracket-apostrophe", "body-arithmetic", "body-after-ansi-c", "alike-substitutions",
-                  "hidden-body")
+                  "hidden-body", "delimiter-substitution")
 
 # A read of the activity with no type named: the read of the push that set
 # a claim's head (github.read_push), told from the reads of a
@@ -487,9 +499,12 @@ class Scope(NamedTuple):
     opens pull requests from a fork whose branch bears a claim's name
     (F17), whether a stranger opens them from a claim's own branch
     here (F19), whether the owner reopens closed issues and merges
-    keeping the head branch (F22), and whether the owner closes a claim's
+    keeping the head branch (F22), whether the owner closes a claim's
     pull request unmerged and deletes its branch on an open issue (F22's
-    third review)."""
+    third review), and whether claim files stray (F31): carol, who may
+    write, opens a pull request that is no claim's carrying an issue's
+    claim file, and a worker claims an issue from another claim's branch,
+    whose claim file its own then carries."""
 
     workers: tuple = ("a", "b")
     issues: tuple = (1,)
@@ -505,6 +520,7 @@ class Scope(NamedTuple):
     strangers: bool = False
     reopens: bool = False
     deletes: bool = False
+    strays: bool = False
 
     def files_of(self, number):
         return dict(self.files).get(number, (f"src/{number}.py",))
@@ -560,7 +576,11 @@ def guard_says(command, here, branches_of, reader_of, is_directory=None):
     or None when it passes: guard.refused_push judges each push in the
     clone it runs in, by that clone's current and default branch
     (branches_of) and its claim files (reader_of), the shell reaching the
-    directories is_directory takes for directories."""
+    directories is_directory takes for directories; a command the hook
+    does not read at all (guard.may_push) passes unread, as guard.run lets
+    it pass (F29's first review)."""
+    if not guard.may_push(command):
+        return None
     return guard.refused_push(command, here, branches_of, reader_of, is_directory)
 
 
@@ -657,15 +677,16 @@ def apply_pull_change(model, pull):
 
 # --- the verbs ----------------------------------------------------------------
 
-def claim(model, worker, number, files, skew=0, name=None, guarded=True):
-    """Push the claim commit, the claim file alone, from main. A name that
+def claim(model, worker, number, files, skew=0, name=None, guarded=True, base=MAIN):
+    """Push the claim commit, the claim file alone, from main, or from
+    another claim's branch for a claim stacked on it (F31). A name that
     reads as a claim and claims nothing, as claude/03, is a shape the rules
     forbid (spec/PROTOCOL.md, Claim); a person's push by hand, outside a
     session, meets no guard."""
     ref = name or claim_ref(number)
-    tree = model.tree(model.refs[MAIN])
+    tree = model.tree(model.refs[base])
     tree[f"{CLAIM_DIR}/{number}.md"] = claim_text(number, worker, files)
-    sha = model.commit((model.refs[MAIN],), worker, tree, f"Claim #{number}", skew)
+    sha = model.commit((model.refs[base],), worker, tree, f"Claim #{number}", skew)
     return pushed(model, worker, ref, sha, f"git push origin {ref}", allowed=not oracle.reads_as_claim(ref),
                   guarded=guarded)
 
@@ -785,7 +806,8 @@ def lease_elsewhere(model, worker, number, files, how):
     push. Git would take it, so the guard must read the push and judge it
     in the clone it runs in and refuse it, as it refuses lease_onto's. No
     search offers it; F21's trace plays it, F26's its env, F25's its
-    here-documents and F28's env's assignments and -S."""
+    here-documents, F28's env's assignments and -S, and F29's lone GIT_DIR=x
+    and a claim's name in ANSI-C quotes."""
     pusher = leasing_clone(worker, how)
     model.fetch(pusher)
     ref = claim_ref(number)
@@ -805,9 +827,11 @@ def leasing_clone(worker, how):
 def leasing_command(worker, how, ref, root=CLONES):
     """The command lease_elsewhere's session runs from the worker's own
     clone (ELSEWHERE), naming the second clone, the absent one, the
-    worker's own and root, the directory that holds them."""
+    worker's own and root, the directory that holds them, and the claim's
+    issue number."""
     return ELSEWHERE[how].format(clone=other_clone(worker), absent=absent_clone(worker), own=worker, root=root,
-                                 push=f"push --force-with-lease origin {ref}", rest=f" --force-with-lease origin {ref}")
+                                 push=f"push --force-with-lease origin {ref}", rest=f" --force-with-lease origin {ref}",
+                                 number=ref.removeprefix("claude/"))
 
 
 def claim_commit(model, number):
@@ -944,6 +968,37 @@ def close_pull(model, number):
     return Outcome(True, "closed", events=((cycle.PULL_REQUEST, ""),))
 
 
+def stray_ref(number):
+    """The branch of carol's own that carries issue number's claim file
+    (F31)."""
+    return f"notes/{number}"
+
+
+def stray_pull(model, writer, number, files):
+    """carol, who may write, pushes a branch of her own from main whose one
+    commit adds issue number's claim file, as a careless copy of a claim
+    would, and opens a pull request from it to main, ready and closing
+    nothing: a pull request that is no claim's, which the protocol check
+    fails since F31, so no merge of it puts a claim on the issue on the
+    default branch. She pushes by hand, as a person outside a session
+    does."""
+    return opened_stray(model, writer, number, claim(model, writer, number, files, name=stray_ref(number),
+                                                     guarded=False))
+
+
+def opened_stray(model, writer, number, pushed_branch):
+    """The ready pull request from carol's branch, once the push is taken."""
+    if not pushed_branch.taken:
+        return pushed_branch
+    pull = PullRequest(model.next_pull, stray_ref(number), writer, f"Notes for issue {number}.",
+                       f"Notes for issue {number}", draft=False, opened_at=model.now, updated_at=model.now,
+                       association=ASSOCIATIONS[writer])
+    model.pulls[pull.number] = pull
+    model.next_pull += 1
+    return pushed_branch._replace(note=f"pushed {pull.head} and opened #{pull.number}",
+                                  events=pushed_branch.events + ((cycle.PULL_REQUEST, ""),))
+
+
 def open_fork_pull(model, number):
     """sam's open pull request from the fork's claude/<number>, or None."""
     return next((p for p in model.pulls.values() if p.fork and p.state == "open" and p.head == claim_ref(number)),
@@ -974,16 +1029,61 @@ def passes_check(model, pull):
     required_status_checks "check", bypass_actors empty), so GitHub
     refuses the owner's merge of any other (F30). A claim file still
     reaches main where the check lets it through: a pull request that is
-    no claim's adding one, or a claim's carrying another issue's (F31).
+    no claim's adding one, or a claim's carrying another issue's, until
+    the check judged the change a pull request makes to main (F31): since
+    then one that adds or changes a claim file other than its own issue's
+    on its own claim branch fails it too (oracle.SPEC["strays"]), and one
+    that deletes a claim file is judged as any other
+    (oracle.SPEC["stray deleted"]; claim_files_changed).
     This reads the claim file at the pull request's head where the real
     check reads the merge ref's checkout; the two agree while main holds
     no claim file."""
     number = oracle.claim_number(pull.head)
+    if strays_of(model, pull):
+        return False
     if number is None:
         return not pull.draft and not oracle.reads_as_claim(pull.head)
     has_file = model.tree(model.pull_head(pull)).get(f"{CLAIM_DIR}/{number}.md") is not None
     closes = re.search(oracle.CLOSES % number, pull.body) is not None
     return not pull.fork and not pull.draft and not has_file and closes
+
+
+def claim_files_changed(model, pull):
+    """The issues whose claim file a pull request adds or changes, as the
+    protocol check reads its change (F31 and its review): the branch's own
+    change, from where it left main to its head, and the change of the
+    merge GitHub tests against main, either one counting. A path counts
+    where it is docs/agents/claims/<n>.md, n spelled as a claim's number
+    is, and the newer side holds it with a text the older does not; a file
+    deleted counts for nothing, so a pull request that takes a stale claim
+    file off main is judged as any other."""
+    head = model.pull_head(pull)
+    if not head:
+        return ()
+    main = model.refs[MAIN]
+    left = model.merge_base(head, main)
+    return tuple(sorted(claim_numbers_added(model.tree(left), model.tree(head))
+                        | claim_numbers_added(model.tree(main), merged_tree(model, head, main))))
+
+
+def claim_numbers_added(before, after):
+    """The claim files a tree after holds with a text the tree before does
+    not, by issue."""
+    found = set()
+    for path, text in after.items():
+        folder, _, name = path.rpartition("/")
+        if (folder == CLAIM_DIR and name.endswith(".md") and oracle.CLAIM_NUMBER.fullmatch(name[:-len(".md")])
+                and before.get(path) != text):
+            found.add(int(name[:-len(".md")]))
+    return found
+
+
+def strays_of(model, pull):
+    """The claim files a pull request adds or changes that are not its own:
+    every one, but its own issue's on its own claim branch here, never in a
+    fork (spec, Rules; F31)."""
+    own = oracle.claim_number(pull.head) if not pull.fork else None
+    return tuple(n for n in claim_files_changed(model, pull) if n != own)
 
 
 # What GitHub does with the merge of a pull request the required check
@@ -1150,6 +1250,10 @@ def act(model, verb, scope):
         return claim(model, actor, number, scope.files_of(number), *args[1:])
     if name == "claim-misnamed":
         return claim(model, actor, number, scope.files_of(number), name=args[1])
+    if name == "claim-stacked":
+        return claim(model, actor, number, scope.files_of(number), base=claim_ref(args[1]))
+    if name == "stray-pull":
+        return stray_pull(model, actor, number, scope.files_of(number))
     if name == "push-by-hand":
         return claim(model, actor, number, scope.files_of(number), name=args[1], guarded=False)
     if name == "commit":
@@ -1272,6 +1376,8 @@ def issue_verbs(model, scope, number):
         found += fork_verbs(model, number)
     if scope.strangers and issue.state == "open":
         found += stranger_verbs(model, number, pull)
+    if scope.strays and CAROL in scope.people and issue.state == "open" and stray_ref(number) not in model.refs:
+        found.append(Verb("stray-pull", CAROL, (number,)))
     if OWNER in scope.people:
         found += owner_verbs(model, number, pull, scope)
         misnamed = f"{CLAIM_PREFIX}0{number}"
@@ -1289,6 +1395,9 @@ def worker_verbs(model, scope, number, worker, pull):
         for old in released_refs(model, number):
             if model.creators.get(old) == worker:
                 found.append(Verb("push-old-head", worker, (number, old)))
+        if scope.strays:
+            found += [Verb("claim-stacked", worker, (number, other)) for other in others(scope, number)
+                      if claim_ref(other) in model.refs]
     if scope.careless and issue.state == "open":
         if ref in model.refs and holder(model, number) != worker:
             found.append(Verb("lease-onto", worker, (number,)))
