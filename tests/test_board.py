@@ -29,6 +29,9 @@ FIXTURE = FIXTURES / "board.json"
 # recorded from it once so this repository holds the template to its word
 # without needing the template.
 WIDE = FIXTURES / "board-wide.json"
+# A snapshot with a goal, an epic whose tasks block one another, a closed
+# task and a blocker outside the epic: the Dependencies section drawn.
+EPICS = FIXTURES / "board-epics.json"
 
 # A claim file in the shape the protocol's claim template gives.
 CLAIM_TEXT = "\n".join([
@@ -69,6 +72,9 @@ class Rendering(unittest.TestCase):
         headings = (board.CLAIM_HEADING, board.PULL_HEADING, board.OVERLAP_HEADING, board.QUEUE_HEADING,
                     board.GIVEN_HEADING, board.BLOCKER_HEADING, board.MERGED_HEADING)
         self.assertEqual([line for line in lines if line.startswith("## ")], list(headings))
+        # The Dependencies section comes only where an open epic or goal has sub-issues.
+        self.assertEqual([line for line in board.render(fixture(EPICS)).splitlines() if line.startswith("## ")],
+                         list(headings) + [board.DEPENDENCIES_HEADING])
         self.assertIn("| Issue | Branch | Worker | PR | Files it touches |", lines)
         self.assertIn("| PR | Title | Branch | State (clean, behind, conflicting, blocked, unknown) | Last update |", lines)
         self.assertIn("| File | Open work, in the order it should land |", lines)
@@ -705,6 +711,11 @@ class Parity(unittest.TestCase):
     def test_the_templates_fixture_renders_the_templates_page(self):
         self.assertEqual(board.render(fixture(FIXTURE)).encode("ascii"), golden("board-STATE.md"))
 
+    def test_the_epics_fixture_renders_its_recorded_page(self):
+        self.assertEqual(board.render(fixture(EPICS)).encode("ascii"), golden("board-epics-STATE.md"))
+        again = Snapshot.from_json(Snapshot.from_dict(fixture(EPICS)).to_json())
+        self.assertEqual(board.render(again).encode("ascii"), golden("board-epics-STATE.md"))
+
     def test_the_wide_fixture_renders_the_templates_page(self):
         self.assertEqual(board.render(fixture(WIDE)).encode("ascii"), golden("board-wide-STATE.md"))
 
@@ -1289,6 +1300,272 @@ class ReleasedClaimReturns(unittest.TestCase):
         # Alice's work is still there, under the released name.
         self.assertIn("- Account: alice", self.remote_git("show", f"{kept}:{claims.claim_path(ISSUE)}"))
         self.assertEqual(self.remote_git("rev-parse", kept), head)
+
+
+class NodeLineTest(unittest.TestCase):
+    def test_a_node_is_its_number_its_title_and_its_class(self):
+        self.assertEqual(board.node_line(Issue(21, "Read the summary", ["todo"]), set()),
+                         'i21["#21 Read the summary"]:::todo')
+        self.assertEqual(board.node_line(Issue(21, "", []), set()), 'i21["#21"]')
+
+    def test_the_title_is_folded_cut_and_escaped(self):
+        title = "Caf\u00e9  with | a \"quote\", <tags> and #5 and more words to pass the width"
+        line = board.node_line(Issue(7, title, []), set())
+        self.assertEqual(line, 'i7["#7 Cafe with #124; a #quot;quote#quot;, #lt;tags#gt; and #35;5..."]')
+        self.assertEqual(board.node_label(Issue(7, "x" * 40)), "#7 " + "x" * 40)
+        self.assertEqual(board.node_label(Issue(7, "x" * 41)), "#7 " + "x" * 37 + "...")
+        self.assertEqual(board.node_label(Issue(7, "a #1 b")), "#7 a #35;1 b")
+        self.assertEqual(board.node_label(Issue(7, "a\nb\tc")), "#7 a b c")
+
+    def test_a_percent_sign_is_written_as_its_entity(self):
+        self.assertEqual(board.node_label(Issue(7, "Cut 50% of the reads")), "#7 Cut 50#37; of the reads")
+        # The fold turns the small and the fullwidth percent signs into "%",
+        # so they are written as the entity too.
+        self.assertEqual(board.node_label(Issue(7, "a \ufe6a b \uff05 c")), "#7 a #37; b #37; c")
+        self.assertEqual(board.node_label(Issue(7, "a #% b")), "#7 a #35;#37; b")
+
+    def test_a_dollar_sign_is_written_as_its_entity(self):
+        # Mermaid typesets $$...$$ as math and a formula it cannot parse
+        # stops the chart from drawing, so no "$" reaches the chart.
+        title = "$$\\def\\x{\\x\\x}\\x$$"
+        self.assertEqual(board.node_label(Issue(7, title)), "#7 #36;#36;\\def\\x{\\x\\x}\\x#36;#36;")
+        self.assertEqual(board.node_label(Issue(7, "Pay $5")), "#7 Pay #36;5")
+        # The fold turns the small and the fullwidth dollar signs into "$".
+        self.assertEqual(board.node_label(Issue(7, "a \ufe69 b \uff04 c")), "#7 a #36; b #36; c")
+        self.assertEqual(board.node_label(Issue(7, "a #$ b")), "#7 a #35;#36; b")
+        snap = Snapshot(issues=[Issue(20, "Pay $$x$$", ["epic"]), Issue(21, title, ["todo"])],
+                        sub_issues={20: [21]})
+        text = board.render(snap)
+        blocks = [block.split("```", 1)[0] for block in text.split("```mermaid\n")[1:]]
+        self.assertEqual(len(blocks), 1)
+        self.assertNotIn("$", blocks[0])
+        self.assertIn("\n### Epic #20: Pay $$x$$\n", text)
+
+    def test_a_title_that_spells_a_directive_leaves_no_percent_sign_in_the_chart(self):
+        directive = '%%{init: {"theme":"dark"}}%% x'
+        snap = Snapshot(issues=[Issue(20, "Draw %%{init", ["epic"]), Issue(21, directive, ["todo"]),
+                                Issue(22, "Cut 50% of the reads", ["todo"]), Issue(30, "Ship 100%", ["goal"])],
+                        sub_issues={20: [21, 22], 30: [20]})
+        text = board.render(snap)
+        blocks = [block.split("```", 1)[0] for block in text.split("```mermaid\n")[1:]]
+        self.assertEqual(len(blocks), 2)
+        for block in blocks:
+            self.assertNotIn("%", block)
+        self.assertIn('  i21["#21 #37;#37;{init: {#quot;theme#quot;:#quot;dark#quot;}}#37;#37; x"]:::todo\n', blocks[1])
+        self.assertIn('  i22["#22 Cut 50#37; of the reads"]:::todo\n', blocks[1])
+        self.assertIn('  i20["#20 Draw #37;#37;{init"]\n', blocks[0])
+        self.assertIn('  i30["#30 Ship 100#37;"]\n', blocks[0])
+        # Outside the charts a percent sign means nothing, so the heading
+        # and the rows keep it as the title has it.
+        self.assertIn("\n### Epic #20: Draw %%{init\n", text)
+        self.assertIn("\n| #22 | Cut 50% of the reads | todo |", text)
+
+    def test_the_progress_follows_the_label_only_when_it_counts_something(self):
+        self.assertEqual(board.node_label(Issue(20, "Draw", progress=(1, 3))), "#20 Draw (1/3)")
+        self.assertEqual(board.node_label(Issue(20, "Draw", progress=None)), "#20 Draw")
+        self.assertIsNone(board.progress_of({"total": 0, "completed": 0}))
+        self.assertEqual(board.progress_of({"total": 2, "completed": 1}), (1, 2))
+        self.assertIsNone(board.progress_of(None))
+
+
+class NodeClassTest(unittest.TestCase):
+    def test_closed_then_review_then_claimed_then_blocked_then_todo(self):
+        self.assertEqual(board.node_class(Issue(1, "", ["todo", "in-review", "claimed"], state="closed"), set()),
+                         "closed")
+        self.assertEqual(board.node_class(Issue(1, "", ["todo", "in-review", "claimed"]), set()), "review")
+        self.assertEqual(board.node_class(Issue(1, "", ["todo", "claimed", "blocked"]), set()), "claimed")
+        self.assertEqual(board.node_class(Issue(1, "", ["todo", "blocked"]), {1}), "claimed")
+        self.assertEqual(board.node_class(Issue(1, "", ["todo", "blocked"]), set()), "blocked")
+        self.assertEqual(board.node_class(Issue(1, "", ["todo"]), set()), "todo")
+        self.assertEqual(board.node_class(Issue(1, "", ["epic"]), set()), "")
+
+
+class MermaidBlockTest(unittest.TestCase):
+    def test_nodes_in_number_order_edges_sorted_once_and_the_five_classes(self):
+        nodes = [Issue(3, "c", ["todo"]), Issue(1, "a", []), Issue(2, "b", ["claimed"])]
+        edges = ["i2 --> i3", "i1 -.-> i3", "i2 --> i3"]
+        self.assertEqual(board.mermaid_block(nodes, edges, set()).splitlines(), [
+            "```mermaid", "flowchart TD", '  i1["#1 a"]', '  i2["#2 b"]:::claimed', '  i3["#3 c"]:::todo',
+            "  i1 -.-> i3", "  i2 --> i3"] + ["  " + line for line in board.NODE_CLASSES] + ["```"])
+
+    def test_an_epics_block_draws_its_tasks_their_blockers_and_the_outside_blocker(self):
+        snap = Snapshot.from_dict(fixture(EPICS))
+        block = board.epic_block(snap, 20)
+        self.assertIn('  i21["#21 Read the summary"]:::closed', block)
+        self.assertIn('  i99["#99 Settle the colours"]:::todo', block)
+        self.assertIn("  i21 -.-> i23\n  i22 --> i23\n  i99 --> i22\n", block)
+        self.assertEqual(board.epic_blocks(snap), {20: block})
+
+    def test_the_goals_block_joins_each_goal_to_its_epics_with_thick_arrows_and_no_other_edge(self):
+        snap = Snapshot.from_dict(fixture(EPICS))
+        block = board.goals_block(snap, board.planned_with_sub_issues(snap, "goal"))
+        self.assertIn("  i30 ==> i20\n", block)
+        self.assertNotIn("-->", block)
+        self.assertIn('  i20["#20 Draw the board (1/3)"]\n', block)
+
+
+class DependenciesSectionTest(unittest.TestCase):
+    def test_the_section_is_last_and_only_where_there_is_something_to_draw(self):
+        self.assertNotIn(board.DEPENDENCIES_HEADING, board.render(fixture(FIXTURE)))
+        self.assertNotIn(board.DEPENDENCIES_HEADING, board.render(fixture(WIDE)))
+        text = board.render(fixture(EPICS))
+        lines = text.splitlines()
+        # The merged table is empty in this fixture: heading, blank, header, rule, (none), blank.
+        self.assertEqual(lines.index(board.DEPENDENCIES_HEADING), lines.index(board.MERGED_HEADING) + 6)
+        self.assertEqual(lines[lines.index(board.DEPENDENCIES_HEADING) + 2], board.DEPENDENCIES_PREFACE)
+        self.assertEqual([line for line in lines if line.startswith("### ")],
+                         ["### Goals", "### Epic #20: Draw the board (1/3)"])
+        self.assertTrue(text.endswith("```\n"))
+        text.encode("ascii")
+        self.assertNotIn("\n\n\n", text)
+
+    def test_an_epic_with_no_sub_issues_read_is_not_drawn(self):
+        snap = Snapshot(issues=[Issue(20, "Draw", ["epic"]), Issue(30, "Ship", ["goal"])])
+        self.assertNotIn(board.DEPENDENCIES_HEADING, board.render(snap))
+        snap.sub_issues = {30: [20]}
+        text = board.render(snap)
+        self.assertIn("### Goals", text)
+        self.assertNotIn("### Epic", text)
+
+    def test_a_section_left_out_says_why_in_one_sentence(self):
+        for word, sentence in board.NOT_DRAWN.items():
+            text = board.render(Snapshot(dependencies_skipped=word, sub_issues={20: [21]}))
+            self.assertTrue(text.endswith(f"\n{board.DEPENDENCIES_HEADING}\n\n{sentence}\n"), word)
+            self.assertNotIn("```", text)
+        self.assertEqual(board.NOT_DRAWN["reserve"], "Not drawn this run: its reads would reach the calls the board "
+                         "keeps in reserve; the next run tries again.")
+        self.assertEqual(board.NOT_DRAWN["failed"], "Not drawn this run: GitHub did not answer one of its reads; "
+                         "the next run tries again.")
+
+    def test_the_epic_heading_counts_the_closed_tasks_where_github_counts_them(self):
+        self.assertEqual(board.epic_heading(Issue(20, "Draw the board", progress=(1, 3))),
+                         "### Epic #20: Draw the board (1/3)")
+        self.assertEqual(board.epic_heading(Issue(20, "Draw | it")), "### Epic #20: Draw \\| it")
+        self.assertEqual(board.epic_heading(Issue(20, "")), "### Epic #20")
+
+
+class RowsTest(unittest.TestCase):
+    def test_a_blocked_issue_stays_listed_and_says_so_beside_its_title(self):
+        text = board.render(fixture(EPICS))
+        self.assertIn("| #23 | Write the body \\| with \"quotes\" and <tags> #5 and a title long enough to be cut short "
+                      "(blocked by #22) | todo |", text)
+        self.assertIn("| #24 | Write the docs (blocked by 2 open issues) | bob |", text)
+        self.assertIn("| #25 | Fix the build (blocked by 1 open issue) | blocker |", text)
+        self.assertIn("| #99 | Settle the colours | todo |", text)
+
+    def test_the_note_names_the_blocked_by_open_read_or_counts_them(self):
+        snap = Snapshot(issues=[Issue(5, "t", ["todo"], blocked_by_open=2, blocked_by_total=3)],
+                        blocked_by={5: [1, 2, 3]}, others={1: Issue(1, "", state="closed")})
+        self.assertEqual(board.blocked_note(snap, snap.issues[0]), " (blocked by #2, #3)")
+        snap.blocked_by = {}
+        self.assertEqual(board.blocked_note(snap, snap.issues[0]), " (blocked by 2 open issues)")
+        self.assertEqual(board.blocked_note(snap, Issue(6, "t", blocked_by_open=1)), " (blocked by 1 open issue)")
+        self.assertEqual(board.blocked_note(snap, Issue(6, "t", blocked_by_total=1)), "")
+
+    def test_a_goal_is_left_out_of_the_queue_as_an_epic_is(self):
+        text = board.render(Snapshot(issues=[Issue(30, "Ship", ["goal", "todo"]), Issue(31, "Plan", ["epic", "todo"]),
+                                             Issue(32, "Do", ["todo"])]))
+        queue = text[text.index(board.QUEUE_HEADING):text.index(board.GIVEN_HEADING)]
+        self.assertNotIn("#30", queue)
+        self.assertNotIn("#31", queue)
+        self.assertIn("| #32 | Do | todo |", queue)
+
+
+class GraphSectionTest(unittest.TestCase):
+    BLOCK = "```mermaid\nflowchart TD\n  i1[\"#1 a\"]\n```"
+
+    def test_a_body_without_markers_gets_the_graph_appended_after_a_blank_line(self):
+        self.assertEqual(board.body_with_graph("Build it.\n", self.BLOCK),
+                         "Build it.\n\n<!-- sdlc-board: graph -->\n" + self.BLOCK + "\n<!-- sdlc-board: /graph -->\n")
+        self.assertEqual(board.body_with_graph("", self.BLOCK),
+                         "<!-- sdlc-board: graph -->\n" + self.BLOCK + "\n<!-- sdlc-board: /graph -->\n")
+
+    def test_a_body_with_markers_has_the_span_replaced_and_the_rest_kept(self):
+        body = "Build it.\n\n<!-- sdlc-board: graph -->\nold\n<!-- sdlc-board: /graph -->\n\n<!-- team:plan -->\nplan\n"
+        self.assertEqual(board.graph_section(body), (11, 11 + len("<!-- sdlc-board: graph -->\nold\n<!-- sdlc-board: /graph -->")))
+        self.assertEqual(board.body_with_graph(body, self.BLOCK),
+                         "Build it.\n\n<!-- sdlc-board: graph -->\n" + self.BLOCK
+                         + "\n<!-- sdlc-board: /graph -->\n\n<!-- team:plan -->\nplan\n")
+
+    def test_a_body_with_windows_line_endings_keeps_them_and_takes_the_block_in_them(self):
+        # The writer never touches a line outside the markers, so a body
+        # GitHub stored with CRLF stays CRLF and the block is put in CRLF
+        # too, which folds to the block the page carries (graph_block).
+        body = "Build it.\r\n\r\n<!-- sdlc-board: graph -->\r\nold\r\n<!-- sdlc-board: /graph -->\r\n\r\nplan\r\n"
+        self.assertEqual(board.body_with_graph(body, self.BLOCK),
+                         board.body_with_graph(body.replace("\r\n", "\n"), self.BLOCK).replace("\n", "\r\n"))
+        self.assertEqual(board.body_with_graph("Build it.\r\n", self.BLOCK),
+                         "Build it.\r\n\r\n<!-- sdlc-board: graph -->\r\n" + self.BLOCK.replace("\n", "\r\n")
+                         + "\r\n<!-- sdlc-board: /graph -->\r\n")
+        self.assertEqual(board.graph_block(board.body_with_graph("Build it.\r\n", self.BLOCK)), self.BLOCK)
+        self.assertEqual(board.line_ending("a\r\nb"), "\r\n")
+        self.assertEqual(board.line_ending("a\nb"), "\n")
+
+    def test_unpaired_markers_are_left_alone(self):
+        for body in ("<!-- sdlc-board: graph -->\nx", "x\n<!-- sdlc-board: /graph -->",
+                     "<!-- sdlc-board: /graph -->\n<!-- sdlc-board: graph -->"):
+            self.assertIsNone(board.body_with_graph(body, self.BLOCK), body)
+            self.assertIsNone(board.graph_section(body), body)
+            self.assertIsNone(board.graph_block(body), body)
+            self.assertIsNone(board.body_without_graph(body), body)
+        self.assertIsNone(board.graph_section("nothing"))
+
+    def test_a_stray_end_marker_before_the_pair_or_a_second_pair_is_left_alone(self):
+        # A person's paste that is not one clean pair is theirs to mend:
+        # writing into it could take out what they meant to keep, or
+        # leave a second, stale chart standing for good.
+        pair = "<!-- sdlc-board: graph -->\nold\n<!-- sdlc-board: /graph -->"
+        for body in ("<!-- sdlc-board: /graph -->\nA\n" + pair, pair + "\n\n" + pair,
+                     pair + "\n<!-- sdlc-board: graph -->"):
+            self.assertIsNone(board.graph_section(body), body)
+            self.assertIsNone(board.body_with_graph(body, self.BLOCK), body)
+            self.assertIsNone(board.body_without_graph(body), body)
+
+    def test_the_graph_is_taken_out_with_the_blank_line_before_it(self):
+        pair = "<!-- sdlc-board: graph -->\n" + self.BLOCK + "\n<!-- sdlc-board: /graph -->"
+        self.assertEqual(board.body_without_graph("Build it.\n\n" + pair + "\n"), "Build it.\n")
+        self.assertEqual(board.body_without_graph("Build it.\n\n" + pair + "\n\n<!-- team:plan -->\nplan\n"),
+                         "Build it.\n\n<!-- team:plan -->\nplan\n")
+        self.assertEqual(board.body_without_graph(pair + "\n"), "")
+        self.assertEqual(board.body_without_graph(pair + "\n\nplan\n"), "plan\n")
+        self.assertEqual(board.body_without_graph("Build it.\r\n\r\n" + pair.replace("\n", "\r\n") + "\r\n"),
+                         "Build it.\r\n")
+
+    def test_the_listed_graphs_are_each_body_s_block_folded(self):
+        pair = "<!-- sdlc-board: graph -->\r\n" + self.BLOCK.replace("\n", "\r\n") + "\r\n<!-- sdlc-board: /graph -->"
+        issues = [{"number": 20, "body": "Build it.\r\n\r\n" + pair + "\r\n"},
+                  {"number": 21, "body": "<!-- sdlc-board: graph -->\nx"}, {"number": 22, "body": None},
+                  {"number": "23", "body": "<!-- sdlc-board: graph -->\n<!-- sdlc-board: /graph -->"}]
+        self.assertEqual(board.listed_graphs(issues), {20: self.BLOCK, 23: ""})
+
+    def test_writing_the_same_block_twice_changes_nothing(self):
+        once = board.body_with_graph("Build it.", self.BLOCK)
+        self.assertEqual(board.body_with_graph(once, self.BLOCK), once)
+
+
+class SnapshotRoundTripTest(unittest.TestCase):
+    def test_the_dependency_fields_survive_json_and_are_written_only_when_set(self):
+        snap = Snapshot.from_dict(fixture(EPICS))
+        self.assertEqual(snap.sub_issues, {20: [21, 22, 23], 30: [20]})
+        self.assertEqual(snap.blocked_by, {22: [99], 23: [21, 22]})
+        self.assertEqual(snap.others[21].state, "closed")
+        self.assertEqual(Snapshot.from_json(snap.to_json()), snap)
+        plain = Snapshot.from_dict(fixture(FIXTURE)).to_dict()
+        for key in ("sub_issues", "blocked_by", "others", "dependencies_skipped", "dependencies_notice"):
+            self.assertNotIn(key, plain)
+        skipped = Snapshot(dependencies_skipped="failed", dependencies_notice="reading #20's sub-issues failed: x")
+        self.assertEqual(Snapshot.from_json(skipped.to_json()), skipped)
+        graphed = Snapshot(graphs={20: "```mermaid\nflowchart TD\n```"})
+        self.assertEqual(Snapshot.from_json(graphed.to_json()), graphed)
+        self.assertNotIn("graphs", plain)
+
+    def test_an_issue_keeps_its_state_and_its_summaries(self):
+        issue = Issue.from_dict({"number": 5, "title": "t", "labels": ["todo"], "state": "closed",
+                                 "issue_dependencies_summary": {"blocked_by": 1, "total_blocked_by": 2},
+                                 "sub_issues_summary": {"total": 3, "completed": 1}})
+        self.assertEqual((issue.state, issue.blocked_by_open, issue.blocked_by_total, issue.progress), ("closed", 1, 2, (1, 3)))
+        self.assertEqual(Issue.from_dict(issue.to_dict()), issue)
+        self.assertEqual(Issue.from_dict({"number": 5}).to_dict(), {"number": 5, "title": "", "labels": [], "updated_at": ""})
 
 
 if __name__ == "__main__":

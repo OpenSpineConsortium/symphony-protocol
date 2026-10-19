@@ -105,7 +105,10 @@ class Issue:
     closed_at the minute of its latest close, which its events record, None
     for one never closed, and closed_after how many entries the label
     history held at that close, so the events list each label before or
-    after it (F22)."""
+    after it (F22); blocked_by the numbers of the issues GitHub's blocked-by
+    relation says block it, and sub_issues the numbers of its sub-issues,
+    each as the issue's page shows them under Relationships, which the
+    fake GitHub serves and summarises as GitHub does."""
 
     number: int
     title: str
@@ -116,6 +119,8 @@ class Issue:
     reopened: bool = False
     closed_at: int = None
     closed_after: int = 0
+    blocked_by: tuple = ()
+    sub_issues: tuple = ()
 
 
 @dataclass
@@ -612,7 +617,7 @@ class RepoModel:
             self.now,
             tuple(sorted(self.refs.items())),
             tuple(sorted((n, i.state, tuple(sorted(i.labels)), i.comments, i.body, i.reopened, i.closed_at,
-                          i.closed_after)
+                          i.closed_after, i.blocked_by, i.sub_issues)
                          for n, i in self.issues.items())),
             tuple(sorted((n, p.head, p.author, p.body, p.draft, p.state, p.opened_at, p.updated_at, p.merged_at,
                           p.comments, p.fork, p.sha, p.association) for n, p in self.pulls.items())),

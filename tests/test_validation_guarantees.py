@@ -103,7 +103,7 @@ class TheOracleSpeaksTheSpec(unittest.TestCase):
 
     def test_every_word_it_spells_is_in_the_spec(self):
         words = [oracle.CLAIM_PREFIX, oracle.CLAIM_DIR, oracle.FILES_HEADING, oracle.TODO, oracle.CLAIMED,
-                 oracle.IN_REVIEW, oracle.BLOCKER, oracle.EPIC, oracle.BLOCKED, *oracle.WORKER_SPELLINGS,
+                 oracle.IN_REVIEW, oracle.BLOCKER, oracle.EPIC, oracle.BLOCKED, oracle.GOAL, *oracle.WORKER_SPELLINGS,
                  *oracle.WORKER_LINES, oracle.FINISHED, oracle.RELEASE_MARKER, oracle.RELEASED_PREFIX, oracle.BOT,
                  "<!-- sdlc-coordinator: overlap <numbers> -->", "24 hours"]
         for word in words:
@@ -126,6 +126,7 @@ class TheOracleSpeaksTheSpec(unittest.TestCase):
         self.assertTrue(oracle.OVERLAP_MARKER.fullmatch(coordinator.OVERLAP_MARKER.format(numbers="2 13")))
         self.assertEqual(oracle.EPIC, labels.EPIC)
         self.assertEqual(oracle.BLOCKED, labels.BLOCKED)
+        self.assertEqual(oracle.GOAL, labels.GOAL)
         for line in oracle.WORKER_LINES:
             self.assertEqual(claims.claim_worker(f"{line} a\n"), "a", line)
         self.assertEqual(oracle.REFUSED_FOR_GOOD, frozenset(github.REFUSED_FOR_GOOD))

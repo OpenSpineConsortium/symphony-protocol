@@ -111,5 +111,34 @@ class Names(unittest.TestCase):
         self.assertIs(labels.reserved_for_team, labels.reserved)
 
 
+class PlannedTest(unittest.TestCase):
+    def test_an_epic_or_a_goal_is_planned_and_nobody_takes_it_whole(self):
+        self.assertEqual(labels.GOAL, "goal")
+        self.assertTrue(labels.planned(["epic", "todo"]))
+        self.assertTrue(labels.planned({"goal", "todo"}))
+        self.assertFalse(labels.planned(["todo", "blocker"]))
+        self.assertTrue(labels.reserved(["goal"]))
+
+    def test_the_goal_label_is_not_among_the_six_a_repository_makes(self):
+        # Only a person puts goal on, so no setup makes it.
+        self.assertNotIn(labels.GOAL, [name for name, _, _ in labels.LABELS])
+
+
+class BlockedByCountsTest(unittest.TestCase):
+    def test_the_counts_come_from_the_dependency_summary(self):
+        issue = {"issue_dependencies_summary": {"blocked_by": 1, "blocking": 3, "total_blocked_by": 2}}
+        self.assertEqual(labels.blocked_by_counts(issue), (1, 2))
+
+    def test_a_missing_summary_reads_as_blocked_by_nothing(self):
+        self.assertEqual(labels.blocked_by_counts({"number": 1}), (0, 0))
+        self.assertEqual(labels.blocked_by_counts({"issue_dependencies_summary": None}), (0, 0))
+        self.assertEqual(labels.blocked_by_counts(None), (0, 0))
+
+    def test_a_count_that_is_no_whole_number_reads_as_zero(self):
+        for value in (True, -1, "2", 1.5, None):
+            issue = {"issue_dependencies_summary": {"blocked_by": value, "total_blocked_by": value}}
+            self.assertEqual(labels.blocked_by_counts(issue), (0, 0), value)
+
+
 if __name__ == "__main__":
     unittest.main()

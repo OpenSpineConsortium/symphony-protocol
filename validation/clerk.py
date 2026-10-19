@@ -18,9 +18,8 @@ from sdlc_protocol import claims, team
 from sdlc_protocol.adapters import github
 
 from . import fake_github, oracle
+from .fake_github import FIRST_ISSUE_ID
 from .model import OWNER, REPO, Issue, moment
-
-FIRST_ISSUE_ID = 1000
 TOKEN = "fake-token-for-the-clerk"
 
 
@@ -48,8 +47,7 @@ class ModelClient:
     # --- reads --------------------------------------------------------------
 
     def issue(self, number):
-        issue = self.model.issues[number]
-        return {**self.fake.issue_json(issue), "id": FIRST_ISSUE_ID + number}
+        return self.fake.issue_json(self.model.issues[number])
 
     def open_issues(self):
         return [self.issue(i.number) for i in self.model.issues.values() if i.state == "open"]
@@ -93,7 +91,18 @@ class ModelClient:
         return self.issue(number)
 
     def add_sub_issue(self, parent, child_id):
-        pass
+        """Hang the child under the parent, as GitHub's sub-issue list and
+        the board's Dependencies reads show it."""
+        epic = self.model.issues[parent]
+        if child_id - FIRST_ISSUE_ID not in epic.sub_issues:
+            epic.sub_issues = epic.sub_issues + (child_id - FIRST_ISSUE_ID,)
+
+    def add_blocked_by(self, number, blocker_id):
+        """Record the blocked-by relation on the model's issue, by number,
+        as the fake's POST does."""
+        issue = self.model.issues[number]
+        if blocker_id - FIRST_ISSUE_ID not in issue.blocked_by:
+            issue.blocked_by = issue.blocked_by + (blocker_id - FIRST_ISSUE_ID,)
 
     def set_body(self, number, body):
         self.model.issues[number].body = body

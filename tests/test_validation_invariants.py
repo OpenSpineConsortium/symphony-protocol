@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 from sdlc_protocol.adapters import github  # noqa: E402
 from sdlc_protocol import board, guard  # noqa: E402
-from validation import cycle, dealing, invariants, model as M, mutants, oracle, verbs  # noqa: E402
+from validation import cycle, dealing, invariants, model as M, mutants, oracle, page, verbs  # noqa: E402
 from validation.fake_github import Call, Fault  # noqa: E402
 from validation.verbs import Scope, Verb  # noqa: E402
 
@@ -230,6 +230,34 @@ class TheFixesOf041Hold(unittest.TestCase):
                 self.assertEqual(found, [])
                 self.assertEqual((model.issues[1].labels, "claude/1" in model.refs), ({"todo"}, False))
                 self.assertEqual(release_comments(model, 1), 1)
+
+    def test_the_dependencies_are_drawn_said_in_the_rows_and_left_out_with_a_word_where_a_read_fails(self):
+        """An epic with two tasks, the second blocked by the first: the page
+        draws the epic, Given to workers says the second is blocked, every
+        check holds, and the run after writes nothing; under a fault on
+        the read of the epic's sub-issues the section says why it is not
+        drawn, the log says so too, and the run ends well."""
+        model = M.seeded((1, 2, 3), writers=("a", "b"))
+        model.issues[1].labels = frozenset({"epic"})
+        model.issues[1].sub_issues = (2, 3)
+        model.issues[3].labels = frozenset({"todo", "worker:b"})
+        model.issues[3].blocked_by = (2,)
+        before = model.clone()
+        record = cycle.board_run(model)
+        self.assertEqual(invariants.cycle_checks(before, model, record), [])
+        self.assertEqual(page.dependency_blocks(record.page), {1: ([2, 3], {(2, 3, "-->")})})
+        self.assertEqual(page.titles(record.page, board.GIVEN_HEADING)[3], "Issue 3 (blocked by #2)")
+        self.assertEqual(page.queue(record.page), [2])
+        self.assertIn(board.GRAPH_MARKER, model.issues[1].body)
+        before = model.clone()
+        record = cycle.board_run(model, faults=(verbs.FAULTS["sub-issues-500"],))
+        self.assertEqual((record.exit_code, record.raised), (0, None))
+        self.assertEqual(page.not_drawn(record.page), board.NOT_DRAWN["failed"])
+        self.assertEqual(page.dependency_blocks(record.page), {})
+        self.assertEqual([line for line in record.lines if line.startswith("board: Dependencies")],
+                         ["board: Dependencies left out: reading #1's sub-issues failed: GET /repos/o/r/issues/1/sub_issues: "
+                          "HTTP 500: injected"])
+        self.assertEqual(invariants.cycle_checks(before, model, record), [])
 
     def test_a_release_comment_refused_for_a_rate_limit_is_written_after_the_wait(self):
         """F11's secondary rate limit, since the measurement pass's third

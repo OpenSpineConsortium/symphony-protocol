@@ -478,10 +478,44 @@ class Faults(unittest.TestCase):
         self.assertEqual(api.get_all(f"/repos/{M.REPO}/issues/1/comments"), [])
         self.assertEqual([c["body"] for c in api.get_all(f"/repos/{M.REPO}/issues/1/comments")], ["limited"])
 
-    def test_a_change_to_an_issue_s_body_is_unserved_not_a_fake_s_error(self):
-        api, _ = cycle.api_for(M.seeded())
+    def test_set_body_writes_the_body_and_any_other_edit_of_an_issue_is_unserved(self):
+        model = M.seeded()
+        api, _ = cycle.api_for(model)
+        api.set_body(1, "x")
+        self.assertEqual(model.issues[1].body, "x")
         with self.assertRaises(Unserved):
-            api.set_body(1, "x")
+            api.patch(f"/repos/{M.REPO}/issues/1", {"title": "y"})
+
+    def test_sub_issues_and_blocked_by_are_served_and_summarised_as_github_gives_them(self):
+        model = M.seeded((1, 2, 3, 4))
+        model.issues[1].labels = frozenset({"epic"})
+        model.issues[1].sub_issues = (2, 3, 9)
+        model.issues[3].blocked_by = (2, 4)
+        model.issues[4].state = "closed"
+        api, _ = cycle.api_for(model)
+        listed = api.get_all(f"/repos/{M.REPO}/issues/1/sub_issues")
+        self.assertEqual([i["number"] for i in listed], [2, 3], "an issue the model has none of is left out")
+        self.assertEqual([i["number"] for i in api.get_all(f"/repos/{M.REPO}/issues/3/dependencies/blocked_by")], [2, 4])
+        self.assertEqual(api.get_all(f"/repos/{M.REPO}/issues/2/sub_issues"), [])
+        three = api.get(f"/repos/{M.REPO}/issues/3")
+        self.assertEqual(three["id"], 1003)
+        self.assertEqual(three["repository_url"], f"https://api.github.com/repos/{M.REPO}",
+                         "every issue names its repository, as the reads tell a foreign one by")
+        self.assertEqual(three["issue_dependencies_summary"],
+                         {"blocked_by": 1, "blocking": 0, "total_blocked_by": 2, "total_blocking": 0})
+        self.assertEqual(api.get(f"/repos/{M.REPO}/issues/2")["issue_dependencies_summary"]["blocking"], 1)
+        self.assertEqual(api.get(f"/repos/{M.REPO}/issues/1")["sub_issues_summary"],
+                         {"total": 2, "completed": 0, "percent_completed": 0})
+        model.issues[2].state = "closed"
+        self.assertEqual(api.get(f"/repos/{M.REPO}/issues/1")["sub_issues_summary"],
+                         {"total": 2, "completed": 1, "percent_completed": 50})
+        # The clerk's relation, written by id, lands on the model by number.
+        api.add_blocked_by(2, 1003)
+        self.assertEqual(model.issues[2].blocked_by, (3,))
+        api.add_blocked_by(2, 1003)
+        self.assertEqual(model.issues[2].blocked_by, (3,), "once")
+        with self.assertRaises(github.GitHubError):
+            api.add_blocked_by(2, 1999)
 
     def test_a_label_the_issue_does_not_carry_is_a_404(self):
         model = M.seeded()
