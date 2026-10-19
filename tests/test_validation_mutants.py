@@ -76,11 +76,16 @@ TRACES = {
     "main moved told only in the push's run": "the regression traces",
     "the rename skipped": (HELD + [WAIT, BOARD], Scope()),
     "overlaps told on every run": ([CLAIM, Verb("claim", "b", (2,)), BOARD], SHARED),
-    "the labels not put back": (HELD + [WAIT, board_with("comment-500")], Scope()),
+    "the labels not put back": (HELD + [WAIT, board_with("comment-422")], Scope()),
     "a lost comment's release not seen": (HELD + [WAIT, board_with("comment-lost")], Scope()),
     "an unsettled release put back": "the regression traces",
     "an unsettled release counted": "the regression traces",
     "an unsettled release failing the run": "the regression traces",
+    "a late comment's labels put back": "the regression traces",
+    "no answer taken for a refusal": "the regression traces",
+    "a refusal taken for a late comment": "the regression traces",
+    "a rate limit's refusal taken for one that wrote nothing": "the regression traces",
+    "a refusal after a rate limit read by its last try alone": "the regression traces",
     "a writer's release not vouched for": (HELD + [WAIT, Verb("marker", DANA, (1,)), BOARD], Scope()),
     "a claim number with leading zeros": ([CLAIM, CLAIMED, Verb("push-by-hand", M.OWNER, (1, "claude/01"))],
                                           Scope(careless=True)),
@@ -100,9 +105,74 @@ TRACES = {
     "a relative -C after a move judged where it names alone": "the regression traces",
     "GIT_DIR forgotten once an absolute path names a place": "the regression traces",
     "a -C by ~ judged where it names alone": "the regression traces",
+    # F22's eleven: a reopened issue freed, or left, as its claim branch, a
+    # released branch, when its release came, when claimed went on and
+    # whether a claim was made since the close, a ready pull request and
+    # the run's order say; F22's trace, the first lane, is their catcher,
+    # and the four searches F22's reviews added, which reopen an issue,
+    # catch each of them too (ReopenSearches).
+    "a reopened issue left as it is": "the regression traces",
+    "todo put on last": "the regression traces",
+    "a ready pull request's in-review taken off": "the regression traces",
+    "a claim branch not read for a reopened issue": "the regression traces",
+    "in-review left on where a branch stands": "the regression traces",
+    "the releases due read before the freeing": "the regression traces",
+    "a released branch not read for a reopened issue": "the regression traces",
+    "a release before the last close read as an undo": "the regression traces",
+    "claimed put back after the close read as the ended claim's": "the regression traces",
+    "a claim made since the close read as an undo": "the regression traces",
+    "an undo after an ended claim read as the claim's": "the regression traces",
+    # F30's one, the rule GitHub's refusal of the owner's merge rests on:
+    # F30's trace is its catcher, at b's marking ready.
+    "a ready pull request's claim file let through": "the regression traces",
+    # F31's three, one for each rule of the change a pull request makes:
+    # F31's trace is their catcher, at carol's pull request and at b's
+    # stacked draft, and the search of claim files that stray catches
+    # each of them too.
+    "a claim file of another issue let through": "the regression traces",
+    "a claim branch's every claim file its own": "the regression traces",
+    "a pull request that is no claim's let carry a claim file": "the regression traces",
+    # F32's eight, one for each way a command hands a shell text to run:
+    # F32's trace is their catcher, at its guard steps and b's leases.
+    "text handed to a shell left unread": "the regression traces",
+    "a shell's -c string read as a script's name": "the regression traces",
+    "eval's words left unread": "the regression traces",
+    "trap's action left unread": "the regression traces",
+    "a shell's standard input left unread": "the regression traces",
+    "a here-string left off standard input": "the regression traces",
+    "what a pipe carries left unread": "the regression traces",
+    "source of standard input read as a file's": "the regression traces",
     "a long option read only in full": "the regression traces",
     "env's abbreviated --chdir not read": "the regression traces",
     "an optional value taken from the next word": "the regression traces",
+    "a quote that never closes hiding the command": "the regression traces",
+    "no here-document's body told": "the regression traces",
+    "a here-document in a quoted substitution read as text": "the regression traces",
+    "an expanded body's substitutions cut out with it": "the regression traces",
+    "a body in a substitution ended only by its delimiter's own line": "the regression traces",
+    "an expanded body's backslash-newline kept": "the regression traces",
+    "every double parenthesis read as arithmetic": "the regression traces",
+    "a body that waits for a newline in the substitution that closed": "the regression traces",
+    "an expanded body's substitution kept with its own bodies": "the regression traces",
+    "a case pattern's parenthesis closing its substitution": "the regression traces",
+    "arithmetic's parentheses counted inside quotes": "the regression traces",
+    "a parameter expansion read as text": "the regression traces",
+    "a backquoted span read as text": "the regression traces",
+    "$$ read as a $ before what follows": "the regression traces",
+    "old-style arithmetic read as text": "the regression traces",
+    "a backquoted span's quotes read as the quoting around it": "the regression traces",
+    "a substitution in double quotes read as part of its word": "the regression traces",
+    "a process substitution read as a redirection": "the regression traces",
+    "a nested substitution left unread": "the regression traces",
+    "a backquoted span in a substitution read as text": "the regression traces",
+    "arithmetic read as no substitution": "the regression traces",
+    "a $'...' read as a quoted span": "the regression traces",
+    "a single quote in a double-quoted ${ } read as a quote": "the regression traces",
+    "arithmetic read as commands": "the regression traces",
+    "a single quote in $[ ] read as a quote": "the regression traces",
+    "a body's arithmetic left out of what it runs": "the regression traces",
+    "substitutions told alike by their own texts alone": "the regression traces",
+    "a backquoted span's hidden bodies left in": "the regression traces",
     "dealing without its taken set": "dealing at every look",
     "each leg dealt from its own look": "the regression traces",
     "given to workers needing the label todo": "the regression traces",
@@ -111,6 +181,46 @@ TRACES = {
     "the release's own page without its todo": "the regression traces",
     "a refused todo puts no label back": ([TODO_OFF] + HELD + [WAIT, board_with("label-post-500")], Scope()),
     "a todo written and lost stays on": ([TODO_OFF] + HELD + [WAIT, board_with("label-post-lost")], Scope()),
+    "a label taken off and lost stays off": "the regression traces",
+    "a label refused its removal put back": "the regression traces",
+    "a 404 after a rate limit read as never on": "the regression traces",
+    "env's assignments read as the shell's": "the regression traces",
+    "env's lone - not read": "the regression traces",
+    "env's -S string not split": "the regression traces",
+    "env's lone assignment read as the shell's": "the regression traces",
+    "a lone - read past as one of env's options": "the regression traces",
+    "an -S string's variables read only as written": "the regression traces",
+    "time matched by its program's name": "the regression traces",
+    "a time the guard cannot tell read as the keyword alone": "the regression traces",
+    "every ${NAME} read all set or all unset": "the regression traces",
+    "a push env's -S spells read only as written": "the regression traces",
+    "a $'...' read as a $ and a quoted span": "the regression traces",
+    'a $"..." read as a $ and a quoted span': "the regression traces",
+    "a command's own text left unread": "the regression traces",
+    "a word bash builds read as its text alone": "the regression traces",
+    "every word read set, none unset": "the regression traces",
+    "braces read as written": "the regression traces",
+    "an option bash builds read as written": "the regression traces",
+    "a name bash builds read as written": "the regression traces",
+    "a line continuation read as ending a word's start": "the regression traces",
+    "arithmetic jumped over by the scan": "the regression traces",
+    "a lone assignment read as naming the repository for good": "the regression traces",
+    "a here-document's delimiter cut at a substitution": "the regression traces",
+    "a word of expansions alone read as built": "the regression traces",
+    "a refspec of holes read as : where each is nothing": "the regression traces",
+    "a default read as a hole alone": "the regression traces",
+    "a word that may open with a dash read as no option": "the regression traces",
+    "a pattern read as giving no +": "the regression traces",
+    "a colon a pattern gives read as none": "the regression traces",
+    "a colon beside one hole kept as written": "the regression traces",
+    "a built option refused after a whole flag": "the regression traces",
+    "the hook's gate read with continuations in": "the regression traces",
+    "coproc read as the command": "the regression traces",
+    "coproc's name read as the command": "the regression traces",
+    "a ${ } read as closing at its word's end": "the regression traces",
+    "an array's ${ } read as giving nothing": "the regression traces",
+    "a $'...' in a default read as written": "the regression traces",
+    "extended patterns left unread": "the regression traces",
     "an epic gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "epic"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocker gets todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocker"))] + HELD + [WAIT, BOARD], Scope()),
     "a blocked task gets no todo": ([TODO_OFF, Verb("label-on", M.OWNER, (1, "blocked"))] + HELD + [WAIT, BOARD],
@@ -124,7 +234,7 @@ TRACES = {
     "the Blockers section without blocked blockers": ([BLOCKER, labelled("blocked"), BOARD], Scope()),
     "the Blockers section without the given blockers": ([BLOCKER, labelled("worker:b"), BOARD], Scope()),
     "the Queue without the blockers labelled todo": ([BLOCKER, BOARD], Scope()),
-    "a release relabels the board before its comment": ([BLOCKER] + HELD + [WAIT, board_with("comment-500")],
+    "a release relabels the board before its comment": ([BLOCKER] + HELD + [WAIT, board_with("comment-422")],
                                                          Scope()),
     "a bare worker: taken off at release": ([labelled("worker:")] + HELD + [WAIT, BOARD], Scope()),
     "the landing order by number": "the regression traces",
@@ -200,13 +310,15 @@ TRACES = {
     # undone by the label claimed, released once idle by a run whose
     # comment GitHub refuses. No search reaches either: none offers the
     # drop of commits, and the kept head needs a release, a push and a
-    # day; F8's trace plays both.
+    # day; F8's trace plays both. The comment is refused with a 422, since
+    # after a 500 the library cannot tell whether GitHub wrote it and puts
+    # nothing back (F23).
     "a stale entry off the head dates it": ([Verb("claim", "a", (1, 48 * M.HOUR)), CLAIMED, Verb("wait", "clock", (1,)),
                                              Verb("commit", "a", (1,)), WAIT, Verb("drop-commits", "a", (1,)),
                                              board_with("pushes-lagging")], Scope()),
     "a kept head's old release taken for the lost comment": (
         HELD + [WAIT, BOARD, Verb("push-old-head", "a", (1, "released/1-6d6ae03")), CLAIMED, WAIT,
-                board_with("comment-500")], Scope()),
+                board_with("comment-422")], Scope()),
     "a stranger's pull request named on a claim's row": "the regression traces",
     "a stranger's pull request taken for a claim's work": "the regression traces",
     "a stranger's pull request listed after its release": "the regression traces",
@@ -317,15 +429,100 @@ class TheLane(unittest.TestCase):
         told judged by its words alone, so the bound is widened to 130, and
         its fourth review three, a relative -C after a move judged where it
         names alone, GIT_DIR forgotten once an absolute path names a place
-        and a -C by ~ judged where it names alone; and one from the review
-        of the client's waits for a rate limit, a 5xx retried as a rate
+        and a -C by ~ judged where it names alone; one from the review of
+        the client's waits for a rate limit, a 5xx retried as a rate
         limit, and eight from its second review, one for each rule of the
         client's waits, so the bound is widened to 150, 134 within it;
-        and F26's fix three, a long option read only in full, env's
+        F26's fix three, a long option read only in full, env's
         abbreviated --chdir not read and an optional value taken from the
-        next word, 137."""
-        self.assertTrue(10 <= len(mutants.MUTANTS) <= 150)
-        self.assertEqual(len(mutants.MUTANTS), 137)
+        next word, 137; and F22's fix seven, a reopened issue left as it is,
+        todo put on last, a ready pull request's in-review taken off, a
+        claim branch and a released branch not read for a reopened issue,
+        in-review left on where a branch stands, and the releases due read
+        before the freeing, 144 within that bound, its review one, a release
+        before the issue's last close read as an undo, 145, its second
+        review one, claimed put back after the close read as the ended
+        claim's, 146, its third review one, a claim made since the close
+        read as an undo, 147, and that review's review one, an undo after an
+        ended claim read as the claim's, 148; and F23's fix three, a late
+        comment's labels put back, no answer taken for a refusal, and a
+        refusal taken for a late comment, 151, its review one, a rate
+        limit's refusal taken for one that wrote nothing, 152, and its
+        second review one, a refusal after a rate limit read by its last try
+        alone, 153; and F25's fix seven, one for each rule of its reading: a
+        quote that never closes hiding the command, no here-document's body
+        told, a here-document in a quoted substitution read as text, an
+        expanded body's substitutions cut out with it, a body in a
+        substitution ended only by its delimiter's own line, an expanded
+        body's backslash-newline kept and every double parenthesis read as
+        arithmetic, 160; and its second review four: a body that waits for a
+        newline in the substitution that closed, an expanded body's
+        substitution kept with its own bodies, a case pattern's parenthesis
+        closing its substitution and arithmetic's parentheses counted inside
+        quotes, 164; and its third review two: a parameter expansion read as
+        text and a backquoted span read as text, 166; and its fourth review
+        three: $$ read as a $ before what follows, old-style arithmetic read
+        as text and a backquoted span's quotes read as the quoting around
+        it, 169; and F27's fix two, a label taken off and lost stays off
+        and a label refused its removal put back, 171, and its review one, a
+        404 after a rate limit read as never on, 172. That passes 150, so
+        the bound is widened to 200: the lane grows by a few mutants for
+        each finding it fixes, and 0.5.1 carries several findings, F22,
+        F23, F24, F25, F26, F27 and F28 among them. F28's
+        fix four, one for each rule of env's words: env's assignments read
+        as the shell's, env's lone - not read, env's -S string not split
+        and env's lone assignment read as the shell's, 176; and its review
+        four, a lone - read past as one of env's options, an -S string's
+        variables read only as written, time matched by its program's
+        name and a time the guard cannot tell read as the keyword alone,
+        180; and its second review one, every ${NAME} read all set or all
+        unset, 181; and its third review one, a push env's -S spells read
+        only as written, 182; and F24's fix six,
+        one for each rule of its reading: a substitution in double quotes
+        read as part of its word, a process substitution read as a
+        redirection, a nested substitution left unread, a backquoted span
+        in a substitution read as text, arithmetic read as no substitution
+        and a $'...' read as a quoted span, 188; and its first review six:
+        a single quote in a double-quoted ${ } read as a quote, arithmetic
+        read as commands, a single quote in $[ ] read as a quote, a body's
+        arithmetic left out of what it runs, substitutions told alike by
+        their own texts alone and a backquoted span's hidden bodies left
+        in, 194; and F29's fix twelve, one for each rule of the words bash
+        builds: a $'...' read as a $ and a quoted span, a $"..." read so, a
+        command's own text left unread, a word bash builds read as its text
+        alone, every word read set, none unset, braces read as written, an
+        option bash builds read as written, a name bash builds read as
+        written, a line continuation read as ending a word's start,
+        arithmetic jumped over by the scan, a lone assignment read as naming
+        the repository for good and a here-document's delimiter cut at a
+        substitution, 206; and its first review ten: a word of expansions
+        alone read as built, a refspec of holes read as : where each is
+        nothing, a built option refused after a whole flag, the hook's gate
+        read with continuations in, coproc read as the command, coproc's
+        name read as the command, a ${ } read as closing at its word's end,
+        an array's ${ } read as giving nothing, a $'...' in a default read
+        as written and extended patterns left unread, 216; and its second
+        review five: a default read as a hole alone, a word that may open
+        with a dash read as no option, a pattern read as giving no +, a
+        colon a pattern gives read as none and a colon beside one hole
+        kept as written, 221; and F30's fix, in the harness, one of the rule
+        its refusal of the owner's merge rests on, a ready pull request's
+        claim file let through, 222; and F31's fix three, one for each
+        rule of the change a pull request makes: a claim file of another
+        issue let through, a claim branch's every claim file its own and
+        a pull request that is no claim's let carry a claim file, 225; and
+        F32's fix eight, one for each way a command hands a shell text to
+        run: text handed to a shell left unread, a shell's -c string read
+        as a script's name, eval's words left unread, trap's action left
+        unread, a shell's standard input left unread, a here-string left
+        off standard input, what a pipe carries left unread and source of
+        standard input read as a file's, 233. 206
+        passed 200, so the bound was widened to 250 with F29's fix, as
+        F23's fix widened it from 150: the lane grows by a mutant for each
+        rule a fix adds, and the guard's reading of bash is the part of the
+        library that grows most."""
+        self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
+        self.assertEqual(len(mutants.MUTANTS), 233)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):
@@ -340,6 +537,8 @@ class TheLane(unittest.TestCase):
                 else:
                     self.assertIs(type(target), type(mutant.replacement))
                 self.assertIn(mutant.guarantee, invariants.GUARANTEES)
+                for module, also, replacement in mutant.also:
+                    self.assertTrue(callable(getattr(module, also)) and callable(replacement), also)
 
     def test_the_copies_of_releases_follow_the_library_but_for_the_rule_each_changes(self):
         """A mutant that copies github.releases to change one rule tests an
@@ -435,12 +634,17 @@ class TheLane(unittest.TestCase):
 
     def test_the_lanes_come_first_then_the_searches_cheapest_first_then_the_two_widest_lanes(self):
         self.assertEqual([c.name for c in mutants.CATCHERS[:len(LANES)]], list(LANES))
-        self.assertEqual(mutants.SEARCHES[-5].name, "a stranger's pull request from a fork on a due claim")
-        self.assertEqual(mutants.SEARCHES[-4].name, "a stranger's pull request from a due claim's own branch")
-        self.assertEqual(mutants.SEARCHES[-3].name, "a stranger's pull request from a due claim's own branch, GitHub "
+        self.assertEqual(mutants.SEARCHES[-10].name, "a stranger's pull request from a fork on a due claim")
+        self.assertEqual(mutants.SEARCHES[-9].name, "a stranger's pull request from a due claim's own branch")
+        self.assertEqual(mutants.SEARCHES[-8].name, "a stranger's pull request from a due claim's own branch, GitHub "
                                                     "refusing to say who may write")
-        self.assertEqual(mutants.SEARCHES[-2].name, "the holder back between the halves of a run")
-        self.assertEqual(mutants.SEARCHES[-1].name, "a stranger's marker on overlapping claims")
+        self.assertEqual(mutants.SEARCHES[-7].name, "the holder back between the halves of a run")
+        self.assertEqual(mutants.SEARCHES[-6].name, "a stranger's marker on overlapping claims")
+        self.assertEqual(mutants.SEARCHES[-5].name, "a reopened issue after a release and a later claim")
+        self.assertEqual(mutants.SEARCHES[-4].name, "a release undone on a reopened issue")
+        self.assertEqual(mutants.SEARCHES[-3].name, "a claim since a reopen ended by deleting its branch")
+        self.assertEqual(mutants.SEARCHES[-2].name, "an undo after a claim since a reopen ended")
+        self.assertEqual(mutants.SEARCHES[-1].name, "claim files that stray")
         self.assertEqual(mutants.CATCHERS[len(LANES):-2], mutants.SEARCHES)
         self.assertIs(mutants.CATCHERS[-2], mutants.PICKING)
         self.assertIs(mutants.CATCHERS[-1], mutants.LABEL_MIXES)
@@ -557,6 +761,40 @@ class TheSearchesCatchWhatTheyWereAddedFor(unittest.TestCase):
                 continue
             with self.subTest(mutant=name), mutants.switched_on(mutant):
                 self.assertIn(mutant.guarantee, {g for g, _ in mutants.violations(search)})
+
+    def test_the_searches_that_reopen_an_issue_catch_every_mutant_of_f22_s_fix(self):
+        """The lane credits F22's eleven mutants to F22's trace, so the four
+        searches F22's reviews added, the only ones with the scope's reopens
+        on, are held here to all eleven: each finds nothing on the library,
+        and together they find the violation each mutant names. The first,
+        from a release and a later claim ready for review, is the one that
+        would have found the review's first finding, a released branch an
+        earlier claim left before the close read as a release undone; the
+        second, since F22's second review from a release before a close
+        and reopen by hand, the one that finds that review's first, claimed
+        put back after the close read as the ended claim's; the third, with
+        the scope's deletes on, from a claim made after that reopen and
+        ready for review, whose branch the owner may delete with the issue
+        open, the one that finds the third review's, a claim made since the
+        close read as an undo; and the fourth, from that claim ended and #1
+        freed, the one that finds the review of the third review's, an undo
+        after an ended claim read as the claim's."""
+        searches = [s for s in mutants.SEARCHES if s.scope.reopens]
+        self.assertEqual([s.name for s in searches], ["a reopened issue after a release and a later claim",
+                                                      "a release undone on a reopened issue",
+                                                      "a claim since a reopen ended by deleting its branch",
+                                                      "an undo after a claim since a reopen ended"])
+        self.assertEqual([s.name for s in mutants.SEARCHES if s.scope.deletes],
+                         ["a claim since a reopen ended by deleting its branch",
+                          "an undo after a claim since a reopen ended"])
+        for search in searches:
+            self.assertEqual(mutants.violations(search), {}, search.name)
+        for name, mutant in mutants.MUTANTS.items():
+            if "F22" not in mutant.why:
+                continue
+            with self.subTest(mutant=name), mutants.switched_on(mutant):
+                found = {g for search in searches for g, _ in mutants.violations(search)}
+                self.assertIn(mutant.guarantee, found)
 
     def test_github_refusing_to_say_who_may_write_catches_the_two_readings_of_a_refusal(self):
         """F19's review: the spec's sentence on an answer GitHub will not

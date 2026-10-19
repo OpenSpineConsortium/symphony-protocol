@@ -24,7 +24,8 @@ lease-elsewhere is F7's careless rebaser in a second clone of its own,
 reached from its session's clone by git -C, by cd, by a cd that is made
 and one that fails, or by env's --chdir written as a start of its name
 (F26); or in its session's own clone, reached by moves and names the
-guard cannot follow (ELSEWHERE, F21).
+guard cannot follow (ELSEWHERE, F21), or written beside here-documents
+and quotes the guard misread until F25's fix.
 
 Actors: the workers of the scope, each a person's session that may write
 (author_association COLLABORATOR); the owner; carol, a collaborator; dana,
@@ -34,7 +35,14 @@ Where the scope's forks is on, sam opens pull requests from a fork, from
 a branch named there as a claim's, which is no claim's (F17); where its
 strangers is on, sam opens them from a claim's own branch here, which are
 no claim's either, and the claim's holder may close one to open its own
-(F19).
+(F19). Where its reopens is on, the owner reopens a closed issue, which
+GitHub then says was reopened, and may merge a pull request in a
+repository that keeps its head branches (F22); where its deletes is on,
+the owner closes a claim's pull request without a merge and deletes its
+branch while the issue stays open (F22's third review). The owner merges
+only a pull request the required check passes, as the default branch's
+ruleset, which no one bypasses, makes GitHub hold it to: one marked ready
+whose claim file is gone and whose body closes its issue (F30).
 
 Two comments a person can write that look like the coordinator's, offered
 where the scope has more than one issue: a worker's comment that quotes
@@ -58,12 +66,13 @@ between them.
 """
 
 import os
+import re
 from typing import NamedTuple
 
 from sdlc_protocol import guard
 
 from . import cycle, model as M, oracle
-from .fake_github import DELETED, LAGGING, LAGGING_BY_TWO, MOVED, MOVED_TWICE, Fault
+from .fake_github import DELETED, LAGGING, LAGGING_BY_TWO, LISTED_LATE, MOVED, MOVED_TWICE, Fault
 from .model import CLAIM_PREFIX, HOUR, MAIN, OWNER, RELEASED_PREFIX, Comment, PullRequest, claim_text
 
 CLOCK, BOARD = "clock", "board"
@@ -85,7 +94,51 @@ CLONES = "/clones"
 # that fails would have taken the shell, which the shell skips (F21's
 # fourth review), with GIT_DIR exported, which names it whatever -C comes
 # after, or by a -C from a ~ after HOME is set, which the shell reads from
-# that HOME and the guard from the hook's own (the same review).
+# that HOME and the guard from the hook's own (the same review). Or its
+# own clone, by a push the guard read no push in until F25's fix: after a
+# here-document whose body holds an apostrophe, before a quote that never
+# closes, between two here-documents whose bodies' apostrophes pair around
+# it, the form a session writes a commit message and a pull request's body
+# in, between such bodies inside double-quoted substitutions that hold a
+# double quote, in a substitution in a body the shell expands, between two
+# apostrophes of the body's text, after a body in a double-quoted
+# substitution that a line EOF)" ends, as bash 5.2 ends one, after a body
+# that a line E and a backslash, then one OF, ends, as bash joins them, and
+# between the here-documents of two subshells in subshells written ((cd .);
+# ...), which bash reads as no arithmetic; and, since F25's second review,
+# between two bodies whose substitutions close on their operators' own
+# lines, after a body whose substitution in an expanded body holds an
+# apostrophe in its own body, between two double-quoted substitutions
+# whose case patterns hold here-documents, and between the bodies of
+# ((echo "))"); ...), whose quoted parentheses bash does not count, and a
+# later one; and, since its third review, between two double-quoted
+# substitutions whose ) inside ${y:-)}, or inside a backquoted case
+# command, closes nothing, each holding a here-document; and, since its
+# fourth review, after $${, whose $$ opens no parameter expansion, before
+# a here-document whose body holds an apostrophe, between two
+# double-quoted substitutions whose ) inside $[ ) ] closes nothing, and
+# after a backquoted span whose double quote pairs with nothing outside.
+# Since F24's fix, the push before a comment that holds an apostrophe in
+# the two shapes whose first body holds one too, so that read apart as a
+# substitution's own text the body still hides the push where the rule
+# under test is undone. Or its own clone, by a push inside a substitution
+# the guard read as part of a word or as a redirection until F24's fix: in
+# a double-quoted $( ), in a <( ), in a $( ) three deep in double quotes,
+# in a backquoted span in a double-quoted $( ), and in a double-quoted
+# $( ) inside arithmetic.
+# Or its second clone by git's -C behind env and a word env reads as an
+# assignment where the shell would run it, inside a string env's -S
+# splits, and after env GIT_DIR=x alone, which sets nothing in the shell
+# (F28); and after /usr/bin/time GIT_DIR=x, which runs the assignment as
+# a command, and "time" GIT_DIR=x, which the guard cannot tell from bash's
+# keyword (F28's review). And since F29's fix, after GIT_DIR=x alone,
+# which sets the shell's variable and hands it to git only where it was
+# exported before, and to the claim's own name with its number in ANSI-C
+# quotes, which bash decodes to the number; or its own clone, between two
+# here-documents whose bodies hold apostrophes, the first's delimiter
+# E$(echo x)F, which bash reads whole and the guard cut at the ( until
+# F29's fix, so the body ran to the end and the two apostrophes paired
+# around the push.
 ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push}",
              "missing": "cd ../{clone}; cd ../{absent}; git {push}",
              "body": "cat > /dev/null <<'EOF'\ncd ..\nEOF\ngit {push}",
@@ -93,9 +146,64 @@ ELSEWHERE = {"-C": "git -C ../{clone} {push}", "cd": "cd ../{clone} && git {push
              "skipped": "cd ..; false && cd {clone}; git -C {own} {push}",
              "exported": "export GIT_DIR={root}/{own}/.git; git -C {root} {push}",
              "home": "HOME={root}; git -C ~/{own} {push}",
-             "env": "env --ch ../{clone} git {push}"}
+             "apostrophe": "cat <<'EOF' > /dev/null\nIt's done\nEOF\ngit {push}",
+             "unclosed": 'git {push}\necho "unclosed',
+             "paired": "git commit -F - <<'EOF'\nDon't stop\nEOF\ngit {push}\ncat <<'EOF'\nIt's done\nEOF",
+             "quoted-substitution": ('git commit -q -m "$(cat <<\'EOF\'\nIt\'s "hi\nEOF\n)"\ngit {push} # it\'s\n'
+                                     'gh pr create --body "$(cat <<\'EOF\'\nQuote" here\nEOF\n)"'),
+             "body-substitution": "cat <<EOF\nIt's $(git {push}) done, isn't it\nEOF",
+             "closing-line": 'msg="$(cat <<\'EOF\'\nSay "hi\nEOF)"\ngit {push}\ngh pr create --body "x"',
+             "joined": "cat <<EOF\nDon't\nE\\\nOF\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
+             "subshells": ("((cd .); cat <<'EOF'\nDon't\nEOF\n)\ngit {push}\n"
+                           "((cd .); cat <<'EOF'\nIt's\nEOF\n)"),
+             "closed-substitution": "x=$(cat <<'EOF')\nDon't\nEOF\ngit {push}\ny=$(cat <<'EOF')\nIt's\nEOF",
+             "nested-body": "cat <<EOF\n$(cat <<'X'\nDon't\nX\ngit {push})\nEOF\ncat <<'EOF'\nIt's\nEOF",
+             "case-pattern": ('x="$(case a in a) cat <<\'EOF\'\nSay "hi\nEOF\n;; esac)"\ngit {push}\n'
+                              'y="$(case a in a) cat <<\'EOF\'\nSay "bye\nEOF\n;; esac)"'),
+             "quoted-arithmetic": "((echo \"))\"); cat <<'EOF'\nDon't\nEOF\n)\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
+             "braced": ('x="$(echo ${{y:-)}}; cat <<\'EOF\'\nSay "hi\nEOF\n)"\ngit {push}\n'
+                        'y="$(echo ${{y:-)}}; cat <<\'EOF\'\nSay "bye\nEOF\n)"'),
+             "backquoted": ('x="$(echo `case a in a) :;; esac`; cat <<\'EOF\'\nIt\'s "hi\nEOF\n)"\ngit {push} # it\'s\n'
+                            'y="$(echo `case a in a) :;; esac`; cat <<\'EOF\'\nSay "bye\nEOF\n)"'),
+             "pid-brace": "echo $${{ ; cat <<EOF\nsay 'hi\nEOF\ngit {push}\necho '",
+             "old-arithmetic": ('x="$(echo $[ ) ] ; cat <<\'EOF\'\nSay "hi\nEOF\n)"\ngit {push}\n'
+                                'y="$(echo $[ ) ] ; cat <<\'EOF\'\nSay "bye\nEOF\n)"'),
+             "backquoted-quote": 'x=`echo "`; git {push} # "',
+             "env": "env --ch ../{clone} git {push}",
+             "substituted": 'out="$(git {push} 2>&1)"',
+             "process": "cat <(git {push})",
+             "nested-substitutions": 'echo "$(echo "$(echo "$(git {push})")")"',
+             "backquote-in-substitution": 'echo "$(echo `git {push}`)"',
+             "arithmetic-substitution": '(( "$(git {push})" ))',
+             "ansi-c-in-substitution": 'echo "$(echo $\'it\\\'s\') $(git {push})" # it\'s',
+             "braced-apostrophe": "echo \"${{v:-'$(git {push})'}}\"",
+             "braced-ansi-c": ": ${{v:-$'a\\'b'}} `git {push}`",
+             "arithmetic-apostrophe": "echo $(( '$(git {push})' ))",
+             "bracket-apostrophe": "echo $[ '$(git {push})' ]",
+             "body-arithmetic": "cat <<EOF\necho \"$(( $(git {push}) ))\"\nEOF",
+             "body-after-ansi-c": "echo $'\\'' \"$(cat <<'E'\n\"\nE\ngit {push})\"",
+             "alike-substitutions": "echo \"$(echo $(true))\" \"$(echo $(git {push}))\"",
+             "hidden-body": "echo `echo \"\\$(cat <<'E'\n\"\nE\ngit {push})\"`",
+             "env-assigned": "env 1x=2 git -C ../{clone} {push}",
+             "env-split": "env -S 'git -C ../{clone} {push}'",
+             "env-alone": "env GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "time-path": "/usr/bin/time GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "time-quoted": '"time" GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}',
+             "env-names": "env -S '${{A}}${{B}}${{C}}${{D}}${{E}}${{F}} -u ${{G}} git -C ../{clone} pu\"\"sh{rest}'",
+             "set-alone": "GIT_DIR={root}/{own}/.git; git -C ../{clone} {push}",
+             "ansi-c-name": "git -C ../{clone} push --force-with-lease origin claude/$'{number}'",
+             "delimiter-substitution": "cat <<E$(echo x)F\nDon't\nE$(echo x)F\ngit {push}\ncat <<'EOF'\nIt's\nEOF",
+             "shell-string": "bash -c 'git -C ../{clone} {push}'",
+             "piped-shell": "echo 'git -C ../{clone} {push}' | sh"}
 # The ways whose push runs in the worker's own clone (leasing_clone).
-FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home")
+FROM_OWN_CLONE = ("body", "expanded", "skipped", "exported", "home", "apostrophe", "unclosed", "paired",
+                  "quoted-substitution", "body-substitution", "closing-line", "joined", "subshells",
+                  "closed-substitution", "nested-body", "case-pattern", "quoted-arithmetic", "braced",
+                  "backquoted", "pid-brace", "old-arithmetic", "backquoted-quote", "substituted", "process",
+                  "nested-substitutions", "backquote-in-substitution", "arithmetic-substitution",
+                  "ansi-c-in-substitution", "braced-apostrophe", "braced-ansi-c", "arithmetic-apostrophe",
+                  "bracket-apostrophe", "body-arithmetic", "body-after-ansi-c", "alike-substitutions",
+                  "hidden-body", "delimiter-substitution")
 
 # A read of the activity with no type named: the read of the push that set
 # a claim's head (github.read_push), told from the reads of a
@@ -117,21 +225,97 @@ FAULTS = {
     "comment-500-then-unread": Fault("POST", "/issues/*/comments", 500,
                                      then=Fault("GET", "/issues/*/comments", 500)),
     "comment-rate-limited": Fault("POST", "/issues/*/comments", 403, message=SECONDARY, retry_after="60"),
+    # A release comment GitHub refuses with a 4xx other than a rate
+    # limit's, which it answers in place of writing anything, so the run
+    # puts the labels back (SPEC["refused"]), where after a 500 it cannot
+    # tell whether GitHub wrote the comment and leaves them off (F23).
+    "comment-422": Fault("POST", "/issues/*/comments", 422, message="Validation Failed"),
+    # The same refusal with the read of the issue's comments after it
+    # refused too: GitHub wrote no comment of this run's, but the run
+    # cannot read whether one an earlier run's post or someone else wrote
+    # stands, so it leaves the labels as the release left them
+    # (SPEC["unread"]). F23's review: since F23's fix the only fault
+    # under which F20's mutant, a refused read taken for one that lists
+    # none, puts back labels the library leaves off.
+    "comment-422-then-unread": Fault("POST", "/issues/*/comments", 422, message="Validation Failed",
+                                     then=Fault("GET", "/issues/*/comments", 500)),
+    # A release comment GitHub writes and loses its answer to, with a 502
+    # or with no answer at all, and lists only after the read of the
+    # issue's comments that follows, which lists none of it, so the run
+    # cannot tell whether the comment stands (SPEC["listed late"]; F23).
+    "comment-late": Fault("POST", "/issues/*/comments", 502, applied=True,
+                          then=Fault("GET", "/issues/*/comments", 200, answer=LISTED_LATE)),
+    "comment-unanswered-late": Fault("POST", "/issues/*/comments", None, applied=True, message="timed out",
+                                     then=Fault("GET", "/issues/*/comments", 200, answer=LISTED_LATE)),
     # A comment's post refused for a secondary rate limit on every try the
     # client makes, the first and one after each of the waits it makes
     # where GitHub names none, a minute and then two
     # (adapters.github.rate_wait), which spend the three minutes a client
-    # waits in all: the comment is refused for the run, as comment-500's
-    # is, so a release whose comment it is puts its labels back and is
-    # owed again (F11).
+    # waits in all: the comment is refused for the run, and a release
+    # whose comment it is, whose read of the issue's comments after it
+    # lists none, leaves its labels as the release left them for the next
+    # run to settle, since GitHub's documentation never says it refuses a
+    # rate limit's call before acting on it (F11, SPEC["listed late"]; F23's
+    # review, until which the labels went back as after a 422).
     "comment-limited-for-the-run": Fault("POST", "/issues/*/comments", 403, times=3, message=SECONDARY),
     # The same, and the read of the issue's comments after it refused for a
     # rate limit too, which the client, its three minutes spent, does not
-    # wait out: the run cannot tell whether its comment stands and leaves
-    # the release for the next run to settle, as under F20's two.
+    # wait out: the run cannot tell whether a release comment stands and
+    # leaves the release for the next run to settle, as under F20's two.
     "comment-limited-then-unread": Fault("POST", "/issues/*/comments", 403, times=3, message=SECONDARY,
                                          then=Fault("GET", "/issues/*/comments", 403, message=SECONDARY)),
+    # A release comment GitHub writes though it refuses it for a secondary
+    # rate limit, as it would were canary C4 to find it acting on a call it
+    # refuses so, and lists only after the read of the issue's comments
+    # that follows, which lists none of it; its retry-after of 150 seconds
+    # is longer than a run waits, so the client makes one try and writes
+    # nothing twice. The run cannot tell whether the comment stands and
+    # leaves the labels as the release left them (SPEC["listed late"]),
+    # where a rule that took the refusal for one that wrote nothing put
+    # them back beside the comment (F23's review).
+    "comment-limited-late": Fault("POST", "/issues/*/comments", 403, message=SECONDARY, retry_after="150",
+                                  applied=True, then=Fault("GET", "/issues/*/comments", 200, answer=LISTED_LATE)),
+    # A release comment GitHub writes though it refuses it for a secondary
+    # rate limit, asking a wait of a minute, which the client makes and
+    # then makes the post again, and GitHub refuses that second try with a
+    # 422, writing nothing more, and lists the comment only after the read
+    # of the issue's comments that follows. The client raises the 422
+    # alone, so a rule that read the call by its last try put the labels
+    # back beside the comment the first try wrote; the run leaves them as
+    # the release left them (SPEC["listed late"]; F23's second review).
+    # Unlike comment-limited-late's, its refusal is one the client makes
+    # again, after a try GitHub acted on, as canary C4 would find were
+    # GitHub to act on a call it refuses so; the second try writes
+    # nothing, so nothing is written twice (invariants.written_once).
+    "comment-limited-then-422": Fault("POST", "/issues/*/comments", 403, message=SECONDARY, retry_after="60",
+                                      applied=True,
+                                      then=Fault("POST", "/issues/*/comments", 422, message="Validation Failed",
+                                                 then=Fault("GET", "/issues/*/comments", 200,
+                                                            answer=LISTED_LATE))),
     "label-delete-500": Fault("DELETE", "/issues/*/labels/*", 500),
+    # A release's first label GitHub takes off and loses its answer to,
+    # with a 502 or with no answer at all, so the run, failing there, puts
+    # back the label whose removal failed as well as those it took off;
+    # until F27's fix it put back only those GitHub answered, and the
+    # label GitHub took stayed off while the claim was held (SPEC["put
+    # back"]; F27).
+    "label-delete-lost": Fault("DELETE", "/issues/*/labels/*", 502, applied=True),
+    "label-delete-unanswered": Fault("DELETE", "/issues/*/labels/*", None, applied=True, message="timed out"),
+    # The same label refused with a 422, which GitHub answers in place of
+    # taking it off, so the label is still on and the run puts back only
+    # what it took off, never a label GitHub refused (F27).
+    "label-delete-422": Fault("DELETE", "/issues/*/labels/*", 422, message="Validation Failed"),
+    # claimed's removal refused for a rate limit, a 429 naming no wait,
+    # though GitHub took the label off, as it would were canary C4 to find
+    # it acting on a call it refuses so; the client waits a minute and asks
+    # again, which GitHub answers 404, the label being off; then the
+    # worker's label's removal answered 500, so the release fails there. The
+    # 404 follows a try that may have taken claimed off, so the run puts it
+    # back with the worker's label, where a rule that read the 404 as a
+    # label never on left claimed off the held claim's issue (F27's
+    # review).
+    "label-delete-limited-then-404": Fault("DELETE", "/issues/*/labels/claimed", 429, applied=True,
+                                           then=Fault("DELETE", "/issues/*/labels/worker:*", 500)),
     "label-post-500": Fault("POST", "/issues/*/labels", 500),
     # A label GitHub writes and loses its answer to, as a release's todo
     # can be (F15's review).
@@ -310,8 +494,14 @@ class Scope(NamedTuple):
     pushes-lagging-twice or pushes-lagging-then-500 is dated by the floor,
     the newest entry listed, since F8's fix check), whether a stranger
     opens pull requests from a fork whose branch bears a claim's name
-    (F17), and whether a stranger opens them from a claim's own branch
-    here (F19)."""
+    (F17), whether a stranger opens them from a claim's own branch
+    here (F19), whether the owner reopens closed issues and merges
+    keeping the head branch (F22), whether the owner closes a claim's
+    pull request unmerged and deletes its branch on an open issue (F22's
+    third review), and whether claim files stray (F31): carol, who may
+    write, opens a pull request that is no claim's carrying an issue's
+    claim file, and a worker claims an issue from another claim's branch,
+    whose claim file its own then carries."""
 
     workers: tuple = ("a", "b")
     issues: tuple = (1,)
@@ -325,6 +515,9 @@ class Scope(NamedTuple):
     skews: tuple = ()
     forks: bool = False
     strangers: bool = False
+    reopens: bool = False
+    deletes: bool = False
+    strays: bool = False
 
     def files_of(self, number):
         return dict(self.files).get(number, (f"src/{number}.py",))
@@ -380,7 +573,11 @@ def guard_says(command, here, branches_of, reader_of, is_directory=None):
     or None when it passes: guard.refused_push judges each push in the
     clone it runs in, by that clone's current and default branch
     (branches_of) and its claim files (reader_of), the shell reaching the
-    directories is_directory takes for directories."""
+    directories is_directory takes for directories; a command the hook
+    does not read at all (guard.may_push) passes unread, as guard.run lets
+    it pass (F29's first review)."""
+    if not guard.may_push(command):
+        return None
     return guard.refused_push(command, here, branches_of, reader_of, is_directory)
 
 
@@ -477,15 +674,16 @@ def apply_pull_change(model, pull):
 
 # --- the verbs ----------------------------------------------------------------
 
-def claim(model, worker, number, files, skew=0, name=None, guarded=True):
-    """Push the claim commit, the claim file alone, from main. A name that
+def claim(model, worker, number, files, skew=0, name=None, guarded=True, base=MAIN):
+    """Push the claim commit, the claim file alone, from main, or from
+    another claim's branch for a claim stacked on it (F31). A name that
     reads as a claim and claims nothing, as claude/03, is a shape the rules
     forbid (spec/PROTOCOL.md, Claim); a person's push by hand, outside a
     session, meets no guard."""
     ref = name or claim_ref(number)
-    tree = model.tree(model.refs[MAIN])
+    tree = model.tree(model.refs[base])
     tree[f"{CLAIM_DIR}/{number}.md"] = claim_text(number, worker, files)
-    sha = model.commit((model.refs[MAIN],), worker, tree, f"Claim #{number}", skew)
+    sha = model.commit((model.refs[base],), worker, tree, f"Claim #{number}", skew)
     return pushed(model, worker, ref, sha, f"git push origin {ref}", allowed=not oracle.reads_as_claim(ref),
                   guarded=guarded)
 
@@ -599,10 +797,14 @@ def lease_elsewhere(model, worker, number, files, how):
     after a cd behind a test that fails, which the shell skips, with
     GIT_DIR exported, which names it whatever -C comes after, or by a -C
     from a ~ after HOME is set to the directory that holds the clones,
-    which the guard reads from the hook's own HOME.
-    Git would take it, so the guard must judge the push in the clone it
-    runs in and refuse it, as it refuses lease_onto's. No search offers
-    it; F21's trace plays it, and F26's its env."""
+    which the guard reads from the hook's own HOME; or, for F25's ways, in
+    its own clone beside here-documents and a quote that never closes,
+    which bash reads as text or as a line it runs nothing of, after the
+    push. Git would take it, so the guard must read the push and judge it
+    in the clone it runs in and refuse it, as it refuses lease_onto's. No
+    search offers it; F21's trace plays it, F26's its env, F25's its
+    here-documents, F28's env's assignments and -S, and F29's lone GIT_DIR=x
+    and a claim's name in ANSI-C quotes."""
     pusher = leasing_clone(worker, how)
     model.fetch(pusher)
     ref = claim_ref(number)
@@ -622,9 +824,11 @@ def leasing_clone(worker, how):
 def leasing_command(worker, how, ref, root=CLONES):
     """The command lease_elsewhere's session runs from the worker's own
     clone (ELSEWHERE), naming the second clone, the absent one, the
-    worker's own and root, the directory that holds them."""
+    worker's own and root, the directory that holds them, and the claim's
+    issue number."""
     return ELSEWHERE[how].format(clone=other_clone(worker), absent=absent_clone(worker), own=worker, root=root,
-                                 push=f"push --force-with-lease origin {ref}")
+                                 push=f"push --force-with-lease origin {ref}", rest=f" --force-with-lease origin {ref}",
+                                 number=ref.removeprefix("claude/"))
 
 
 def claim_commit(model, number):
@@ -761,6 +965,37 @@ def close_pull(model, number):
     return Outcome(True, "closed", events=((cycle.PULL_REQUEST, ""),))
 
 
+def stray_ref(number):
+    """The branch of carol's own that carries issue number's claim file
+    (F31)."""
+    return f"notes/{number}"
+
+
+def stray_pull(model, writer, number, files):
+    """carol, who may write, pushes a branch of her own from main whose one
+    commit adds issue number's claim file, as a careless copy of a claim
+    would, and opens a pull request from it to main, ready and closing
+    nothing: a pull request that is no claim's, which the protocol check
+    fails since F31, so no merge of it puts a claim on the issue on the
+    default branch. She pushes by hand, as a person outside a session
+    does."""
+    return opened_stray(model, writer, number, claim(model, writer, number, files, name=stray_ref(number),
+                                                     guarded=False))
+
+
+def opened_stray(model, writer, number, pushed_branch):
+    """The ready pull request from carol's branch, once the push is taken."""
+    if not pushed_branch.taken:
+        return pushed_branch
+    pull = PullRequest(model.next_pull, stray_ref(number), writer, f"Notes for issue {number}.",
+                       f"Notes for issue {number}", draft=False, opened_at=model.now, updated_at=model.now,
+                       association=ASSOCIATIONS[writer])
+    model.pulls[pull.number] = pull
+    model.next_pull += 1
+    return pushed_branch._replace(note=f"pushed {pull.head} and opened #{pull.number}",
+                                  events=pushed_branch.events + ((cycle.PULL_REQUEST, ""),))
+
+
 def open_fork_pull(model, number):
     """sam's open pull request from the fork's claude/<number>, or None."""
     return next((p for p in model.pulls.values() if p.fork and p.state == "open" and p.head == claim_ref(number)),
@@ -774,21 +1009,127 @@ def mark_ready(model, number):
     return Outcome(True, "marked ready")
 
 
-def merge(model, number):
+def passes_check(model, pull):
+    """Whether the required check passes a pull request ready to merge, as
+    the protocol check it runs reads one (spec, Rules: "the claim file is
+    there while the pull request is a draft, gone once it is ready, the
+    body closes its issue, and the branch lives in the repository itself,
+    never in a fork"): a
+    claim's branch here, its claim file gone at the head and its body
+    closing the issue; one from a branch that reads as a claim and claims
+    nothing, as claude/03, fails it (spec, Rules: "a pull request from a
+    branch that reads as a claim and claims nothing, as `claude/03`, fails
+    it"), and one from any other branch passes it where it is ready,
+    since GitHub merges no draft. The default branch takes only a pull
+    request the check passes, with no one to bypass the rule
+    (symphony-template's docs/setup/ruleset-main.json and ruleset-org.json:
+    required_status_checks "check", bypass_actors empty), so GitHub
+    refuses the owner's merge of any other (F30). A claim file still
+    reaches main where the check lets it through: a pull request that is
+    no claim's adding one, or a claim's carrying another issue's, until
+    the check judged the change a pull request makes to main (F31): since
+    then one that adds or changes a claim file other than its own issue's
+    on its own claim branch fails it too (oracle.SPEC["strays"]), and one
+    that deletes a claim file is judged as any other
+    (oracle.SPEC["stray deleted"]; claim_files_changed).
+    This reads the claim file at the pull request's head where the real
+    check reads the merge ref's checkout; the two agree while main holds
+    no claim file."""
+    number = oracle.claim_number(pull.head)
+    if strays_of(model, pull):
+        return False
+    if number is None:
+        return not pull.draft and not oracle.reads_as_claim(pull.head)
+    has_file = model.tree(model.pull_head(pull)).get(f"{CLAIM_DIR}/{number}.md") is not None
+    closes = re.search(oracle.CLOSES % number, pull.body) is not None
+    return not pull.fork and not pull.draft and not has_file and closes
+
+
+def claim_files_changed(model, pull):
+    """The issues whose claim file a pull request adds or changes, as the
+    protocol check reads its change (F31 and its review): the branch's own
+    change, from where it left main to its head, and the change of the
+    merge GitHub tests against main, either one counting. A path counts
+    where it is docs/agents/claims/<n>.md, n spelled as a claim's number
+    is, and the newer side holds it with a text the older does not; a file
+    deleted counts for nothing, so a pull request that takes a stale claim
+    file off main is judged as any other."""
+    head = model.pull_head(pull)
+    if not head:
+        return ()
+    main = model.refs[MAIN]
+    left = model.merge_base(head, main)
+    return tuple(sorted(claim_numbers_added(model.tree(left), model.tree(head))
+                        | claim_numbers_added(model.tree(main), merged_tree(model, head, main))))
+
+
+def claim_numbers_added(before, after):
+    """The claim files a tree after holds with a text the tree before does
+    not, by issue."""
+    found = set()
+    for path, text in after.items():
+        folder, _, name = path.rpartition("/")
+        if (folder == CLAIM_DIR and name.endswith(".md") and oracle.CLAIM_NUMBER.fullmatch(name[:-len(".md")])
+                and before.get(path) != text):
+            found.add(int(name[:-len(".md")]))
+    return found
+
+
+def strays_of(model, pull):
+    """The claim files a pull request adds or changes that are not its own:
+    every one, but its own issue's on its own claim branch here, never in a
+    fork (spec, Rules; F31)."""
+    own = oracle.claim_number(pull.head) if not pull.fork else None
+    return tuple(n for n in claim_files_changed(model, pull) if n != own)
+
+
+# What GitHub does with the merge of a pull request the required check
+# fails: nothing (passes_check; F30).
+REFUSED_MERGE = Outcome(False, "the required check fails, so GitHub refuses the merge")
+
+
+def merge(model, number, keep_head=False):
     """The owner merges a pull request: main gets a merge commit, the issue
-    its body closes is closed, and the repository deletes the head; GitHub
-    fires the four events at once (DESIGN.md, F12)."""
+    its body closes is closed, and the repository deletes the head, unless
+    it keeps head branches (keep_head, F22); GitHub fires the four events
+    at once (DESIGN.md, F12), or three with the head kept. GitHub refuses
+    the merge of a pull request the required check fails (passes_check;
+    F30), and nothing changes."""
     pull = model.pulls[number]
+    if model.checked_merges and not passes_check(model, pull):
+        return REFUSED_MERGE
     head, main = model.refs[pull.head], model.refs[MAIN]
     model.refs[MAIN] = model.commit((main, head), OWNER, merged_tree(model, head, main), f"Merge #{number}")
     pull.state, pull.merged_at = "merged", model.now
     apply_pull_change(model, pull)
-    closed = oracle.claim_number(pull.head)
-    if closed in model.issues:
-        model.issues[closed].state = "closed"
+    close_issue(model, oracle.claim_number(pull.head))
+    if keep_head:
+        return Outcome(True, "merged, the head kept", events=MERGED_EVENTS[:3])
     model.delete_ref(pull.head)
-    return Outcome(True, "merged", events=((cycle.PUSH, MAIN), (cycle.PULL_REQUEST, ""), (cycle.ISSUES, ""),
-                                           (cycle.DELETE, MAIN)))
+    return Outcome(True, "merged", events=MERGED_EVENTS)
+
+
+# What GitHub tells the board workflow of a merge, at once: the push to
+# main, the pull request closed, the issue its body closes closed and,
+# where the repository deletes head branches, the head deleted.
+MERGED_EVENTS = ((cycle.PUSH, MAIN), (cycle.PULL_REQUEST, ""), (cycle.ISSUES, ""), (cycle.DELETE, MAIN))
+
+
+def close_issue(model, number):
+    """Close an issue, as a merge that closes it or a person does: GitHub's
+    state_reason is then completed, no longer reopened, and its events
+    record the close at this minute."""
+    if number in model.issues:
+        issue = model.issues[number]
+        issue.state, issue.reopened, issue.closed_at = "closed", False, model.now
+        issue.closed_after = len(model.label_events)
+
+
+def reopen_issue(model, number):
+    """The owner reopens a closed issue, whose labels stay as they were:
+    GitHub then says it was reopened (F22)."""
+    model.issues[number].state, model.issues[number].reopened = "open", True
+    return Outcome(True, "issue reopened", events=((cycle.ISSUES, ""),))
 
 
 def move_main(model, path="README.md"):
@@ -808,9 +1149,25 @@ def tidy(model, number):
     return Outcome(True, "tidied")
 
 
+def delete_claim_branch(model, number):
+    """The owner closes the claim's open pull request without a merge and
+    deletes claude/<n> from its page, while the issue stays open: the
+    labels the claim put on stay, and no release comment is written, so
+    the claim ends with no word on the issue (F22's third review). GitHub
+    tells the workflow of the pull request closed and the branch deleted."""
+    model.delete_ref(claim_ref(number))
+    return Outcome(True, "the claim branch deleted", events=((cycle.PULL_REQUEST, ""), (cycle.DELETE, MAIN)))
+
+
 def rename_back(model, number, released_ref):
     """A person renames the branch back by hand: a branch made and one
-    deleted, as GitHub tells the workflow of a rename."""
+    deleted, as GitHub tells the workflow of a rename. GitHub refuses a
+    rename to the name of a branch that stands, as git refuses to make a
+    second branch of one name, so where claude/<n> stands, as it does where
+    GitHub refused the merge that would have deleted it (F30), nothing
+    changes; the checker offers the verb only where the name is free."""
+    if claim_ref(number) in model.refs:
+        return Outcome(False, "a branch of that name stands, so GitHub refuses the rename")
     model.rename_ref(released_ref, claim_ref(number))
     return Outcome(True, "renamed back", events=((cycle.CREATE, claim_ref(number)), (cycle.DELETE, MAIN)))
 
@@ -890,6 +1247,10 @@ def act(model, verb, scope):
         return claim(model, actor, number, scope.files_of(number), *args[1:])
     if name == "claim-misnamed":
         return claim(model, actor, number, scope.files_of(number), name=args[1])
+    if name == "claim-stacked":
+        return claim(model, actor, number, scope.files_of(number), base=claim_ref(args[1]))
+    if name == "stray-pull":
+        return stray_pull(model, actor, number, scope.files_of(number))
     if name == "push-by-hand":
         return claim(model, actor, number, scope.files_of(number), name=args[1], guarded=False)
     if name == "commit":
@@ -940,13 +1301,19 @@ def act(model, verb, scope):
         return mark_ready(model, number)
     if name == "merge":
         return merge(model, number)
+    if name == "merge-keep":
+        return merge(model, number, keep_head=True)
     if name == "close-issue":
-        model.issues[number].state = "closed"
+        close_issue(model, number)
         return Outcome(True, "closed", events=((cycle.ISSUES, ""),))
+    if name == "reopen-issue":
+        return reopen_issue(model, number)
     if name == "tidy":
         return tidy(model, number)
     if name == "rename-back":
         return rename_back(model, number, args[1])
+    if name == "delete-claim-branch":
+        return delete_claim_branch(model, number)
     if name == "reopen":
         return reopen(model, number)
     raise ValueError(f"no verb {name}")
@@ -1006,8 +1373,10 @@ def issue_verbs(model, scope, number):
         found += fork_verbs(model, number)
     if scope.strangers and issue.state == "open":
         found += stranger_verbs(model, number, pull)
+    if scope.strays and CAROL in scope.people and issue.state == "open" and stray_ref(number) not in model.refs:
+        found.append(Verb("stray-pull", CAROL, (number,)))
     if OWNER in scope.people:
-        found += owner_verbs(model, number, pull)
+        found += owner_verbs(model, number, pull, scope)
         misnamed = f"{CLAIM_PREFIX}0{number}"
         if scope.careless and issue.state == "open" and misnamed not in model.refs:
             found.append(Verb("push-by-hand", OWNER, (number, misnamed)))
@@ -1023,6 +1392,9 @@ def worker_verbs(model, scope, number, worker, pull):
         for old in released_refs(model, number):
             if model.creators.get(old) == worker:
                 found.append(Verb("push-old-head", worker, (number, old)))
+        if scope.strays:
+            found += [Verb("claim-stacked", worker, (number, other)) for other in others(scope, number)
+                      if claim_ref(other) in model.refs]
     if scope.careless and issue.state == "open":
         if ref in model.refs and holder(model, number) != worker:
             found.append(Verb("lease-onto", worker, (number,)))
@@ -1084,11 +1456,13 @@ def others(scope, number):
     return tuple(n for n in scope.issues if n != number)
 
 
-def owner_verbs(model, number, pull):
+def owner_verbs(model, number, pull, scope=Scope()):
     issue, ref = model.issues[number], claim_ref(number)
     found = []
-    if pull is not None and not pull.draft and model.standing(ref) != "dirty":
+    if pull is not None and model.standing(ref) != "dirty" and passes_check(model, pull):
         found.append(Verb("merge", OWNER, (pull.number,)))
+        if scope.reopens:
+            found.append(Verb("merge-keep", OWNER, (pull.number,)))
     for label in sorted(issue.labels):
         if label == oracle.CLAIMED or oracle.is_worker_label(label):
             found.append(Verb("label-off", OWNER, (number, label)))
@@ -1103,6 +1477,11 @@ def owner_verbs(model, number, pull):
             found.append(Verb("reopen", OWNER, (closed.number,)))
     if issue.state == "open":
         found.append(Verb("close-issue", OWNER, (number,)))
-    elif ref in model.refs or released_refs(model, number):
-        found.append(Verb("tidy", OWNER, (number,)))
+        if scope.deletes and ref in model.refs:
+            found.append(Verb("delete-claim-branch", OWNER, (number,)))
+    else:
+        if ref in model.refs or released_refs(model, number):
+            found.append(Verb("tidy", OWNER, (number,)))
+        if scope.reopens:
+            found.append(Verb("reopen-issue", OWNER, (number,)))
     return found

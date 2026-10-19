@@ -89,6 +89,20 @@ class CutRefusal(Refusal):
         return urllib.error.HTTPError(url, self.code, "refused", dict(self.headers), CutBody())
 
 
+class Unanswered(Refusal):
+    """A call sent whose connection timed out before GitHub answered
+    anything, which urllib passes on as the socket's TimeoutError, an
+    OSError: GitHub may have done what it was asked all the same. It is
+    a Refusal only so the fakes raise it as they raise one; it has no
+    status, as the run's GitHubError has none."""
+
+    def __init__(self):
+        super().__init__(None)
+
+    def raised(self, url):
+        return TimeoutError("The read operation timed out")
+
+
 def send_line(call):
     """Write a request's line and headers as http.client writes them before
     it connects, which refuses a path it cannot send as ASCII
@@ -2120,31 +2134,248 @@ class Coordinate(unittest.TestCase):
         self.assertIn("| #12 | Describe the board | todo |", board.render(snap).split(board.QUEUE_HEADING)[1])
 
     def test_a_comment_github_refuses_after_the_labels_puts_them_back(self):
-        # With no release comment and the labels back, the issue is as the
-        # run found it and the next run starts the release over
-        # (ReleaseAcrossRuns); the comments are read first, in case GitHub
-        # wrote the comment and lost its answer.
-        answers = release_answers()
-        answers["POST /repos/o/r/issues/12/comments"] = Refusal(403, {"message": "Resource not accessible"})
-        answers[COMMENTS_12] = FakeAnswer([])
-        answers[LABELS_12] = FakeAnswer([])
-        snap = idle_snapshot()
-        api, opener = client(answers)
-        self.assertEqual(github.coordinate(api, snap, NOW), [
-            "#12: not released, the comment failed: POST /repos/o/r/issues/12/comments: HTTP 403: "
-            "Resource not accessible; claimed, worker:nightly put back"])
-        self.assertEqual([c.get_method() for c in opener.calls], ["DELETE", "DELETE", "GET", "POST", "GET", "POST"])
-        self.assertEqual(opener.sent("POST")[1], {"labels": ["claimed", "worker:nightly"]})
-        self.assertEqual(board.released_keys(snap), set())
+        # A 4xx is GitHub's answer in place of writing the comment, so with
+        # none listed and the labels back the issue is as the run found it
+        # and the next run starts the release over (ReleaseAcrossRuns); the
+        # comments are read first all the same, since a newer release
+        # comment there would make the release whole.
+        refusals = ((Refusal(403, {"message": "Resource not accessible"}), "HTTP 403: Resource not accessible"),
+                    (Refusal(422, {"message": "Validation Failed"}), "HTTP 422: Validation Failed"),
+                    (Refusal(410, {"message": "Issue is deleted"}), "HTTP 410: Issue is deleted"))
+        for refusal, said in refusals:
+            with self.subTest(said=said):
+                answers = release_answers()
+                answers["POST /repos/o/r/issues/12/comments"] = refusal
+                answers[COMMENTS_12] = FakeAnswer([])
+                answers[LABELS_12] = FakeAnswer([])
+                snap = idle_snapshot()
+                api, opener = client(answers)
+                self.assertEqual(github.coordinate(api, snap, NOW), [
+                    f"#12: not released, the comment failed: POST /repos/o/r/issues/12/comments: {said}; "
+                    "claimed, worker:nightly put back"])
+                self.assertEqual([c.get_method() for c in opener.calls],
+                                 ["DELETE", "DELETE", "GET", "POST", "GET", "POST"])
+                self.assertEqual(opener.sent("POST")[1], {"labels": ["claimed", "worker:nightly"]})
+                self.assertEqual(board.released_keys(snap), set())
 
-    def test_a_second_label_github_refuses_puts_the_first_back(self):
+    def test_a_comment_answered_with_a_server_error_or_none_and_not_listed_leaves_the_labels(self):
+        """F23: GitHub may write the comment and then answer 502, or give no
+        answer at all, and list the comment only after the read that
+        follows, which then lists none. Until the fix the run put the
+        labels back, and where GitHub had written the comment the claim was
+        held for good, the comment telling every later coordinator it was
+        released and the label claimed telling the board it was held; the
+        labels now stay as the release left them, no release is counted and
+        the page lists the claim as held until the next run settles it
+        (ReleaseAcrossRuns)."""
+        failures = ((Refusal(502), "HTTP 502"), (Refusal(500, {"message": "Server Error"}), "HTTP 500: Server Error"),
+                    (Unanswered(), "The read operation timed out"))
+        for failure, said in failures:
+            with self.subTest(said=said):
+                answers = release_answers()
+                answers["POST /repos/o/r/issues/12/comments"] = failure
+                answers[COMMENTS_12] = FakeAnswer([])
+                snap = idle_snapshot()
+                api, opener = client(answers)
+                self.assertEqual(github.coordinate(api, snap, NOW), [
+                    f"#12: release unsettled, the comment failed: POST /repos/o/r/issues/12/comments: {said}; its "
+                    "issue's comments list none yet, though GitHub may have written it before that failure and list "
+                    "it only later; the labels stay as the release left them"])
+                self.assertEqual([c.get_method() for c in opener.calls], ["DELETE", "DELETE", "GET", "POST", "GET"])
+                self.assertEqual((snap.claim_issues["12"].labels, snap.issues[0].labels), (["todo"], ["todo"]))
+                self.assertEqual(snap.releases["12"].released_at, "")
+                self.assertEqual(board.released_keys(snap), set())
+                self.assertIn("| #12 | claude/12 | nightly | #40 |", board.render(snap))
+
+    def test_a_comment_refused_for_a_rate_limit_and_not_listed_leaves_the_labels(self):
+        """F23's review: a rate limit's refusal is a 4xx, but GitHub's
+        documentation never says GitHub gives it in place of acting on the
+        call, which canary C4 would settle and is not run, so a refusal the
+        client gave up on, after each of its tries or at once for a wait
+        longer than a run waits, whose read lists no comment leaves the
+        labels as a server error does, with the same line. Until the review
+        the labels went back, which held the claim for good where GitHub
+        had written the comment."""
+        secondary = {"message": "You have exceeded a secondary rate limit"}
+        refusals = ((Refusal(403, secondary), "HTTP 403: You have exceeded a secondary rate limit", [60, 120]),
+                    (Refusal(403, secondary, {"retry-after": "150"}), "HTTP 403: You have exceeded a secondary rate "
+                                                                       "limit", []),
+                    (Refusal(429), "HTTP 429", [60, 120]))
+        for refusal, said, waited in refusals:
+            with self.subTest(said=said, waited=waited):
+                answers = release_answers()
+                answers["POST /repos/o/r/issues/12/comments"] = refusal
+                answers[COMMENTS_12] = FakeAnswer([])
+                snap, waits = idle_snapshot(), []
+                api, opener = client(answers, waits)
+                self.assertEqual(github.coordinate(api, snap, NOW), [
+                    f"#12: release unsettled, the comment failed: POST /repos/o/r/issues/12/comments: {said}; its "
+                    "issue's comments list none yet, though GitHub may have written it before that failure and list "
+                    "it only later; the labels stay as the release left them"])
+                self.assertEqual([c.get_method() for c in opener.calls],
+                                 ["DELETE", "DELETE", "GET"] + ["POST"] * (len(waited) + 1) + ["GET"])
+                self.assertEqual(waits, waited)
+                self.assertEqual((snap.claim_issues["12"].labels, snap.issues[0].labels), (["todo"], ["todo"]))
+                self.assertEqual(board.released_keys(snap), set())
+                self.assertIn("| #12 | claude/12 | nightly | #40 |", board.render(snap))
+
+    def test_a_refusal_after_a_rate_limit_and_not_listed_leaves_the_labels(self):
+        """F23's second review: the client waits out a rate limit's refusal
+        of the comment and makes it again, and GitHub refuses the second
+        try with a 4xx that is no rate limit's, a 422 or a locked issue's
+        403. That refusal answers the second try alone: GitHub may have
+        acted on the first, which canary C4 would settle and is not run, so
+        a read that lists none leaves the labels as a server error does.
+        Until the review the second try's 4xx alone was read and the labels
+        went back, beside a comment that may stand. The same refusal on a
+        first try, with no rate limit before it, still puts them back."""
+        limited = Refusal(403, {"message": "You have exceeded a secondary rate limit"}, {"retry-after": "5"})
+        locked = {"message": "Unable to create comment because issue is locked."}
+        for second, said in ((Refusal(422, {"message": "Validation Failed"}), "HTTP 422: Validation Failed"),
+                             (Refusal(403, locked), "HTTP 403: Unable to create comment because issue is locked.")):
+            with self.subTest(said=said):
+                answers = release_answers()
+                answers["POST /repos/o/r/issues/12/comments"] = Turns(limited, second)
+                answers[COMMENTS_12] = FakeAnswer([])
+                snap, waits = idle_snapshot(), []
+                opener = InTurn(answers)
+                api = github.GitHub("t", "o/r", opener=opener, sleep=waits.append)
+                self.assertEqual(github.coordinate(api, snap, NOW), [
+                    f"#12: release unsettled, the comment failed: POST /repos/o/r/issues/12/comments: {said}; its "
+                    "issue's comments list none yet, though GitHub may have written it before that failure and list "
+                    "it only later; the labels stay as the release left them"])
+                self.assertEqual([c.get_method() for c in opener.calls],
+                                 ["DELETE", "DELETE", "GET", "POST", "POST", "GET"])
+                self.assertEqual(waits, [5])
+                self.assertEqual((snap.claim_issues["12"].labels, snap.issues[0].labels), (["todo"], ["todo"]))
+                self.assertEqual(board.released_keys(snap), set())
+                answers = release_answers()
+                answers["POST /repos/o/r/issues/12/comments"] = second
+                answers[COMMENTS_12] = FakeAnswer([])
+                answers[LABELS_12] = FakeAnswer([])
+                snap = idle_snapshot()
+                api, _ = client(answers)
+                lines = github.coordinate(api, snap, NOW)
+                self.assertTrue(lines[0].startswith("#12: not released, the comment failed"), lines)
+                self.assertIn("claimed", snap.claim_issues["12"].labels)
+
+    def test_only_the_last_refusal_of_a_call_made_again_says_it_came_after_a_rate_limit(self):
+        """GitHub.request marks the refusal it raises when an earlier try of
+        the call was refused for a rate limit, and only then."""
+        limited = Refusal(429, headers={"retry-after": "5"})
+        for turns, after in ((Turns(Refusal(422)), False), (Turns(limited, Refusal(422)), True),
+                             (Turns(limited, Refusal(502)), True)):
+            with self.subTest(after=after, turns=[t.code for t in turns]):
+                api = github.GitHub("t", "o/r", opener=InTurn({"/repos/o/r/issues/7": turns}), sleep=lambda s: None)
+                with self.assertRaises(github.GitHubError) as raised:
+                    api.request("GET", api.url("/repos/o/r/issues/7"))
+                self.assertIs(raised.exception.after_rate_limit, after)
+                self.assertIs(github.wrote_nothing(raised.exception), not after and raised.exception.status == 422)
+
+    def test_a_comment_answered_with_a_server_error_or_none_and_listed_is_a_whole_release(self):
+        """GitHub wrote the comment and the read after the failure lists it,
+        so the release is whole whatever the failure was, and the line says
+        the answer was lost."""
+        for failure, said in ((Refusal(502), "HTTP 502"), (Unanswered(), "The read operation timed out")):
+            with self.subTest(said=said):
+                answers = release_answers()
+                answers["POST /repos/o/r/issues/12/comments"] = failure
+                answers[COMMENTS_12] = FakeAnswer([dict(RELEASE_COMMENT, created_at="2026-09-20T12:00:03Z")])
+                snap = idle_snapshot()
+                api, opener = client(answers)
+                self.assertEqual(github.coordinate(api, snap, NOW), [
+                    "#12: claim released, idle since 2026-09-18T12:00:00Z (GitHub's answer to the comment was lost, "
+                    f"POST /repos/o/r/issues/12/comments: {said}, but the comment is there)"])
+                self.assertEqual([c.get_method() for c in opener.calls], ["DELETE", "DELETE", "GET", "POST", "GET"])
+                self.assertEqual(snap.releases["12"].released_at, "2026-09-20T12:00:03Z")
+                self.assertEqual(board.released_keys(snap), {"12"})
+
+    def test_only_a_refusal_from_400_to_499_says_github_wrote_nothing(self):
+        """F23: a 4xx is GitHub's answer in place of the write. A server
+        error, no answer at all, and an answer the client could not read as
+        JSON, which it gives no status either, may each come after it; and,
+        since F23's review, so may a rate limit's refusal, a 429 or a 403
+        that says it is one by its message or a retry-after
+        (rate_limited), which GitHub's documentation never says comes
+        before GitHub acts on the call. A 403 that says neither, whatever
+        its x-ratelimit-remaining, is a refusal like any other."""
+        for status, wrote_nothing in ((400, True), (403, True), (404, True), (410, True), (422, True), (429, False),
+                                      (499, True), (500, False), (502, False), (503, False), (504, False),
+                                      (None, False)):
+            with self.subTest(status=status):
+                problem = github.GitHubError("POST /repos/o/r/issues/12/comments: failed", status)
+                self.assertIs(github.wrote_nothing(problem), wrote_nothing)
+        for detail, headers, wrote_nothing in (("You have exceeded a secondary rate limit", None, False),
+                                               ("API rate limit exceeded for installation ID 1.", None, False),
+                                               ("", {"Retry-After": "150"}, False),
+                                               ("Resource not accessible by integration", None, True),
+                                               ("", {"x-ratelimit-remaining": "0"}, True)):
+            with self.subTest(detail=detail, headers=headers):
+                problem = github.GitHubError("POST /repos/o/r/issues/12/comments: failed", 403, detail, headers)
+                self.assertIs(github.wrote_nothing(problem), wrote_nothing)
+
+    def test_a_second_label_github_fails_puts_both_back(self):
+        # A 502 may come after GitHub took the label off, so the label
+        # whose removal failed goes back beside the one taken off, and the
+        # issue is as the run found it either way (F27).
         answers = release_answers()
         answers[LABEL_WORKER_12] = Refusal(502)
         answers[LABELS_12] = FakeAnswer([])
         api, opener = client(answers)
         self.assertEqual(github.coordinate(api, idle_snapshot(), NOW), [
             "#12: not released, taking the labels off failed: DELETE /repos/o/r/issues/12/labels/worker%3Anightly: "
-            "HTTP 502; claimed put back"])
+            "HTTP 502; claimed, worker:nightly put back"])
+        self.assertEqual(opener.sent("POST"), [{"labels": ["claimed", "worker:nightly"]}])
+
+    def test_a_second_label_github_refuses_puts_the_first_back(self):
+        # A 403 that is no rate limit's says GitHub took nothing off, so
+        # only the label it took goes back.
+        answers = release_answers()
+        answers[LABEL_WORKER_12] = Refusal(403, {"message": "Resource not accessible by integration"})
+        answers[LABELS_12] = FakeAnswer([])
+        api, opener = client(answers)
+        self.assertEqual(github.coordinate(api, idle_snapshot(), NOW), [
+            "#12: not released, taking the labels off failed: DELETE /repos/o/r/issues/12/labels/worker%3Anightly: "
+            "HTTP 403: Resource not accessible by integration; claimed put back"])
+        self.assertEqual(opener.sent("POST"), [{"labels": ["claimed"]}])
+
+    def test_a_404_after_a_rate_limit_is_put_back_when_a_later_label_fails(self):
+        # The try GitHub refused for a rate limit may have taken claimed
+        # off, so the 404 the client's second try gets says only that it is
+        # off now; when worker:nightly's removal then fails, both go back
+        # (F27's review). Until the review claimed was read as never on and
+        # stayed off the held claim's issue.
+        answers = release_answers()
+        answers[LABEL_CLAIMED_12] = Turns(Refusal(429, headers={"retry-after": "5"}), Refusal(404))
+        answers[LABEL_WORKER_12] = Refusal(502)
+        answers[LABELS_12] = FakeAnswer([])
+        waits = []
+        opener = InTurn(answers)
+        api = github.GitHub("t", "o/r", opener=opener, sleep=waits.append)
+        self.assertEqual(github.coordinate(api, idle_snapshot(), NOW), [
+            "#12: not released, taking the labels off failed: DELETE /repos/o/r/issues/12/labels/worker%3Anightly: "
+            "HTTP 502; claimed, worker:nightly put back"])
+        self.assertEqual(opener.sent("POST"), [{"labels": ["claimed", "worker:nightly"]}])
+        self.assertEqual(waits, [5])
+
+    def test_a_404_after_a_rate_limit_counts_as_taken_off_only_in_a_release(self):
+        # Taking a todo off again wants only the label off, which the 404
+        # says however the client got it; a release counts it as taken off.
+        todo = "DELETE /repos/o/r/issues/12/labels/todo"
+        for taken in (False, True):
+            opener = InTurn({todo: Turns(Refusal(429, headers={"retry-after": "5"}), Refusal(404))})
+            api = github.GitHub("t", "o/r", opener=opener, sleep=lambda seconds: None)
+            with self.subTest(retried_404_taken=taken):
+                self.assertIs(github.take_label_off(api, "12", "todo", retried_404_taken=taken), taken)
+
+    def test_a_label_github_takes_off_with_no_answer_is_put_back(self):
+        # No answer at all may come after GitHub took the label off (F27).
+        answers = release_answers()
+        answers[LABEL_CLAIMED_12] = Unanswered()
+        answers[LABELS_12] = FakeAnswer([])
+        api, opener = client(answers)
+        line, = github.coordinate(api, idle_snapshot(), NOW)
+        self.assertTrue(line.endswith("; claimed put back"), line)
         self.assertEqual(opener.sent("POST"), [{"labels": ["claimed"]}])
 
     def test_a_label_already_gone_is_not_put_back(self):
@@ -2152,24 +2383,24 @@ class Coordinate(unittest.TestCase):
         # release that fails later puts back only what it took off.
         answers = release_answers()
         answers[LABEL_WORKER_12] = Refusal(404, {"message": "Label does not exist"})
-        answers["POST /repos/o/r/issues/12/comments"] = Refusal(502)
+        answers["POST /repos/o/r/issues/12/comments"] = Refusal(422, {"message": "Validation Failed"})
         answers[COMMENTS_12] = FakeAnswer([])
         answers[LABELS_12] = FakeAnswer([])
         api, opener = client(answers)
         line, = github.coordinate(api, idle_snapshot(), NOW)
-        self.assertTrue(line.endswith("HTTP 502; claimed put back"), line)
+        self.assertTrue(line.endswith("HTTP 422: Validation Failed; claimed put back"), line)
         self.assertEqual(opener.sent("POST")[1], {"labels": ["claimed"]})
 
     def test_labels_github_will_not_put_back_are_said(self):
         answers = release_answers()
-        answers["POST /repos/o/r/issues/12/comments"] = Refusal(502)
+        answers["POST /repos/o/r/issues/12/comments"] = Refusal(422, {"message": "Validation Failed"})
         answers[COMMENTS_12] = FakeAnswer([])
         answers[LABELS_12] = Refusal(403, {"message": "Resource not accessible"})
         api, _ = client(answers)
         self.assertEqual(github.coordinate(api, idle_snapshot(), NOW), [
-            "#12: not released, the comment failed: POST /repos/o/r/issues/12/comments: HTTP 502; putting claimed, "
-            "worker:nightly back failed too, so they may still be off: POST /repos/o/r/issues/12/labels: HTTP 403: "
-            "Resource not accessible"])
+            "#12: not released, the comment failed: POST /repos/o/r/issues/12/comments: HTTP 422: Validation Failed; "
+            "putting claimed, worker:nightly back failed too, so they may still be off: "
+            "POST /repos/o/r/issues/12/labels: HTTP 403: Resource not accessible"])
 
     def test_a_release_that_cannot_read_whether_its_comment_stands_leaves_the_labels_and_counts_nothing(self):
         """F20: GitHub refuses the release comment and then the read of the
@@ -2180,7 +2411,9 @@ class Coordinate(unittest.TestCase):
         it was held;
         the labels now stay as the release left them, no release is counted
         and the page lists the claim as held until the next run settles it
-        (ReleaseAcrossRuns)."""
+        (ReleaseAcrossRuns). The line asks whether a release comment
+        stands, since F23's review, where it asked whether GitHub wrote the
+        run's own, which after a refusal it surely did not (below)."""
         answers = release_answers()
         answers["POST /repos/o/r/issues/12/comments"] = Refusal(502)
         answers[COMMENTS_12] = Refusal(502)
@@ -2188,8 +2421,33 @@ class Coordinate(unittest.TestCase):
         api, opener = client(answers)
         self.assertEqual(github.coordinate(api, snap, NOW), [
             "#12: release unsettled, the comment failed: POST /repos/o/r/issues/12/comments: HTTP 502; its issue's "
-            "comments could not be read to see whether GitHub wrote it anyway: GET /repos/o/r/issues/12/comments: "
+            "comments could not be read to see whether a release comment stands: GET /repos/o/r/issues/12/comments: "
             "HTTP 502; the labels stay as the release left them"])
+        self.assertEqual([c.get_method() for c in opener.calls], ["DELETE", "DELETE", "GET", "POST", "GET"])
+        self.assertEqual((snap.claim_issues["12"].labels, snap.issues[0].labels), (["todo"], ["todo"]))
+        self.assertEqual(snap.releases["12"].released_at, "")
+        self.assertEqual(board.released_keys(snap), set())
+        self.assertIn("| #12 | claude/12 | nightly | #40 |", board.render(snap))
+
+    def test_a_refusal_whose_read_github_refuses_too_leaves_the_labels_as_well(self):
+        """F23's review: after a 4xx GitHub wrote no comment of this run's,
+        but the run cannot read whether a release comment stands that an
+        earlier run's post or someone else wrote, and labels put back
+        beside one would hold the claim for good, so the labels stay as the
+        release left them, as after any failure whose read GitHub refuses
+        (F20); they go back after a refusal only where the comments, read
+        after it, list none (above). F20's mutant, a refused read taken
+        for one that lists none, puts them back here, and since F23's fix
+        here alone (validation/mutants.py)."""
+        answers = release_answers()
+        answers["POST /repos/o/r/issues/12/comments"] = Refusal(422, {"message": "Validation Failed"})
+        answers[COMMENTS_12] = Refusal(502)
+        snap = idle_snapshot()
+        api, opener = client(answers)
+        self.assertEqual(github.coordinate(api, snap, NOW), [
+            "#12: release unsettled, the comment failed: POST /repos/o/r/issues/12/comments: HTTP 422: Validation "
+            "Failed; its issue's comments could not be read to see whether a release comment stands: "
+            "GET /repos/o/r/issues/12/comments: HTTP 502; the labels stay as the release left them"])
         self.assertEqual([c.get_method() for c in opener.calls], ["DELETE", "DELETE", "GET", "POST", "GET"])
         self.assertEqual((snap.claim_issues["12"].labels, snap.issues[0].labels), (["todo"], ["todo"]))
         self.assertEqual(snap.releases["12"].released_at, "")
@@ -2231,15 +2489,15 @@ class Coordinate(unittest.TestCase):
 
     def test_a_comment_github_refuses_takes_off_the_todo_the_release_put_on(self):
         answers = release_answers()
-        answers["POST /repos/o/r/issues/12/comments"] = Refusal(502)
+        answers["POST /repos/o/r/issues/12/comments"] = Refusal(422, {"message": "Validation Failed"})
         answers[COMMENTS_12] = FakeAnswer([])
         answers[LABELS_12] = FakeAnswer([])
         answers["DELETE /repos/o/r/issues/12/labels/todo"] = FakeAnswer(None)
         snap = self.given_snapshot()
         api, opener = client(answers)
         self.assertEqual(github.coordinate(api, snap, NOW), [
-            "#12: not released, the comment failed: POST /repos/o/r/issues/12/comments: HTTP 502; claimed, "
-            "worker:nightly put back; todo taken off again"])
+            "#12: not released, the comment failed: POST /repos/o/r/issues/12/comments: HTTP 422: Validation Failed; "
+            "claimed, worker:nightly put back; todo taken off again"])
         self.assertEqual([f"{c.get_method()} {c.selector}" for c in opener.calls][-2:], [
             "POST /repos/o/r/issues/12/labels", "DELETE /repos/o/r/issues/12/labels/todo"])
         self.assertEqual(opener.sent("POST")[2], {"labels": ["claimed", "worker:nightly"]})
@@ -2266,7 +2524,7 @@ class Coordinate(unittest.TestCase):
 
     def test_a_todo_github_will_not_take_off_again_is_said(self):
         answers = release_answers()
-        answers["POST /repos/o/r/issues/12/comments"] = Refusal(502)
+        answers["POST /repos/o/r/issues/12/comments"] = Refusal(422, {"message": "Validation Failed"})
         answers[COMMENTS_12] = FakeAnswer([])
         answers[LABELS_12] = FakeAnswer([])
         answers["DELETE /repos/o/r/issues/12/labels/todo"] = Refusal(403, {"message": "Resource not accessible"})
@@ -2278,12 +2536,12 @@ class Coordinate(unittest.TestCase):
 
     def test_a_label_github_refuses_is_a_line_and_posts_no_comment(self):
         answers = release_answers()
-        answers[LABEL_CLAIMED_12] = Refusal(502)
+        answers[LABEL_CLAIMED_12] = Refusal(422, {"message": "Validation Failed"})
         snap = idle_snapshot()
         api, opener = client(answers)
         line, = github.coordinate(api, snap, NOW)
         self.assertEqual(line, "#12: not released, taking the labels off failed: "
-                               "DELETE /repos/o/r/issues/12/labels/claimed: HTTP 502")
+                               "DELETE /repos/o/r/issues/12/labels/claimed: HTTP 422: Validation Failed")
         self.assertEqual(opener.sent("POST"), [])
         self.assertEqual(board.released_keys(snap), set())
 
@@ -2458,6 +2716,430 @@ class Coordinate(unittest.TestCase):
         self.assertEqual(asked.count(permission), 1)
 
 
+def reopened_snapshot(names=("claimed", "in-review", "todo", "worker:nightly"), **changes):
+    """Issue 13, closed by nightly's merged pull request and opened again
+    with the labels that claim left, its branch deleted at the merge."""
+    snap = {"default_branch": "main", "branches": [],
+            "issues": [{"number": 13, "title": "Again", "labels": list(names), "state_reason": "reopened"}]}
+    snap.update(changes)
+    return board.Snapshot.from_dict(snap)
+
+
+ISSUE_13 = "/repos/o/r/issues/13"
+LABELS_13 = "POST /repos/o/r/issues/13/labels"
+# The claim branch read again before a freeing where the board read none;
+# the fake answers 404 for it, as GitHub does for a branch that is not there.
+REF_13 = "/repos/o/r/git/ref/heads/claude/13"
+# The claim's open pull request read again before a freeing, none here.
+PULLS_13 = "/repos/o/r/pulls?state=open&head=o%3Aclaude%2F13"
+
+
+def label_off_13(name):
+    return f"DELETE /repos/o/r/issues/13/labels/{urllib.parse.quote(name, safe='')}"
+
+
+def reopened_answers(names=("claimed", "in-review", "todo", "worker:nightly"), state="open"):
+    answers = {ISSUE_13: FakeAnswer({"number": 13, "state": state, "state_reason": "reopened",
+                                     "labels": [{"name": n} for n in names]}),
+               LABELS_13: FakeAnswer([]), PULLS_13: FakeAnswer([])}
+    for name in ("claimed", "in-review", "worker:nightly"):
+        answers[label_off_13(name)] = FakeAnswer(None)
+    return answers
+
+
+def asked(opener):
+    return [f"{c.get_method()} {c.selector}" for c in opener.calls]
+
+
+class FreeReopened(unittest.TestCase):
+    """F22: the coordinator frees an issue reopened once its claim ended,
+    reading it again first and putting todo on before it takes the claim's
+    labels off, claimed last."""
+
+    def test_a_reopened_issue_with_no_branch_is_freed_and_the_board_lists_it_in_the_same_run(self):
+        snap = reopened_snapshot()
+        api, opener = client(reopened_answers())
+        self.assertEqual(github.coordinate(api, snap, NOW), [
+            "#13: reopened with its claim ended, freed; worker:nightly, in-review, claimed taken off"])
+        self.assertEqual(asked(opener), ["GET /repos/o/r/issues/13", "GET " + PULLS_13, "GET " + REF_13,
+                                         label_off_13("worker:nightly"), label_off_13("in-review"),
+                                         "GET " + REF_13, label_off_13("claimed")],
+                         "the claim branch is read once more just before claimed comes off")
+        self.assertEqual(snap.issues[0].labels, ["todo"])
+        self.assertIn("| #13 | Again | todo |", board.render(snap).split(board.QUEUE_HEADING)[1])
+
+    def test_todo_goes_on_first_where_it_goes(self):
+        names = ("claimed", "in-review", "worker:nightly")
+        snap = reopened_snapshot(names)
+        api, opener = client(reopened_answers(names))
+        self.assertEqual(github.coordinate(api, snap, NOW), [
+            "#13: reopened with its claim ended, freed; todo put on; worker:nightly, in-review, claimed taken off"])
+        self.assertEqual(asked(opener)[3], LABELS_13)
+        self.assertEqual(opener.sent("POST"), [{"labels": ["todo"]}])
+
+    def test_the_labels_are_read_again_and_an_issue_closed_since_is_left_alone(self):
+        snap = reopened_snapshot()
+        api, opener = client(reopened_answers(state="closed"))
+        self.assertEqual(github.coordinate(api, snap, NOW), ["#13: not freed, closed since the board read it"])
+        self.assertEqual(asked(opener), ["GET /repos/o/r/issues/13"])
+        api, opener = client(reopened_answers(("claimed", "todo")))
+        self.assertEqual(github.coordinate(api, reopened_snapshot(), NOW), [
+            "#13: reopened with its claim ended, freed; claimed taken off"],
+            "a person took in-review and the worker's label off since the board read the issue")
+        api, opener = client(reopened_answers(("todo",)))
+        self.assertEqual(github.coordinate(api, reopened_snapshot(), NOW), ["#13: reopened, nothing left to free"])
+
+    def test_a_refused_step_ends_the_freeing_puts_nothing_back_and_the_board_shows_what_was_done(self):
+        answers = reopened_answers()
+        answers[label_off_13("claimed")] = Refusal(502)
+        snap = reopened_snapshot()
+        api, opener = client(answers)
+        self.assertEqual(github.coordinate(api, snap, NOW), [
+            "#13: reopened, not wholly freed, the next run goes on: DELETE /repos/o/r/issues/13/labels/claimed: "
+            "HTTP 502; worker:nightly, in-review taken off"])
+        self.assertEqual(snap.issues[0].labels, ["claimed", "todo"])
+        self.assertEqual(coordinator.reopened_due(snap), [13], "claimed is still on, so the next run frees it")
+        answers = reopened_answers(("claimed", "worker:nightly"))
+        answers[LABELS_13] = Refusal(403, {"message": "Resource not accessible"})
+        api, opener = client(answers)
+        line, = github.coordinate(api, reopened_snapshot(("claimed", "worker:nightly")), NOW)
+        self.assertTrue(line.endswith("HTTP 403: Resource not accessible"), line)
+        self.assertEqual(asked(opener), ["GET /repos/o/r/issues/13", "GET " + PULLS_13, "GET " + REF_13, LABELS_13],
+                         "with todo refused nothing comes off, so the issue is never left with neither")
+
+    def test_a_refused_read_frees_nothing(self):
+        reads = (ISSUE_13, PULLS_13, REF_13)
+        for at, refused in enumerate(reads):
+            answers = reopened_answers()
+            answers[refused] = Refusal(500)
+            api, opener = client(answers)
+            with self.subTest(refused=refused):
+                self.assertEqual(github.coordinate(api, reopened_snapshot(), NOW), [
+                    f"#13: not freed, reading it again failed: GET {refused.partition('?')[0]}: HTTP 500"])
+                self.assertEqual(asked(opener), ["GET " + path for path in reads[:at + 1]])
+
+    def test_a_claim_made_since_the_board_read_the_branches_is_left_to_the_next_run(self):
+        """The board read no branch for #13, and a worker has claimed it
+        since, putting claimed and its label on: the labels it now carries
+        are that claim's, which the freeing would take off."""
+        answers = reopened_answers(("claimed", "todo", "worker:nightly"))
+        answers[REF_13] = FakeAnswer({"object": {"sha": HEAD_12}})
+        snap = reopened_snapshot()
+        api, opener = client(answers)
+        self.assertEqual(github.coordinate(api, snap, NOW), ["#13: not freed, claimed since the board read the branches"])
+        self.assertEqual(asked(opener), ["GET /repos/o/r/issues/13", "GET " + PULLS_13, "GET " + REF_13])
+        self.assertEqual(snap.issues[0].labels, ["claimed", "in-review", "todo", "worker:nightly"])
+
+    def test_with_a_branch_standing_in_review_alone_comes_off_and_the_claim_is_released_in_the_same_run_once_due(self):
+        """#12's claim ended in a merge that kept its branch, and the issue
+        was reopened: the branch is a claim whatever the labels say, so
+        in-review alone comes off, and the claim, two days idle, is
+        released in the same run, its release read with the others'
+        (may_be_due); the branch is read in the snapshot, so it is not
+        read again."""
+        snap = idle_snapshot()
+        snap.issues[0].reopened = True
+        for issue in (snap.issues[0], snap.claim_issues["12"]):
+            issue.labels = ["claimed", "in-review", "todo", "worker:nightly"]
+        reread = {"number": 12, "state": "open", "state_reason": "reopened",
+                  "labels": [{"name": n} for n in ("claimed", "in-review", "todo", "worker:nightly")]}
+        answers = release_answers() | {"/repos/o/r/issues/12": FakeAnswer(reread),
+                                       "/repos/o/r/pulls?state=open&head=o%3Aclaude%2F12": FakeAnswer([]),
+                                       "DELETE /repos/o/r/issues/12/labels/in-review": FakeAnswer(None)}
+        api, opener = client(answers)
+        self.assertEqual(github.coordinate(api, snap, NOW), [
+            "#12: reopened with a branch standing for it; in-review taken off",
+            "#12: claim released, idle since 2026-09-18T12:00:00Z"])
+        self.assertEqual(asked(opener)[:3], ["GET /repos/o/r/issues/12", "GET /repos/o/r/pulls?state=open&head=o%3Aclaude%2F12",
+                                             "DELETE /repos/o/r/issues/12/labels/in-review"])
+        self.assertEqual(board.released_keys(snap), {"12"})
+        self.assertEqual(snap.claim_issues["12"].labels, ["todo"])
+        snap = reopened_snapshot(branches=["claude/13"], claim_issues={"13": {"state": "open", "labels": [
+            "claimed", "in-review", "todo", "worker:nightly"]}})
+        api, opener = client(reopened_answers())
+        self.assertEqual(github.coordinate(api, snap, NOW), [
+            "#13: reopened with a branch standing for it; in-review taken off"],
+            "a claim whose branch has had a commit in the last day is held, by its holder")
+        self.assertEqual(snap.claim_issues["13"].labels, ["claimed", "todo", "worker:nightly"])
+
+    def test_a_reopened_claim_labelled_in_review_is_read_for_a_release_and_no_other_finished_one(self):
+        reopened_issue = {"state": "open", "labels": ["claimed", "in-review"], "state_reason": "reopened"}
+        self.assertTrue(github.may_be_due(reopened_issue))
+        self.assertFalse(github.may_be_due(reopened_issue | {"state_reason": "completed"}))
+        self.assertFalse(github.may_be_due(reopened_issue | {"state": "closed"}))
+        self.assertTrue(github.may_be_due({"state": "open", "labels": ["claimed"]}))
+        issue = {"number": 13, "state": "open", "state_reason": "reopened", "labels": [{"name": "in-review"}]}
+        api, _ = client({})
+        self.assertEqual(github.claim_issues(api, ["claude/13"], [issue]),
+                         {"13": {"state": "open", "labels": ["in-review"], "state_reason": "reopened"}})
+        self.assertEqual(github.claim_issues(api, ["claude/13"], [issue | {"state_reason": None}]),
+                         {"13": {"state": "open", "labels": ["in-review"]}})
+
+    def test_reopened_issues_are_freed_before_the_releases(self):
+        snap = idle_snapshot()
+        snap.issues.append(board.Issue(13, "Again", ["claimed", "in-review", "todo", "worker:nightly"], reopened=True))
+        api, opener = client(release_answers() | reopened_answers())
+        lines = github.coordinate(api, snap, NOW)
+        self.assertEqual(lines[0], "#13: reopened with its claim ended, freed; worker:nightly, in-review, claimed taken off")
+        self.assertEqual(lines[1], "#12: claim released, idle since 2026-09-18T12:00:00Z")
+        self.assertEqual(asked(opener)[0], "GET /repos/o/r/issues/13")
+
+    def test_a_claim_marked_ready_since_the_board_read_it_keeps_its_labels(self):
+        """In-review is then the finished claim's own (finding 2 of F22's
+        review): the claim's open pull request is read again first."""
+        answers = reopened_answers()
+        answers[PULLS_13] = FakeAnswer([{"number": 41, "head": {"ref": "claude/13", "repo": {"full_name": "o/r"}},
+                                         "base": {"ref": "main", "repo": {"full_name": "o/r"}},
+                                         "user": {"login": "nightly"}, "author_association": "MEMBER"}])
+        answers["/repos/o/r/pulls/41"] = FakeAnswer({"number": 41, "draft": False, "head": {"ref": "claude/13"}})
+        snap = reopened_snapshot()
+        api, opener = client(answers)
+        self.assertEqual(github.coordinate(api, snap, NOW), [
+            "#13: not freed, its claim's pull request was marked ready since the board read it"])
+        self.assertNotIn("DELETE", " ".join(asked(opener)))
+        answers["/repos/o/r/pulls/41"] = FakeAnswer({"number": 41, "draft": True, "head": {"ref": "claude/13"}})
+        api, opener = client(answers)
+        self.assertEqual(github.coordinate(api, reopened_snapshot(), NOW), [
+            "#13: reopened with its claim ended, freed; worker:nightly, in-review, claimed taken off"])
+
+    def test_a_claim_made_while_the_issue_is_freed_keeps_claimed(self):
+        """The claim branch is read once more just before claimed, the
+        last label, comes off (finding 3 of F22's review)."""
+        answers = reopened_answers()
+        reads = iter([Refusal(404), FakeAnswer({"object": {"sha": HEAD_12}})])
+
+        class Branching(FakeOpener):
+            def open(self, call, timeout=None):
+                if call.selector == REF_13:
+                    self.answers[REF_13] = next(reads)
+                return super().open(call, timeout)
+
+        opener = Branching(answers)
+        api = github.GitHub("t", "o/r", opener=opener, sleep=lambda seconds: None)
+        snap = reopened_snapshot()
+        self.assertEqual(github.coordinate(api, snap, NOW), [
+            "#13: reopened, not wholly freed, claimed while it was freed, so claimed stays; "
+            "worker:nightly, in-review taken off"])
+        self.assertNotIn(label_off_13("claimed"), asked(opener))
+        self.assertEqual(snap.issues[0].labels, ["claimed", "todo"])
+
+    def test_a_ready_claim_on_a_reopened_issue_costs_no_read_for_a_release(self):
+        """may_be_due lets a reopened issue labelled in-review through, but
+        releases skips a branch whose pull request is marked ready before
+        it, so a finished claim's issue costs no call (finding 4 of F22's
+        review)."""
+        issue = {"state": "open", "labels": ["claimed", "in-review"], "state_reason": "reopened"}
+        ready = {"number": 41, "draft": False, "head": {"ref": "claude/13"}}
+        api, opener = client({})
+        self.assertEqual(github.releases(api, {"claude/13": HEAD_12}, {"13": issue}, [ready], NOW), {})
+        self.assertEqual(opener.calls, [])
+
+    def test_the_branches_a_release_left_are_read_with_the_branch_list(self):
+        snap, answers = fixture_answers()
+        answers["/repos/o/r/branches?per_page=100"] = FakeAnswer(
+            [{"name": b} for b in snap["branches"]] + [{"name": "released/12-aaaaaaa"}, {"name": "releasedx"}])
+        api, _ = client(answers)
+        found = github.collect(api, "abc", "main")
+        self.assertEqual(found["kept_names"], ["released/12-aaaaaaa"])
+        self.assertNotIn("kept_names", github.collect(client(fixture_answers()[1])[0], "abc", "main"))
+
+
+EVENTS_12 = "/repos/o/r/issues/12/events?per_page=100"
+COMMENTS_12 = "/repos/o/r/issues/12/comments?per_page=100"
+ACTIVITY_12 = pushes_path("claude/12")
+
+
+def release_comment(at):
+    return {"body": "<!-- sdlc-coordinator: claim-released -->\nReleased.", "created_at": at,
+            "user": {"login": "github-actions[bot]"}, "author_association": "NONE"}
+
+
+class EndedReleases(unittest.TestCase):
+    """F22's review: a released branch an earlier claim's release left,
+    before the issue's last close, undoes nothing, so the reopened issue is
+    freed wholly; the issue's events and comments say when each came."""
+
+    ISSUE = {"number": 12, "state": "open", "state_reason": "reopened",
+             "labels": [{"name": n} for n in ("claimed", "in-review", "worker:b")]}
+    CLOSED = [{"event": "closed", "created_at": "2026-09-10T00:00:00Z"}, {"event": "reopened",
+              "created_at": "2026-09-11T00:00:00Z"}, {"event": "closed", "created_at": "2026-09-19T00:00:00Z"},
+              {"event": "labeled", "created_at": "2026-09-30T00:00:00Z"}]
+
+    def ended(self, comments, events=None, issue=None, branches=(), kept=("released/12-aaaaaaa",), extra=None,
+              permissions=False):
+        answers = {EVENTS_12: events if isinstance(events, Refusal) else FakeAnswer(self.CLOSED if events is None
+                                                                                   else events),
+                   COMMENTS_12: comments if isinstance(comments, Refusal) else FakeAnswer(comments)} | (extra or {})
+        api, opener = client(answers)
+        answer = github.permissions(api) if permissions else (lambda login: False)
+        found = github.ended_releases(api, [issue or self.ISSUE], list(branches), list(kept), answer)
+        return found, asked(opener)
+
+    def test_a_release_before_the_last_close_is_ended_and_one_after_it_is_not(self):
+        self.assertEqual(self.ended([release_comment("2026-09-18T00:00:00Z")]),
+                         (["12"], ["GET " + EVENTS_12, "GET " + COMMENTS_12]))
+        self.assertEqual(self.ended([release_comment("2026-09-19T00:00:00Z")])[0], ["12"], "no later than the close")
+        self.assertEqual(self.ended([])[0], ["12"], "no release comment counts, so none came after the close")
+        self.assertEqual(self.ended([release_comment("2026-09-20T00:00:00Z")])[0], [],
+                         "a release after the close, which a person may be undoing")
+        stranger = dict(release_comment("2026-09-20T00:00:00Z"), user={"login": "sam"})
+        self.assertEqual(self.ended([release_comment("2026-09-18T00:00:00Z"), stranger])[0], ["12"],
+                         "a release comment by an author nobody vouches for counts for nothing")
+
+    def test_claimed_put_on_after_the_last_close_is_a_release_being_undone(self):
+        """F22's second review: a's claim released on 09-18, #12 closed by
+        hand on 09-19 with no claim between and reopened on 09-20, and a
+        person following the release's note puts claimed back on 09-21.
+        The release came before the close, but claimed came after it,
+        which no claim made since does without its claim branch, so the
+        released branch is a release being undone; the comments are not
+        read, since nothing in them could end it."""
+        undone = [{"event": "closed", "created_at": "2026-09-19T00:00:00Z"},
+                  {"event": "reopened", "created_at": "2026-09-20T00:00:00Z"},
+                  {"event": "labeled", "label": {"name": "claimed"}, "created_at": "2026-09-21T00:00:00Z"}]
+        issue = dict(self.ISSUE, labels=[{"name": "claimed"}, {"name": "todo"}])
+        for listed in ([], [made("claude/12", "2026-09-17T00:00:00Z")]):
+            with self.subTest(listed=listed):
+                self.assertEqual(self.ended([release_comment("2026-09-18T00:00:00Z")], events=undone, issue=issue,
+                                            extra={ACTIVITY_12: FakeAnswer(listed)}),
+                                 ([], ["GET " + EVENTS_12, "GET " + ACTIVITY_12]))
+        same_second = [{"event": "closed", "created_at": "2026-09-19T00:00:00Z"},
+                       {"event": "labeled", "label": {"name": "claimed"}, "created_at": "2026-09-19T00:00:00Z"}]
+        self.assertEqual(self.ended([release_comment("2026-09-18T00:00:00Z")], events=same_second,
+                                    extra={ACTIVITY_12: FakeAnswer([])})[0], [],
+                         "a label listed after the close in the same second came after it")
+
+    def test_claimed_a_claim_made_since_the_close_put_on_is_that_claims(self):
+        """F22's third review: a's claim released on 09-18, #12 closed on
+        09-19 and reopened on 09-20, b claiming it then, its pull request
+        marked ready, closed unmerged and its branch deleted, the issue
+        open. b's claimed came after the close, but the newest entry the
+        activity lists for claude/12, of any kind, came after the close and
+        no earlier than that label, so it is b's claim's and no person's
+        undo, and the released branch a's release left undoes nothing; an
+        entry in the label's own second reads as the claim's. Where b's
+        claim was released after the close, its release still stands to be
+        undone."""
+        later = [{"event": "closed", "created_at": "2026-09-19T00:00:00Z"},
+                 {"event": "reopened", "created_at": "2026-09-20T00:00:00Z"},
+                 {"event": "labeled", "label": {"name": "claimed"}, "created_at": "2026-09-20T00:05:00Z"},
+                 {"event": "labeled", "label": {"name": "in-review"}, "created_at": "2026-09-21T00:00:00Z"}]
+        for entry in (made("claude/12", "2026-09-21T01:00:00Z", "branch_deletion"),
+                      made("claude/12", "2026-09-20T00:05:00Z", "push")):
+            with self.subTest(entry=entry):
+                self.assertEqual(self.ended([release_comment("2026-09-18T00:00:00Z")], events=later,
+                                            extra={ACTIVITY_12: FakeAnswer([entry])}),
+                                 (["12"], ["GET " + EVENTS_12, "GET " + ACTIVITY_12, "GET " + COMMENTS_12]))
+        deleted = FakeAnswer([made("claude/12", "2026-09-21T01:00:00Z", "branch_deletion")])
+        self.assertEqual(self.ended([release_comment("2026-09-22T00:00:00Z")], events=later,
+                                    extra={ACTIVITY_12: deleted})[0],
+                         [], "b's own release after the close, which a person may be undoing")
+
+    def test_claimed_put_back_after_a_claim_made_since_the_close_ended_is_an_undo(self):
+        """The review of F22's third review: b's claim made after the close
+        ended with claude/12 deleted on 09-21 at 01:00, and a person took
+        claimed off and put it back at 03:00 to undo a's release; that label
+        came later than the newest entry the activity lists for the branch,
+        its delete, so it is an undo, as is a label later than the branch's
+        making where no later entry is listed, a claim whose delete GitHub
+        no longer lists reading so too."""
+        undone = [{"event": "closed", "created_at": "2026-09-19T00:00:00Z"},
+                  {"event": "reopened", "created_at": "2026-09-20T00:00:00Z"},
+                  {"event": "labeled", "label": {"name": "claimed"}, "created_at": "2026-09-20T00:05:00Z"},
+                  {"event": "unlabeled", "label": {"name": "claimed"}, "created_at": "2026-09-21T02:00:00Z"},
+                  {"event": "labeled", "label": {"name": "claimed"}, "created_at": "2026-09-21T03:00:00Z"}]
+        for entry in (made("claude/12", "2026-09-21T01:00:00Z", "branch_deletion"),
+                      made("claude/12", "2026-09-20T00:04:00Z")):
+            with self.subTest(entry=entry):
+                self.assertEqual(self.ended([release_comment("2026-09-18T00:00:00Z")], events=undone,
+                                            extra={ACTIVITY_12: FakeAnswer([entry])}),
+                                 ([], ["GET " + EVENTS_12, "GET " + ACTIVITY_12]))
+
+    def test_where_the_activity_cannot_say_the_issue_is_left_out(self):
+        """A refused read of the activity, a repository GitHub keeps no
+        activity of (a 404), and an entry with no time or one that reads as
+        none each leave the issue out this run, so no label comes off on a
+        guess, and the comments are not read; claimed_by_a_claim says None
+        for an entry with no time, and a label claimed with no time leaves
+        the issue out with no read of the activity at all."""
+        later = [{"event": "closed", "created_at": "2026-09-19T00:00:00Z"},
+                 {"event": "labeled", "label": {"name": "claimed"}, "created_at": "2026-09-20T00:05:00Z"}]
+        untimed = {k: v for k, v in made("claude/12", "").items() if k != "timestamp"}
+        for answer in (Refusal(403), Refusal(500), None, FakeAnswer([untimed]),
+                       FakeAnswer([made("claude/12", "not a time", "branch_deletion")])):
+            with self.subTest(answer=answer):
+                found, calls = self.ended([release_comment("2026-09-18T00:00:00Z")], events=later,
+                                          extra={} if answer is None else {ACTIVITY_12: answer})
+                self.assertEqual(found, [])
+                self.assertNotIn("GET " + COMMENTS_12, calls)
+        api, _ = client({ACTIVITY_12: FakeAnswer([untimed])})
+        self.assertIsNone(github.claimed_by_a_claim(api, "12", "2026-09-19T00:00:00Z", "2026-09-20T00:05:00Z"))
+        no_time = [later[0], {"event": "labeled", "label": {"name": "claimed"}}]
+        found, calls = self.ended([release_comment("2026-09-18T00:00:00Z")], events=no_time,
+                                  extra={ACTIVITY_12: FakeAnswer([made("claude/12", "2026-09-21T01:00:00Z")])})
+        self.assertEqual(found, [])
+        self.assertNotIn("GET " + ACTIVITY_12, calls)
+
+    def test_claimed_that_came_through_the_close_is_the_ended_claims(self):
+        """The first review's stuck case still frees: b put claimed on
+        before the close that ended b's claim, and claimed coming off and
+        going on again before it changes nothing."""
+        through = [{"event": "labeled", "label": {"name": "claimed"}, "created_at": "2026-09-17T00:00:00Z"},
+                   {"event": "unlabeled", "label": {"name": "claimed"}, "created_at": "2026-09-18T00:00:00Z"},
+                   {"event": "labeled", "label": {"name": "claimed"}, "created_at": "2026-09-18T06:00:00Z"},
+                   {"event": "closed", "created_at": "2026-09-19T00:00:00Z"},
+                   {"event": "reopened", "created_at": "2026-09-20T00:00:00Z"},
+                   {"event": "labeled", "label": {"name": "in-review"}, "created_at": "2026-09-21T00:00:00Z"}]
+        self.assertEqual(self.ended([release_comment("2026-09-18T00:00:00Z")], events=through)[0], ["12"])
+
+    def test_a_release_after_the_close_by_an_author_github_will_not_say_may_write_leaves_the_issue_out(self):
+        """F22's second review: a writer's release by hand after the close,
+        whom GitHub shows as a contributor, with the permission read
+        refused, is not taken for a stranger's, which would free the issue
+        wholly on a guess; the issue is left out this run, as for a refused
+        read. Where GitHub answers, the answer decides."""
+        by_hand = {"body": "<!-- sdlc-coordinator: claim-released -->\nReleased.", "created_at": "2026-09-20T00:00:00Z",
+                   "user": {"login": "alice"}, "author_association": "CONTRIBUTOR"}
+        permission = "/repos/o/r/collaborators/alice/permission"
+        for answer, ended in ((Refusal(502), []), (FakeAnswer({"permission": "write"}), []),
+                              (FakeAnswer({"permission": "read"}), ["12"])):
+            with self.subTest(answer=answer):
+                found, calls = self.ended([by_hand], extra={permission: answer}, permissions=True)
+                self.assertEqual(found, ended)
+                self.assertIn("GET " + permission, calls)
+        before = dict(by_hand, created_at="2026-09-18T00:00:00Z")
+        found, calls = self.ended([before], extra={permission: Refusal(502)}, permissions=True)
+        self.assertEqual(found, ["12"], "a release before the close ends with it whoever wrote it")
+        self.assertNotIn("GET " + permission, calls, "and costs no permission read")
+
+    def test_where_it_cannot_tell_the_released_branch_counts_as_a_release_being_undone(self):
+        self.assertEqual(self.ended([], events=[{"event": "reopened", "created_at": "2026-09-11T00:00:00Z"}])[0], [])
+        self.assertEqual(self.ended([], events=Refusal(500))[0], [])
+        self.assertEqual(self.ended(Refusal(403))[0], [])
+
+    def test_only_a_reopened_issue_with_a_claims_labels_a_released_branch_and_no_claim_branch_costs_calls(self):
+        for issue, branches, kept in (
+                (dict(self.ISSUE, state_reason="completed"), (), ("released/12-aaaaaaa",)),
+                (dict(self.ISSUE, labels=[{"name": "todo"}, {"name": "worker:b"}]), (), ("released/12-aaaaaaa",)),
+                (self.ISSUE, ("claude/12",), ("released/12-aaaaaaa",)),
+                (self.ISSUE, (), ("released/120-aaaaaaa", "released/1-aaaaaaa"))):
+            with self.subTest(issue=issue, branches=branches, kept=kept):
+                self.assertEqual(self.ended([], issue=issue, branches=branches, kept=kept), ([], []))
+
+    def test_the_board_run_reads_them_so_the_released_branch_counts_for_nothing(self):
+        snap, answers = fixture_answers()
+        issue = {"number": 12, "title": "Describe the board", "state": "open", "state_reason": "reopened",
+                 "labels": [{"name": n} for n in ("claimed", "in-review", "worker:b")]}
+        answers["/repos/o/r/issues?state=open&per_page=100"] = FakeAnswer([issue])
+        answers["/repos/o/r/branches?per_page=100"] = FakeAnswer([{"name": "main"}, {"name": "released/12-aaaaaaa"}])
+        answers[EVENTS_12] = FakeAnswer(self.CLOSED)
+        answers[COMMENTS_12] = FakeAnswer([release_comment("2026-09-18T00:00:00Z")])
+        api, _ = client(answers)
+        found = github.collect(api, "abc", "main")
+        self.assertEqual(found["ended_releases"], ["12"])
+        self.assertFalse(coordinator.claim_stands(board.Snapshot.from_dict(found), "12"))
+
+
 class Repository(FakeOpener):
     """GitHub as board runs see it, kept from one run to the next: issue 12
     with its labels and comments, claimed by nightly, whose branch claude/12
@@ -2565,6 +3247,31 @@ class UnreadAfterTheComment(Repository):
         return super().open(call, timeout)
 
 
+class ListedLate(Repository):
+    """A Repository that leaves a comment it wrote in a call whose answer
+    it lost out of the first read of issue 12's comments after that call,
+    as GitHub may list a comment it wrote only later: the run that posted
+    it reads none, and the next run reads it (F23)."""
+
+    def __init__(self, lose):
+        super().__init__(lose=lose)
+        self.late = []
+
+    def open(self, call, timeout=None):
+        asked = call.selector if call.get_method() == "GET" else f"{call.get_method()} {call.selector}"
+        if asked == COMMENTS_12 and self.late:
+            send_line(call)
+            self.calls.append(call)
+            listed, self.late = [c for c in self.comments if c not in self.late], []
+            return FakeAnswer(listed)
+        written = len(self.comments)
+        try:
+            return super().open(call, timeout)
+        except OSError:
+            self.late = self.comments[written:]
+            raise
+
+
 def board_run(api, repository, now):
     """One board run as cli.board_live_run makes it: the snapshot, the
     coordinator, the page, then the renames; the snapshot, the page and
@@ -2578,9 +3285,11 @@ def board_run(api, repository, now):
 
 class ReleaseAcrossRuns(unittest.TestCase):
     """A release is two acts, the labels and the comment; a run that fails
-    between them puts back what it took off, so the next run with no
-    failure releases the claim whole, and a holder who comes back first
-    keeps it as it was; a release a person undid stays undone."""
+    between them puts back what it took off where GitHub refused the
+    comment, and leaves the labels off where it cannot tell whether the
+    comment stands, so the next run with no failure releases the claim
+    whole or counts the comment GitHub wrote, and a holder who comes back
+    first keeps the claim; a release a person undid stays undone."""
 
     def runs(self, refuse=None):
         repository = Repository(refuse)
@@ -2610,36 +3319,65 @@ class ReleaseAcrossRuns(unittest.TestCase):
         self.assert_released(repository, snap, page)
 
     def test_a_release_whose_comment_failed_is_finished_by_the_next_run(self):
-        repository, snap, page, first, second = self.runs(
-            {"POST /repos/o/r/issues/12/comments": Refusal(502)})
-        self.assertIn("HTTP 502", first[0])
-        self.assert_released(repository, snap, page)
+        # GitHub wrote nothing either way: after a 4xx the labels go back,
+        # and after a 502, or a rate limit's refusal the client does not
+        # wait out, with none listed they stay off, since the run cannot
+        # tell (F23 and its review); the next run, finding no release
+        # comment, releases the claim whole, a label already off counting
+        # as taken off.
+        limited = Refusal(403, {"message": "You have exceeded a secondary rate limit"}, {"retry-after": "150"})
+        for refusal, said in ((Refusal(422, {"message": "Validation Failed"}), "claimed, worker:nightly put back"),
+                              (Refusal(502), "the labels stay as the release left them"),
+                              (limited, "the labels stay as the release left them")):
+            with self.subTest(said=said, status=refusal.code):
+                repository, snap, page, first, second = self.runs({"POST /repos/o/r/issues/12/comments": refusal})
+                self.assertEqual(len(first), 1)
+                self.assertTrue(first[0].endswith(said), first)
+                self.assert_released(repository, snap, page)
 
     def test_a_release_whose_labels_did_not_go_back_on_is_finished_by_the_next_run(self):
         repository, snap, page, first, second = self.runs(
-            {"POST /repos/o/r/issues/12/comments": Refusal(502), LABELS_12: Refusal(502)})
+            {"POST /repos/o/r/issues/12/comments": Refusal(422, {"message": "Validation Failed"}),
+             LABELS_12: Refusal(502)})
         self.assertIn("back failed too, so they may still be off", first[0])
         self.assert_released(repository, snap, page)
 
-    def test_a_holder_who_comes_back_after_a_failed_comment_keeps_the_claim_and_its_labels(self):
-        # Had the labels stayed off, the claim would be held with none, and
-        # the clerk, which finds a worker's claim by its label, would not
-        # send nightly to it again.
-        repository = Repository({"POST /repos/o/r/issues/12/comments": Refusal(502)})
+    def holder_back(self, refusal):
+        """Two runs: the first fails the release comment with refusal,
+        having written nothing; then nightly pushes, so the second finds
+        the claim held and releases nothing."""
+        repository = Repository({"POST /repos/o/r/issues/12/comments": refusal})
         repository.answers["/repos/o/r/git/commits/bbbbbbb2222222"] = FakeAnswer(
             {"committer": {"date": "2026-09-20T12:30:00Z"}})
         repository.answers["/repos/o/r/pulls?state=open&head=o%3Aclaude%2F12"] = FakeAnswer([])
         api = github.GitHub("t", "o/r", opener=repository, sleep=lambda seconds: None)
         _, _, first = board_run(api, repository, NOW)
-        self.assertEqual(first, ["#12: not released, the comment failed: POST /repos/o/r/issues/12/comments: "
-                                 "HTTP 502; claimed, worker:nightly put back"])
         repository.branches["claude/12"] = "bbbbbbb2222222"
         snap, page, second = board_run(api, repository, NOW + timedelta(hours=1))
         self.assertEqual(second, [])
-        self.assertEqual(sorted(repository.labels), ["claimed", "todo", "worker:nightly"])
         self.assertEqual(repository.release_comments(), [])
         self.assertIn("| #12 | claude/12 | nightly |", page)
         self.assertEqual(team.next_for(api, "nightly"), "carry 12")
+        return repository, first
+
+    def test_a_holder_who_comes_back_after_a_failed_comment_keeps_the_claim_and_its_labels(self):
+        # A comment GitHub refused with a 4xx is one it never wrote, so the
+        # labels go back and the claim is held as it was.
+        repository, first = self.holder_back(Refusal(422, {"message": "Validation Failed"}))
+        self.assertEqual(first, ["#12: not released, the comment failed: POST /repos/o/r/issues/12/comments: "
+                                 "HTTP 422: Validation Failed; claimed, worker:nightly put back"])
+        self.assertEqual(sorted(repository.labels), ["claimed", "todo", "worker:nightly"])
+
+    def test_a_holder_who_comes_back_after_an_unsettled_release_keeps_the_claim(self):
+        """F23's cost: after a 502 with no comment listed the run cannot tell
+        whether the comment stands, so the labels stay off; a holder who
+        pushes before the next run keeps the claim with its labels off and
+        todo on, since nothing makes a holder announce again, and the clerk
+        still sends nightly to it by its claim file."""
+        repository, first = self.holder_back(Refusal(502))
+        self.assertEqual(len(first), 1)
+        self.assertTrue(first[0].startswith("#12: release unsettled, the comment failed"), first)
+        self.assertEqual(repository.labels, ["todo"])
 
     def test_a_comment_github_wrote_and_lost_the_answer_to_is_a_whole_release(self):
         repository = Repository(lose={"POST /repos/o/r/issues/12/comments": Refusal(502)})
@@ -2678,6 +3416,25 @@ class ReleaseAcrossRuns(unittest.TestCase):
         self.assertEqual(second, ["#12: claim released; claude/12 renamed to released/12-aaaaaaa"])
         self.assert_released(repository, snap, page)
 
+    def test_a_comment_github_wrote_and_listed_late_is_counted_by_the_next_run(self):
+        """F23: GitHub writes the release comment, answers 502 or nothing at
+        all, or, since its review, refuses it for a rate limit, here asking
+        a wait longer than a run waits, so the client tries once, and lists
+        the comment only after the read that follows. Until the fix, and
+        for the rate limit until the review, the labels went back beside
+        the comment, and the claim was held for good; the next run now
+        reads the comment, counts the release and renames the branch,
+        releasing nothing again."""
+        limited = Refusal(403, {"message": "You have exceeded a secondary rate limit"}, {"retry-after": "150"})
+        for failure in (Refusal(502), Unanswered(), limited):
+            with self.subTest(failure=(type(failure).__name__, failure.code)):
+                repository = ListedLate(lose={"POST /repos/o/r/issues/12/comments": failure})
+                api = self.unsettled_first(repository)
+                self.assertEqual(len(repository.release_comments()), 1)
+                snap, page, second = board_run(api, repository, NOW + timedelta(hours=1))
+                self.assertEqual(second, ["#12: claim released; claude/12 renamed to released/12-aaaaaaa"])
+                self.assert_released(repository, snap, page)
+
     def test_a_comment_github_refused_and_could_not_read_back_is_made_by_the_next_run(self):
         """F20: GitHub writes no release comment and refuses the read after
         it; the next run finds none and releases the claim again, its labels
@@ -2690,21 +3447,27 @@ class ReleaseAcrossRuns(unittest.TestCase):
                                   "#12: claim released; claude/12 renamed to released/12-aaaaaaa"])
         self.assert_released(repository, snap, page)
 
-    def test_an_earlier_release_of_a_kept_head_is_not_taken_for_a_comment_the_failed_post_wrote(self):
-        """F8's second review: a kept head whose release a person undid,
-        by putting the label claimed back, is released again once idle; a
-        post of that release GitHub refuses having written nothing finds
-        only the earlier release comment, which counts for a kept head
-        whenever it came, so it must not pass for this run's: the labels
-        go back and the board counts nothing released. A newer comment,
-        one GitHub wrote and lost its answer to, still makes the release
-        whole."""
+    def kept_snapshot(self):
+        """idle_snapshot on a kept head whose release a person undid, by
+        putting the label claimed back, due for release again."""
         snap = idle_snapshot()
         snap.releases["12"] = board.Release(released_at="2026-09-17T09:00:00Z", sha=HEAD_12, committed_at="",
                                             pushed_at="2026-09-18T12:00:00Z", kept=True)
         self.assertEqual(coordinator.releases_due(snap, NOW), ["12"])
+        return snap
+
+    def test_an_earlier_release_of_a_kept_head_is_not_taken_for_a_comment_the_failed_post_wrote(self):
+        """F8's second review: a kept head whose release a person undid,
+        by putting the label claimed back, is released again once idle; a
+        post of that release GitHub refuses with a 4xx, having written
+        nothing, finds only the earlier release comment, which counts for a
+        kept head whenever it came, so it must not pass for this run's: the
+        labels go back and the board counts nothing released. A newer
+        comment, one GitHub wrote and lost its answer to, still makes the
+        release whole."""
+        snap = self.kept_snapshot()
         answers = release_answers()
-        answers["POST /repos/o/r/issues/12/comments"] = Refusal(502)
+        answers["POST /repos/o/r/issues/12/comments"] = Refusal(422, {"message": "Validation Failed"})
         answers[COMMENTS_12] = FakeAnswer([dict(RELEASE_COMMENT, created_at="2026-09-17T09:00:00Z")])
         answers[LABELS_12] = FakeAnswer([])
         api, _ = client(answers)
@@ -2713,9 +3476,8 @@ class ReleaseAcrossRuns(unittest.TestCase):
         self.assertTrue(lines[0].startswith("#12: not released, the comment failed"), lines)
         self.assertIn("claimed", snap.claim_issues["12"].labels)
         self.assertEqual(board.released_keys(snap), set())
-        snap = idle_snapshot()
-        snap.releases["12"] = board.Release(released_at="2026-09-17T09:00:00Z", sha=HEAD_12, committed_at="",
-                                            pushed_at="2026-09-18T12:00:00Z", kept=True)
+        snap = self.kept_snapshot()
+        answers["POST /repos/o/r/issues/12/comments"] = Refusal(502)
         answers[COMMENTS_12] = FakeAnswer([dict(RELEASE_COMMENT, created_at="2026-09-17T09:00:00Z"),
                                            dict(RELEASE_COMMENT, created_at="2026-09-20T12:00:03Z")])
         api, _ = client(answers)
@@ -2725,28 +3487,30 @@ class ReleaseAcrossRuns(unittest.TestCase):
 
     def test_an_unsettled_release_of_a_kept_head_is_the_earlier_release(self):
         """F20's review: a kept head whose release a person undid is
-        released again once idle, and GitHub refuses the post and the read
-        after it. The run counts no release of its own, but once the labels
-        are off the earlier release comment counts for the kept head
-        whenever it came, so the same run lists the claim as released, the
-        board deleting the branch, with no word of this release on the
-        issue where GitHub wrote none; putting the labels back would hold
-        the claim for good where GitHub wrote the comment, as on any
-        head."""
-        snap = idle_snapshot()
-        snap.releases["12"] = board.Release(released_at="2026-09-17T09:00:00Z", sha=HEAD_12, committed_at="",
-                                            pushed_at="2026-09-18T12:00:00Z", kept=True)
-        answers = release_answers()
-        answers["POST /repos/o/r/issues/12/comments"] = Refusal(502)
-        answers[COMMENTS_12] = Refusal(502)
-        api, opener = client(answers)
-        lines = github.coordinate(api, snap, NOW)
-        self.assertEqual(len(lines), 1)
-        self.assertTrue(lines[0].startswith("#12: release unsettled, the comment failed"), lines)
-        self.assertEqual([c.get_method() for c in opener.calls], ["DELETE", "DELETE", "GET", "POST", "GET"])
-        self.assertEqual(snap.claim_issues["12"].labels, ["todo"])
-        self.assertEqual(snap.releases["12"].released_at, "2026-09-17T09:00:00Z")
-        self.assertEqual(board.released_keys(snap), {"12"})
+        released again once idle, and GitHub fails the post, then refuses
+        the read after it or, after a server error or no answer, lists only
+        the earlier release comment (F23). The run counts no release of
+        its own, but once the labels are off the earlier release comment
+        counts for the kept head whenever it came, so the same run lists the
+        claim as released, the board deleting the branch, with no word of
+        this release on the issue where GitHub wrote none; putting the
+        labels back would hold the claim for good where GitHub wrote the
+        comment, as on any head."""
+        earlier = FakeAnswer([dict(RELEASE_COMMENT, created_at="2026-09-17T09:00:00Z")])
+        for failure, read in ((Refusal(502), Refusal(502)), (Refusal(502), earlier), (Unanswered(), earlier)):
+            with self.subTest(failure=type(failure).__name__, read=type(read).__name__):
+                snap = self.kept_snapshot()
+                answers = release_answers()
+                answers["POST /repos/o/r/issues/12/comments"] = failure
+                answers[COMMENTS_12] = read
+                api, opener = client(answers)
+                lines = github.coordinate(api, snap, NOW)
+                self.assertEqual(len(lines), 1)
+                self.assertTrue(lines[0].startswith("#12: release unsettled, the comment failed"), lines)
+                self.assertEqual([c.get_method() for c in opener.calls], ["DELETE", "DELETE", "GET", "POST", "GET"])
+                self.assertEqual(snap.claim_issues["12"].labels, ["todo"])
+                self.assertEqual(snap.releases["12"].released_at, "2026-09-17T09:00:00Z")
+                self.assertEqual(board.released_keys(snap), {"12"})
 
     def test_a_plan_longer_than_github_takes_in_a_comment_is_cut_and_the_claim_released(self):
         # Quoted whole, the plan made a comment GitHub refuses with 422, so

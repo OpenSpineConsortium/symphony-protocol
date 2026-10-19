@@ -39,7 +39,9 @@ search met first, often a comment the run owed or made as a result.
 """
 
 import contextlib
+import copy
 import dataclasses
+import re
 import sys
 import time
 import urllib.parse
@@ -47,7 +49,7 @@ from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 from unittest import mock
 
-from sdlc_protocol import board, claims, coordinator, guard, labels, team
+from sdlc_protocol import board, claims, coordinator, guard, labels, protocol_check, team
 from sdlc_protocol.adapters import github
 from sdlc_protocol.workers import fits
 
@@ -58,13 +60,19 @@ from .verbs import CAROL, DANA, SAM, Scope, Verb
 class Mutant(NamedTuple):
     """One rule changed: the attribute module.name replaced, while the
     mutant is on, by replacement; the guarantee it should break, which the
-    lane reports and does not require; and why the rule matters."""
+    lane reports and does not require; and why the rule matters. also names
+    attributes replaced with it, as (module, name, replacement): a reading
+    that since a later fix backs the rule up, switched off so the rule
+    itself is shown to bite (F29's reading of a command's own text reads
+    the words around a misread span as bash reads them, whatever the rule
+    made of the span)."""
 
     module: object
     name: str
     replacement: object
     guarantee: str
     why: str
+    also: tuple = ()
 
 
 class Lane(NamedTuple):
@@ -108,8 +116,10 @@ ORIGINAL_LABELS_RELEASED = coordinator.labels_released
 ORIGINAL_IS_RELEASED = board.is_released
 ORIGINAL_ISSUE_ROWS = board.issue_rows
 ORIGINAL_COMMENTS_DUE = board.comments_due
+ORIGINAL_TAKE_LABEL_OFF = github.take_label_off
 ORIGINAL_OVERLAPS_DUE = coordinator.overlap_comments_due
 ORIGINAL_REFUSAL = guard.refusal
+ORIGINAL_PLAIN_TEXT = guard.plain_text
 ORIGINAL_TOLD = coordinator.told_numbers
 ORIGINAL_CLAIMS_MADE = coordinator.claims_made
 ORIGINAL_PUT_BACK = github.put_back
@@ -123,8 +133,12 @@ ORIGINAL_OPEN_WORK = board.open_work
 ORIGINAL_DEAL_MOVES = team.deal_moves
 ORIGINAL_CLAIM_RELEASED = github.claim_released
 ORIGINAL_RELEASE_ONE = github.release_one
+ORIGINAL_FREEING = coordinator.freeing
 ORIGINAL_RATE_LIMITED = github.rate_limited
 ORIGINAL_RATE_WAIT = github.rate_wait
+ORIGINAL_WROTE_NOTHING = github.wrote_nothing
+ORIGINAL_PROBLEMS_FOR = protocol_check.problems_for
+ORIGINAL_STRAY_CLAIM_FILES = protocol_check.stray_claim_files
 # The headers of the token's hour, which rate_wait reads for the hour's end.
 HOUR_HEADERS = ("x-ratelimit-remaining", "x-ratelimit-reset")
 
@@ -230,6 +244,8 @@ def comment_then_labels(api, snap, key, now):
             released_at = github.landed_release(api, key, release)
         except github.GitHubError as unread:
             return f"#{key}: release unsettled, the comment failed: {problem}; the comments unread: {unread}"
+        if not released_at and not github.wrote_nothing(problem):
+            return f"#{key}: release unsettled, the comment failed: {problem}; the comments list none yet"
         if not released_at:
             return f"#{key}: not released, the comment failed: {problem}"
     try:
@@ -289,7 +305,10 @@ def relabelled_before_the_comment(api, snap, key, now):
     relabelled as soon as the labels are off and todo is on, before the
     comment, and left so when the comment fails and the labels go back on,
     so the page of a run whose release GitHub refused shows the issue as
-    released while GitHub holds its labels again."""
+    released while GitHub holds its labels again. Since F23's fix the
+    labels go back only after a refusal that says GitHub wrote nothing, a
+    4xx other than a rate limit's since its review, so only such a
+    refusal tells this copy from the library."""
     release = snap.releases[key]
     names, put_on = coordinator.labels_released(snap, key), coordinator.labels_put_on(snap, key)
     taken_off = []
@@ -312,6 +331,8 @@ def relabelled_before_the_comment(api, snap, key, now):
             released_at = github.landed_release(api, key, release)
         except github.GitHubError as unread:
             return github.unsettled(snap, key, names, put_on, problem, unread)
+        if not released_at and not github.wrote_nothing(problem):
+            return github.not_listed(snap, key, names, put_on, problem)
         if not released_at:
             return f"#{key}: not released, the comment failed: {problem}" + github.put_back(api, key, taken_off, put_on)
     coordinator.after_release(snap, key, released_at or now.isoformat(), names, put_on)
@@ -398,6 +419,149 @@ def lease_onto_any_claim(name, source, expected, claim_file_at, remote="origin")
     """guard.other_holder judging nothing: the guard as it was before F7's
     fix, passing a lease onto any claude/ branch, whoever claimed it."""
     return None
+
+
+def every_double_parenthesis_arithmetic(command, i, memo=None):
+    """guard.arithmetic_end as the scan read (( and $(( until F25's
+    review: as arithmetic always, to the ) that closes both parentheses,
+    so the here-documents of ((cd x); cat <<EOF ...), which bash reads as
+    a subshell in a subshell, are not told."""
+    depth = 2
+    while i < len(command) and depth:
+        depth += {"(": 1, ")": -1}.get(command[i], 0)
+        i += 1
+    return i
+
+
+def parentheses_counted_inside_quotes(command, open_at, memo):
+    """guard.matching_parenthesis as the scan counted the parentheses of a
+    (( until F25's second review: every one, quoted or not, so the
+    here-documents of ((echo "))"); cat <<EOF ...), which bash reads as a
+    subshell in a subshell, are not told."""
+    depth = 0
+    for i in range(open_at, len(command)):
+        depth += {"(": 1, ")": -1}.get(command[i], 0)
+        if not depth:
+            return i
+    return None
+
+
+# guard.expansion_step as built, which the mutants below call for every
+# expansion but the one each reads as text.
+EXPANSION_STEP = guard.expansion_step
+
+
+def expansions_without(kind):
+    """guard.expansion_step as the scan read expansions until F25's third
+    review, with kind read as text: "${", so a ) inside ${y:-)} then
+    closes the substitution around it and the << after it is read as text
+    inside double quotes; "$[", the same with $[ ) ] (its fourth review);
+    or "$$", so $${ opens a parameter expansion bash never opens (the
+    same)."""
+    def expansion_step(command, i, contexts, memo):
+        if command.startswith(kind, i):
+            return None
+        return EXPANSION_STEP(command, i, contexts, memo)
+    return expansion_step
+
+
+# guard.substitutions and guard.substitution_opens as built, which the
+# mutants of F24's fix wrap.
+SUBSTITUTIONS = guard.substitutions
+SUBSTITUTION_OPENS = guard.substitution_opens
+SUBSTITUTIONS_IN = guard.substitutions_in
+BRACKETED_STEP = guard.bracketed_step
+
+
+def substitutions_one_deep(command):
+    """guard.substitutions with each substitution's own nested ones left
+    unread, as if the reading went one level into the command and no
+    deeper: a push in a $( ) in a $( ), or in a backquoted span in one,
+    stays part of a word."""
+    whole = SUBSTITUTIONS(command)
+    for nested in whole.nested:
+        nested.nested = []
+    return whole
+
+
+def no_arithmetic_opens(command, i, contexts, memo):
+    """guard.substitution_opens with arithmetic, (( )), read as text the
+    scan jumps over whole, as the scan of here-documents read it until
+    F29's fix, so a $( ) inside it is never read, nor one inside arithmetic
+    that scan steps into since."""
+    if command.startswith("((", i) or (contexts is not None and guard.ARITHMETIC in contexts):
+        return None
+    return SUBSTITUTION_OPENS(command, i, contexts, memo)
+
+
+def arithmetic_as_commands(command, i, contexts, memo):
+    """guard.substitution_opens with arithmetic read as the commands of a
+    substitution, as F24's fix read it until its first review, where a
+    single quote quotes: a $( ) between two apostrophes in $(( )) is never
+    read, though bash runs it."""
+    opens = SUBSTITUTION_OPENS(command, i, contexts, memo)
+    return opens if opens is None or opens[1] is None else (opens[0] - 1, None)
+
+
+def bracket_quotes(command, i, contexts, memo):
+    """guard.bracketed_step with a single quote in old-style arithmetic read
+    as a quote, as until F24's first review: a $( ) between two apostrophes
+    in $[ ] is never read, though bash runs it."""
+    if command[i] == "'":
+        return guard.Step(guard.quote_end(command, i) or len(command), contexts, False, False)
+    return BRACKETED_STEP(command, i, contexts, memo)
+
+
+def body_arithmetic_left_out(command, start, end, depth=0):
+    """guard.substitutions_in with a body's arithmetic left out of what the
+    body runs, as until F24's first review: a $( ) inside $(( )) on a line
+    of an expanded body is never read, though bash runs it."""
+    return tuple(run for run in SUBSTITUTIONS_IN(command, start, end, depth) if not run.startswith("$(("))
+
+
+def backquoted_bodies_left_in(command, i, quoted=False):
+    """guard.backquoted_substitution with the bodies of the here-documents
+    a span's backslashes hid from the scan of the command left in its text,
+    as until F24's first review: their quotes pair with one after a push."""
+    if command[i] != "`":
+        return None
+    end = guard.backquote_end(command, i)
+    inner = command[i + 1:end - 1] if guard.BACKQUOTED.match(command, i) else command[i + 1:]
+    escape = guard.DOUBLE_QUOTED_BACKQUOTE_ESCAPE if quoted else guard.BACKQUOTE_ESCAPE
+    return guard.substitutions(escape.sub(r"\1", inner)), end
+
+
+def alike_by_own_text(root):
+    """guard.alike telling substitutions apart by their own texts alone, not
+    by those nested in them: of echo "$(echo $(true))" "$(echo $(git push
+    ...))" the second is read as the first and its push never read."""
+    keys, interned, stack = {}, {}, [root]
+    while stack:
+        item = stack.pop()
+        keys[id(item)] = interned.setdefault("".join(item.pieces), len(interned))
+        stack += item.nested
+    return keys
+
+
+def substitutions_kept_whole(command, start, end, depth=0):
+    """guard.substitutions_in as it kept an expanded body's substitutions
+    until F25's second review: each whole, the bodies of its own
+    here-documents with it, whose quotes then pair with one after the
+    push."""
+    text, found, memo, i = command[start:end], [], {}, 0
+    while i < len(text):
+        arithmetic = guard.arithmetic_end(text, i + 3, memo) if text.startswith("$((", i) else None
+        if text[i] == "\\":
+            i += 2
+        elif arithmetic:
+            i = arithmetic
+        elif text.startswith("$(", i):
+            close = guard.scan(text, i + 2, guard.Context("$("), depth + 1)[1]
+            found.append(text[i:close])
+            i = close
+        else:
+            i += 1
+    return tuple(found)
 
 
 def long_option_named_in_full(word, wrapper):
@@ -906,10 +1070,17 @@ def pushed_by_but_a_delete(entry, sha, now):
 def landed_release_finding_none_unread(api, key, release):
     """github.landed_release as every build before F20's fix had it: a
     read of the issue's comments GitHub refuses finds no comment, as a
-    read that listed none does, so release_one puts the labels back
-    beside a comment that may stand, which holds the claim for good, the
-    comment telling every later coordinator the claim is released and the
-    label claimed telling the board it is held (F20)."""
+    read that listed none does, so release_one puts the labels back beside
+    a comment that may stand, which holds the claim for good, the comment
+    telling every later coordinator the claim is released and the label
+    claimed telling the board it is held (F20). Since F23's fix
+    release_one leaves the labels off where a read that lists none
+    follows a server error, the answer both of F20's faults give the
+    post, so the mutant puts them back only where GitHub refused the
+    comment with a 4xx, other than a rate limit's since the review's
+    third finding, and then the read, where a release comment an earlier
+    run's post or someone else wrote may stand (comment-422-then-unread,
+    F23's review)."""
     try:
         comments = api.get_all(f"/repos/{api.repo}/issues/{key}/comments")
     except github.GitHubError:
@@ -920,11 +1091,45 @@ def landed_release_finding_none_unread(api, key, release):
     return released_at if board.release_counts(dataclasses.replace(release, released_at=released_at)) else ""
 
 
+def wrote_nothing_unless_answered(problem):
+    """github.wrote_nothing reading no answer at all as a refusal, as if a
+    call that never heard back had been turned away, where the connection
+    may have dropped after GitHub wrote the comment (F23). Every other
+    answer it reads by the library's own rule, so it changes that one rule
+    whatever the library's rule becomes, as F23's review changed it for a
+    rate limit's refusal."""
+    return problem.status is None or ORIGINAL_WROTE_NOTHING(problem)
+
+
+def wrote_nothing_after_a_rate_limit(problem):
+    """github.wrote_nothing as F23's fix had it until its review: every 4xx
+    a refusal that wrote nothing, a rate limit's among them, which rests
+    on GitHub refusing a rate limit's call before it acts on it, as its
+    documentation never says and canary C4, not run, would settle; where
+    GitHub wrote the comment it refused so and lists it only later, the
+    labels go back beside it and hold the claim for good
+    (comment-limited-late; F23's review)."""
+    return problem.status is not None and 400 <= problem.status < 500
+
+
+def wrote_nothing_by_the_last_try(problem):
+    """github.wrote_nothing reading a refusal by the call's last try alone,
+    as it did until F23's second review: a 422 on the client's second
+    try, after a rate limit's refusal of the first, is taken for a refusal
+    that wrote nothing, though GitHub may have acted on the first try and
+    list the comment only later, so the labels go back beside it
+    (comment-limited-then-422). Every other answer it reads by the
+    library's own rule, so it changes that one rule alone."""
+    alone = copy.copy(problem)
+    alone.after_rate_limit = False
+    return ORIGINAL_WROTE_NOTHING(alone)
+
+
 def release_one_counting_unsettled(api, snap, key, now):
     """github.release_one counting a release it cannot tell stands: where
     GitHub refused the comment and then the read of the issue's comments
-    that would say whether it wrote it anyway, the snapshot counts the
-    release at the run's start, so the same run renames the branch and
+    that would say whether a release comment stands, the snapshot counts
+    the release at the run's start, so the same run renames the branch and
     says where it went, where the spec has the run count no release it
     cannot tell stands and the next run settle it (F20)."""
     def counted(snap, key, names, put_on, problem, unread):
@@ -1203,6 +1408,91 @@ def free_though_blocked(snap, issue):
     return issue["number"] not in snap.claimed and labels.CLAIMED not in labels.label_names(issue)
 
 
+def in_review_left_where_a_branch_stands(snapshot, number, names):
+    """coordinator.freeing taking nothing off a reopened issue whose claim
+    branch, or a released branch, stands, so in-review stays and the
+    claim, finished by its label, is never released (F22)."""
+    plan = ORIGINAL_FREEING(snapshot, number, names)
+    return coordinator.Freeing() if plan.branch_stands else plan
+
+
+def ready_pull_request_unread(snapshot, number, names):
+    """coordinator.freeing reading no pull request, so a reopened issue whose
+    claim's own pull request, marked ready, waits for review loses the
+    in-review that finishes it (F22)."""
+    return ORIGINAL_FREEING(dataclasses.replace(board.as_snapshot(snapshot), pulls=[]), number, names)
+
+
+def entry_since_the_close_alone(api, key, closed, claimed_at):
+    """claimed_by_a_claim reading any entry of the claim branch at or after
+    the close as the claim's, whenever the label went on, so a person's
+    undo after a claim made since has ended reads as that claim's."""
+    entry = github.newest_entry(api, claims.branch_of(key))
+    if entry is None:
+        return None
+    at = github.entry_time(entry) if entry else ""
+    return bool(at) and claims.parse_time(at) >= claims.parse_time(closed)
+
+
+def todo_put_on_last(api, snap, number):
+    """github.free_reopened taking the labels off before it puts todo on, so
+    a run that fails after claimed came off leaves an issue no section of
+    the board lists and no later run frees (F22). It reads what the
+    library reads, in its order, and changes only when todo goes on."""
+    branch = claims.branch_of(str(number))
+    issue = api.issue(number) or {}
+    if issue.get("state") != "open":
+        return f"#{number}: not freed"
+    pull = api.pull_detail(branch)
+    plan = coordinator.freeing(github.with_claims_pull(snap, number, pull), number, labels.label_names(issue))
+    if plan.taken_off and not plan.branch_stands and github.branch_sha(api, branch):
+        return f"#{number}: not freed"
+    for name in plan.taken_off:
+        if name == labels.CLAIMED and not plan.branch_stands and github.branch_sha(api, branch):
+            return f"#{number}: not freed"
+        github.take_label_off(api, number, name)
+    if plan.put_on:
+        api.post(f"/repos/{api.repo}/issues/{number}/labels", {"labels": list(plan.put_on)})
+    coordinator.after_labels(snap, str(number), plan.taken_off, plan.put_on)
+    return f"#{number}: freed"
+
+
+def take_labels_off_putting_back(failed_too):
+    """github.take_labels_off with the label whose removal failed put back
+    as failed_too(problem) says: never, as before F27's fix, which leaves
+    off a label GitHub took and lost its answer to, or always, which puts
+    back a label GitHub refused to take off."""
+    def take_labels_off(api, key, names):
+        taken_off = []
+        for name in names:
+            try:
+                if github.take_label_off(api, key, name):
+                    taken_off.append(name)
+            except github.GitHubError as problem:
+                return taken_off + ([name] if failed_too(problem) else []), problem
+        return taken_off, None
+    return take_labels_off
+
+
+def take_label_off_trusting_a_retried_404(api, key, name, retried_404_taken=False):
+    """github.take_label_off reading every 404 as a label the issue never
+    carried, a 404 after a rate limit's refusal of an earlier try among
+    them, as before F27's review, so a release that fails later leaves off
+    a label the refused try may have taken."""
+    return ORIGINAL_TAKE_LABEL_OFF(api, key, name)
+
+
+def releases_read_before_the_freeing(api, snapshot, now):
+    """github.coordinate reading which claims are due before it frees the
+    reopened issues, so a claim whose in-review the freeing takes off waits
+    for the next run, where the spec releases it in the same run (F22)."""
+    snap = board.as_snapshot(snapshot)
+    due = coordinator.releases_due(snap, now)
+    lines = [github.free_reopened(api, snap, number) for number in coordinator.reopened_due(snap)]
+    lines += [github.release_one(api, snap, key, now) for key in due]
+    return lines + github.tell_overlaps(api, snap)
+
+
 MUTANTS = {
     "idle at exactly 24 hours": Mutant(
         claims, "is_idle", lambda last, now, idle_after=claims.IDLE_AFTER: now - claims.parse_time(last) >= idle_after,
@@ -1273,21 +1563,45 @@ MUTANTS = {
         "G7", "overlapping work is told once"),
     "the labels not put back": Mutant(
         github, "put_back", lambda api, key, names, put_on=(): "",
-        "G3L", "a run that fails between the two puts back the labels it took off"),
+        "G3L", "a run that fails before its release comment, or whose comment GitHub refused, puts back the labels "
+               "it took off"),
     "a lost comment's release not seen": Mutant(
         github, "landed_release", lambda api, key, release: "",
         "G3L", "a comment GitHub wrote and lost its answer to makes the release whole"),
     "an unsettled release put back": Mutant(
         github, "landed_release", landed_release_finding_none_unread,
-        "G3L", "a run that cannot read whether its release comment stands leaves the labels as the release left "
-               "them (F20)"),
+        "G3L", "a run that cannot read whether a release comment stands leaves the labels as the release left "
+               "them, whatever GitHub answered its own with (F20)"),
     "an unsettled release counted": Mutant(
         github, "release_one", release_one_counting_unsettled,
-        "G3L", "a run that cannot read whether its release comment stands counts no release, the next run "
+        "G3L", "a run that cannot read whether a release comment stands counts no release, the next run "
                "settling it (F20)"),
     "an unsettled release failing the run": Mutant(
         github, "unsettled", unsettled_raising,
-        "G15", "a run that cannot read whether its release comment stands goes on and writes its page (F20)"),
+        "G15", "a run that cannot read whether a release comment stands goes on and writes its page (F20)"),
+    "a late comment's labels put back": Mutant(
+        github, "wrote_nothing", lambda problem: True,
+        "G3L", "a run whose release comment GitHub answered with a server error, or with no answer at all, and "
+               "whose issue's comments then list none, leaves the labels as the release left them, since GitHub may "
+               "have written the comment and list it only later (F23)"),
+    "no answer taken for a refusal": Mutant(
+        github, "wrote_nothing", wrote_nothing_unless_answered,
+        "G3L", "no answer at all, like a server error, may come after GitHub wrote the comment, so it is no refusal "
+               "and the labels stay as the release left them (F23)"),
+    "a refusal taken for a late comment": Mutant(
+        github, "wrote_nothing", lambda problem: False,
+        "G3L", "a release comment GitHub refused with a 4xx, which it answers in place of writing one, puts the "
+               "labels back when the issue's comments list none (F23)"),
+    "a rate limit's refusal taken for one that wrote nothing": Mutant(
+        github, "wrote_nothing", wrote_nothing_after_a_rate_limit,
+        "G3L", "a run whose release comment GitHub refused for a rate limit, which its documentation never says "
+               "comes before GitHub acts on the call, and whose issue's comments then list none, leaves the labels "
+               "as the release left them (F23's review)"),
+    "a refusal after a rate limit read by its last try alone": Mutant(
+        github, "wrote_nothing", wrote_nothing_by_the_last_try,
+        "G3L", "a run whose release comment GitHub refused for a rate limit and then, on the client's next try, "
+               "with a 422, and whose issue's comments then list none, leaves the labels as the release left them, "
+               "since GitHub may have acted on the first try (F23's second review)"),
     "a writer's release not vouched for": Mutant(
         github, "may_write", nobody_vouched_for,
         "G5", "anyone who may write may release, whatever author_association GitHub shows"),
@@ -1361,6 +1675,329 @@ MUTANTS = {
         guard, "long_value_is_next", optional_value_from_the_next_word,
         "G11a", "a value a wrapper's long option may take is taken only attached, so the push after env "
                 "--default-signal is judged and refused (F26)"),
+    "env's assignments read as the shell's": Mutant(
+        guard, "env_assigns", lambda word: bool(guard.ASSIGNMENT.match(word)),
+        "G11a", "env reads every word after its options that holds a = as an assignment, so the push behind env "
+                "1x=2 is judged and refused (F28)"),
+    "env's lone - not read": Mutant(
+        guard, "past_lone_dash", lambda rest, read: None,
+        "G11a", "GNU env reads a lone - after its options as -i, so the push behind env -- - is judged and "
+                "refused (F28)"),
+    "env's -S string not split": Mutant(
+        guard, "split_string", lambda text, unset=False: None,
+        "G11a", "env splits the string -S gives it into the words it runs, so the push inside env -S '...' is "
+                "judged and refused (F28)"),
+    "env's lone assignment read as the shell's": Mutant(
+        guard, "sets_the_shells_own", lambda found: True,
+        "G11a", "env GIT_DIR=x with no command sets nothing in the shell, so a lease after it by git -C from "
+                "another clone onto a claim another worker holds is judged there and refused (F28)"),
+    "a lone - read past as one of env's options": Mutant(
+        guard, "ends_options", lambda word: False,
+        "G11a", "getopt ends env's options at a lone -, so the push after env - --sp=x, an assignment there, is "
+                "judged and refused (F28's review)"),
+    "an -S string's variables read only as written": Mutant(
+        guard, "readings_of", lambda argv: [guard.launch(argv)],
+        "G11a", "env drops a ${NAME} that is not set, so the push after env -S '${NOPE} git push ...' is judged "
+                "and refused (F28's review)"),
+    "time matched by its program's name": Mutant(
+        guard, "sets_the_shells_own", lambda found: all(name == "time" for name, _ in found.wrappers),
+        "G11a", "only bash's keyword time sets an assignment in the shell, so a lease by git -C from another clone "
+                "after /usr/bin/time GIT_DIR=x, onto a claim another worker holds, is judged there and refused "
+                "(F28's review)"),
+    "a time the guard cannot tell read as the keyword alone": Mutant(
+        guard, "behind_time_alone", lambda found: False,
+        "G11a", "a time that may be quoted, which bash runs as the program, is read both ways, so a lease by git -C "
+                "from another clone after \"time\" GIT_DIR=x, onto a claim another worker holds, is judged there "
+                "and refused (F28's review)"),
+    "every ${NAME} read all set or all unset": Mutant(
+        guard, "unset_subsets", lambda names: [frozenset(), frozenset(name[2:-1] for name in names)],
+        "G11a", "env drops each ${NAME} that is not set and keeps each that is, so the push after env -S "
+                "'${NOPE} -u ${HOME} git push ...', where NOPE alone is not set, is judged and refused (F28's "
+                "second review)"),
+    "a push env's -S spells read only as written": Mutant(
+        guard, "holds_push", lambda argv: any("push" in word for word in argv),
+        "G11a", "env's -S takes quotes and unset ${NAME}s out of a word, so a lease by git -C from another clone, "
+                "spelled pu\"\"sh in an -S string with more names than the guard reads each mix of, onto a claim "
+                "another worker holds, is refused unread (F28's third review)"),
+    "a quote that never closes hiding the command": Mutant(
+        guard, "plain_text",
+        lambda command, lenient=False, spans_run=True, patterns=False: ORIGINAL_PLAIN_TEXT(command),
+        "G11a", "a quote that never closes is read as a character of its word, so a lease bash runs before the "
+                "line it cannot read, onto a claim another worker holds, is read and refused (F25)"),
+    "no here-document's body told": Mutant(
+        guard, "here_document_bodies", lambda command: [],
+        "G11a", "a command is read with its here-documents' bodies cut out too, since bash reads their quotes as "
+                "text, so a lease between two bodies whose apostrophes pair around it, onto a claim another worker "
+                "holds, is read and refused (F25)"),
+    "a here-document in a quoted substitution read as text": Mutant(
+        guard, "takes_here_document", lambda contexts: contexts is None or '"' not in contexts,
+        "G11a", "a << in a substitution inside double quotes opens a here-document, as in a commit message given "
+                "by \"$(cat <<'EOF' ... )\", so a lease between two such bodies, onto a claim another worker "
+                "holds, is read and refused (F25)"),
+    "an expanded body's substitutions cut out with it": Mutant(
+        guard, "substitutions_in", lambda command, start, end, depth=0: (),
+        "G11a", "the command substitutions of a body the shell expands are read as commands, since the shell runs "
+                "them, so a lease in one, between two apostrophes of the body's text, onto a claim another worker "
+                "holds, is refused (F25)"),
+    "a body in a substitution ended only by its delimiter's own line": Mutant(
+        guard, "closes_substitution", lambda line, delimiter: False,
+        "G11a", "a body inside a substitution ends at a line that starts with its delimiter and holds a ), as "
+                "bash 5.2 ends it, so a lease after a body a line EOF)\" ends, onto a claim another worker holds, "
+                "is read and refused (F25)"),
+    "an expanded body's backslash-newline kept": Mutant(
+        guard, "continues", lambda text: False,
+        "G11a", "a line of a body the shell expands that ends in a backslash goes on into the next before it is "
+                "compared with the delimiter, as bash reads it, so a lease after a body a line E and a backslash, "
+                "then one OF, ends, onto a claim another worker holds, is read and refused (F25)"),
+    "every double parenthesis read as arithmetic": Mutant(
+        guard, "arithmetic_end", every_double_parenthesis_arithmetic,
+        "G11a", "a (( whose second ( closes with no ) at once after it is a subshell in a subshell, as bash reads "
+                "it, so a lease between two such subshells' here-documents, onto a claim another worker holds, "
+                "is read and refused (F25), with the reading of the command's own text off (F29)",
+        also=((guard, "own_text_reading", lambda own, cut: []),)),
+    "a body that waits for a newline in the substitution that closed": Mutant(
+        guard, "leave", lambda pending, before, after: None,
+        "G11a", "a here-document whose substitution closes on its operator's own line, as x=$(cat <<'EOF') does, "
+                "has its body read from the next line outside it, as bash reads it, so a lease between two such "
+                "bodies, onto a claim another worker holds, is read and refused (F25)"),
+    "an expanded body's substitution kept with its own bodies": Mutant(
+        guard, "substitutions_in", substitutions_kept_whole,
+        "G11a", "what the shell runs of a body it expands is read with its own here-documents' bodies cut out, "
+                "since their quotes are text too, so a lease after a body whose substitution holds one, onto a "
+                "claim another worker holds, is read and refused (F25)"),
+    "a case pattern's parenthesis closing its substitution": Mutant(
+        guard, "case_step", lambda *step: None,
+        "G11a", "a case pattern's ) inside a substitution closes nothing, as bash reads it, so a lease between "
+                "two double-quoted substitutions whose case patterns hold here-documents, onto a claim another "
+                "worker holds, is read and refused (F25)"),
+    "arithmetic's parentheses counted inside quotes": Mutant(
+        guard, "matching_parenthesis", parentheses_counted_inside_quotes,
+        "G11a", "the parentheses of a (( are counted past quotes, as bash counts them, so a lease between the "
+                "here-documents of ((echo \"))\"); ...), a subshell in a subshell, and a later one, onto a claim "
+                "another worker holds, is read and refused (F25)"),
+    "a parameter expansion read as text": Mutant(
+        guard, "expansion_step", expansions_without("${"),
+        "G11a", "a parameter expansion is read whole, a ) inside ${y:-)} closing nothing, as bash reads it, so a "
+                "lease between two double-quoted substitutions that hold one before a here-document, onto a claim "
+                "another worker holds, is read and refused (F25)"),
+    "a backquoted span read as text": Mutant(
+        guard, "backquoted", lambda command, i, depth: None,
+        "G11a", "a backquoted span is read whole, a case pattern's ) inside it closing nothing, as bash reads it, "
+                "so a lease between two double-quoted substitutions that hold one before a here-document, onto a "
+                "claim another worker holds, is read and refused (F25)"),
+    "$$ read as a $ before what follows": Mutant(
+        guard, "expansion_step", expansions_without("$$"),
+        "G11a", "$$, the shell's process id, is read whole, so the { after it opens no parameter expansion, as "
+                "bash reads it, and a lease after echo $${ and a here-document whose body holds an apostrophe, "
+                "onto a claim another worker holds, is read and refused (F25)"),
+    "old-style arithmetic read as text": Mutant(
+        guard, "expansion_step", expansions_without("$["),
+        "G11a", "old-style arithmetic, $[ ], is read whole, a ) inside it closing nothing, as bash reads it, so a "
+                "lease between two double-quoted substitutions that hold one before a here-document, onto a claim "
+                "another worker holds, is read and refused (F25)"),
+    "a backquoted span's quotes read as the quoting around it": Mutant(
+        guard, "backquoted_span", lambda command, i: None,
+        "G11a", "a backquoted span is read as one part of a word in the lenient reading, its quotes pairing with "
+                "nothing outside it, as bash reads it, so a lease after x=`echo \"` and before a comment with a "
+                "double quote, onto a claim another worker holds, is read and refused (F25), with the reading of "
+                "the command's own text off (F29)",
+        also=((guard, "own_text_reading", lambda own, cut: []),)),
+    "a substitution in double quotes read as part of its word": Mutant(
+        guard, "read_apart", lambda command: (command, ""),
+        "G11a", "the text of every command substitution bash runs is read as commands, in double quotes too, so "
+                "a lease in out=\"$(git push ...)\", onto a claim another worker holds, is read and refused (F24)"),
+    "a process substitution read as a redirection": Mutant(
+        guard, "reads_commands", lambda contexts: False,
+        "G11a", "a <( ) or >( ) outside double quotes is a process substitution whose text bash runs, so a lease "
+                "in cat <(git push ...), onto a claim another worker holds, is read and refused (F24)"),
+    "a nested substitution left unread": Mutant(
+        guard, "substitutions", substitutions_one_deep,
+        "G11a", "a substitution nested in another is read apart in turn, so a lease in a $( ) three deep in "
+                "double quotes, onto a claim another worker holds, is read and refused (F24)"),
+    "a backquoted span in a substitution read as text": Mutant(
+        guard, "backquoted_substitution", lambda command, i, quoted=False: None,
+        "G11a", "a backquoted span inside a $( ) in double quotes is a substitution bash runs, so a lease in "
+                "echo \"$(echo `git push ...`)\", onto a claim another worker holds, is read and refused (F24)"),
+    "arithmetic read as no substitution": Mutant(
+        guard, "substitution_opens", no_arithmetic_opens,
+        "G11a", "the substitutions inside arithmetic run, so a lease in (( \"$(git push ...)\" )), onto a claim "
+                "another worker holds, is read and refused (F24)"),
+    "a $'...' read as a quoted span": Mutant(
+        guard, "ansi_c_close", lambda command, i: command.find("'", i) + 1 or None,
+        "G11a", "a backslash escapes an apostrophe in bash's $'...', so a lease after echo $'it\\'s' in a "
+                "substitution, onto a claim another worker holds, is read and refused (F24)"),
+    "a single quote in a double-quoted ${ } read as a quote": Mutant(
+        guard, "brace_state", lambda command, i, contexts: "quote",
+        "G11a", "in a ${ } in double quotes a single quote after an operator such as :- quotes nothing, so a lease "
+                "in echo \"${v:-'$(git push ...)'}\", onto a claim another worker holds, is read and refused (F24)"),
+    "arithmetic read as commands": Mutant(
+        guard, "substitution_opens", arithmetic_as_commands,
+        "G11a", "a single quote quotes nothing in arithmetic, so a lease in echo $(( '$(git push ...)' )), onto a "
+                "claim another worker holds, is read and refused (F24)"),
+    "a single quote in $[ ] read as a quote": Mutant(
+        guard, "bracketed_step", bracket_quotes,
+        "G11a", "a single quote quotes nothing in old-style arithmetic, so a lease in echo $[ '$(git push ...)' ], "
+                "onto a claim another worker holds, is read and refused (F24)"),
+    "a body's arithmetic left out of what it runs": Mutant(
+        guard, "substitutions_in", body_arithmetic_left_out,
+        "G11a", "bash expands the arithmetic of a body it expands, so a lease in a body line "
+                "echo \"$(( $(git push ...) ))\", onto a claim another worker holds, is read and refused (F24)"),
+    "substitutions told alike by their own texts alone": Mutant(
+        guard, "alike", alike_by_own_text,
+        "G11a", "two substitutions are read as one only when those nested in them read alike too, so a lease in "
+                "the second of echo \"$(echo $(true))\" \"$(echo $(git push ...))\", onto a claim another "
+                "worker holds, is read and refused (F24)"),
+    "a backquoted span's hidden bodies left in": Mutant(
+        guard, "backquoted_substitution", backquoted_bodies_left_in,
+        "G11a", "a here-document a backquoted span's backslashes hid is read as bash reads it once they are "
+                "taken off, so a lease after one, onto a claim another worker holds, is read and refused (F24)"),
+    "a $'...' read as a $ and a quoted span": Mutant(
+        guard, "ansi_c_word", lambda command, i: None,
+        "G11a", "bash's $'...' gives the text it decodes to, so git $'pu\\x73h' origin main, env -S $'git push "
+                "origin main' and a lease onto claude/$'1', a claim another worker holds, are read and refused (F29)"),
+    "a $\"...\" read as a $ and a quoted span": Mutant(
+        guard, "locale_quoted", lambda command, i: False,
+        "G11a", "bash's $\"...\" is the double-quoted text after the $, so git push origin $\"main\" is read and "
+                "refused (F29)"),
+    "a command's own text left unread": Mutant(
+        guard, "own_text_reading", lambda own, cut: [],
+        "G11a", "a command is read as its own text too, each substitution a hole in its word, so git pu$(true)sh "
+                "origin main, a verb bash builds into push, is read and refused (F29)"),
+    "a word bash builds read as its text alone": Mutant(
+        guard, "may_be", lambda word, text: word == text,
+        "G11a", "a word with holes bash fills may be git, push or a branch the rules name, so git $(echo push) "
+                "origin main and $(which git) push origin main are read and refused (F29)"),
+    "every word read set, none unset": Mutant(
+        guard, "unset_value", lambda word, carried=None: word,
+        "G11a", "bash drops an unquoted word that expands to nothing, so $NOPE git push origin main runs the push "
+                "and is read and refused (F29)"),
+    "braces read as written": Mutant(
+        guard, "brace_words", lambda word: [word],
+        "G11a", "bash expands braces, so git {push,} origin main runs git push origin main and is read and refused "
+                "(F29)"),
+    "an option bash builds read as written": Mutant(
+        guard, "built_option", lambda args: None,
+        "G11a", "an option whose name bash builds may be --force, so git push -$(echo f) origin claude/7 is "
+                "refused (F29)"),
+    "a name bash builds read as written": Mutant(
+        guard, "built_target", lambda name, default_branch: None,
+        "G11a", "a branch name bash builds may be the default or the board branch, so git push origin "
+                "ma$(echo i)n is refused (F29)"),
+    "a line continuation read as ending a word's start": Mutant(
+        guard, "joins_lines", lambda pair: False,
+        "G11a", "bash takes a line continuation out before it reads on, so a # after one that follows a blank "
+                "opens a comment, and the push after echo \\, a newline and #' is read and refused (F29)"),
+    "arithmetic jumped over by the scan": Mutant(
+        guard, "arithmetic_opened", lambda at, contexts, end: guard.Step(end, contexts, False, False),
+        "G11a", "the scan of here-documents reads into arithmetic, whose substitutions bash runs, so the push "
+                "after a here-document's body in a substitution in $(( )) is read and refused (F29)"),
+    "a lone assignment read as naming the repository for good": Mutant(
+        guard, "set_alone", lambda found: False,
+        "G11a", "GIT_DIR=x alone sets the shell's variable, which git sees only where it was exported before, so "
+                "a lease by git -C from another clone after it, onto a claim another worker holds, is judged "
+                "there and refused (F29)"),
+    "a here-document's delimiter cut at a substitution": Mutant(
+        guard, "expansion_in_word", lambda command, i: None,
+        "G11a", "bash reads a $( ) in a here-document's delimiter word as part of the word, so a lease after a "
+                "body <<E$(echo x)F ends, onto a claim another worker holds, is read and refused (F29)"),
+    "a word of expansions alone read as built": Mutant(
+        guard, "expansions_alone",
+        lambda word: guard.is_built(word) and guard.word_pieces(word) == [guard.EXPANSION_HOLE],
+        "G11a", "a name made of expansions alone is a value the guard cannot know, as one expansion is, so git push "
+                "--no-verify origin $(echo HEAD):$(echo claude/)$(echo 7), a push to the session's own claim, "
+                "passes (F29's first review)"),
+    "a refspec of holes read as : where each is nothing": Mutant(
+        guard, "kept_as_written", lambda word, value: False,
+        "G11a", "a refspec bash builds of expansions alone around a colon is read as written, as one expansion "
+                "is, so git push --no-verify origin $(echo HEAD):$(echo claude/)$(echo 7) passes (F29's first "
+                "review)"),
+    "a built option refused after a whole flag": Mutant(
+        guard, "whole_flag", lambda word: False,
+        "G11a", "an option that opens with a whole flag no other extends may be built only into that flag or a "
+                "word git refuses, so git push --no-verify$(true) origin claude/7 passes (F29's first review)"),
+    "the hook's gate read with continuations in": Mutant(
+        guard, "lines_joined", lambda command: command,
+        "G11a", "bash takes a line continuation out before it reads a word, so git pu\\, a newline and sh "
+                "origin main is read by the hook and refused (F29's first review)"),
+    "coproc read as the command": Mutant(
+        guard, "NAMING_WORDS", ("function",),
+        "G11a", "coproc runs the command after it, so coproc git push origin main is read and refused (F29's first "
+                "review)"),
+    "coproc's name read as the command": Mutant(
+        guard, "coproc_named", lambda rest: False,
+        "G11a", "before a compound command coproc takes the next word as the coprocess's name, so coproc X { git "
+                "push origin main ; } is read and refused (F29's first review)"),
+    "a ${ } read as closing at its word's end": Mutant(
+        guard, "unset_words", lambda way: [value for word in way if (value := guard.unset_value(word)) or not word],
+        "G11a", "a ${ } a blank stands in, unquoted, goes on into the words after it, so ${NOPE:-git push} origin "
+                "main runs the push and is read and refused (F29's first review), with the defaults given closing "
+                "at their word's end too (F29's second review)",
+        also=((guard, "defaults_way",
+               lambda way: [value for word in way if (value := guard.defaults_given(word)) or not word]),)),
+    "an array's ${ } read as giving nothing": Mutant(
+        guard, "BRACED_HEAD", re.compile(r"\$\{([!#]?)([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])?(:?[-=+?])?"),
+        "G11a", "an array's subscript stands between the name and the operator, so git push origin "
+                "${NOPE[0]:-main} pushes main and is read and refused (F29's first review)"),
+    "a $'...' in a default read as written": Mutant(
+        guard, "ansi_c_in_braces", lambda word, i: None,
+        "G11a", "bash decodes a $'...' in a ${ } even inside double quotes, so git push origin "
+                "\"${NOPE:-$'\\x6dain'}\" is read and refused (F29's first review)"),
+    "extended patterns left unread": Mutant(
+        guard, "pattern_reading", lambda own: [],
+        "G11a", "with extglob on bash reads @(main) as one word, a pattern a file named main fills, so git push "
+                "origin @(main) is read and refused (F29's first review)"),
+    "a default read as a hole alone": Mutant(
+        guard, "defaults_way", lambda way: list(way),
+        "G11a", "a ${NAME:-word} gives its word, the command's own text, where the name is unset, so git push "
+                "origin ${A:-ma}$(echo in), which bash makes a push to main, is read and refused (F29's second "
+                "review)"),
+    "a word that may open with a dash read as no option": Mutant(
+        guard, "may_force", lambda word: False,
+        "G11a", "a built word that does not open with - as written may still be -f, so git push $(echo -)f origin "
+                "claude/7 is refused (F29's second review)"),
+    "a pattern read as giving no +": Mutant(
+        guard, "may_open_with_plus", lambda spec: False,
+        "G11a", "a file's name may hold a +, so ?main, which a file named +main fills, is a forcing refspec and is "
+                "refused (F29's second review)"),
+    "a colon a pattern gives read as none": Mutant(
+        guard, "colon_given", lambda spec, branches: None,
+        "G11a", "a file's name may hold a colon, so [:]main, which a file named :main fills, deletes main and is "
+                "refused, and so is ?, the refspec : where a file is named : (F29's second review)"),
+    "a colon beside one hole kept as written": Mutant(
+        guard, "kept_as_written", lambda word, value: bool(value) and not value.strip(":+") and guard.is_built(word),
+        "G11a", "only a refspec with a hole on each side of its colon is kept as written, so :$X, which bash makes "
+                "the refspec : where X is unset, is refused (F29's second review)"),
+    "text handed to a shell left unread": Mutant(
+        guard, "handed_texts", lambda argv, fed=(): [],
+        "G11a", "a command may hand a shell text to run, so bash -c 'git push origin main', eval, trap and a "
+                "here-string or a pipe into a shell are read and refused (F32)"),
+    "a shell's -c string read as a script's name": Mutant(
+        guard, "takes_command_string", lambda letters: False,
+        "G11a", "a shell runs its -c string as commands, so bash -c 'git push origin main' and sh -c's like it "
+                "are read and refused (F32)"),
+    "eval's words left unread": Mutant(
+        guard, "EVALS", frozenset(),
+        "G11a", "eval runs its words joined as commands, so eval 'git push origin main' is read and refused (F32)"),
+    "trap's action left unread": Mutant(
+        guard, "TRAPS", frozenset(),
+        "G11a", "trap runs its action when its signal comes, so trap 'git push origin main' EXIT is read and "
+                "refused (F32)"),
+    "a shell's standard input left unread": Mutant(
+        guard, "shell_input", lambda operands, stdin, fed: [],
+        "G11a", "a shell with no script runs what reaches its standard input, so bash <<<'git push origin main' "
+                "and echo 'git push origin main' | bash are read and refused (F32)"),
+    "a here-string left off standard input": Mutant(
+        guard, "standard_input", lambda part, piped: tuple(piped),
+        "G11a", "a <<< here-string is the text on its command's standard input, so bash <<<'git push origin main' "
+                "and source /dev/stdin <<<'...' are read and refused (F32)"),
+    "what a pipe carries left unread": Mutant(
+        guard, "printed_texts", lambda argv, fed=(): (),
+        "G11a", "what echo or printf prints reaches the shell at the far end of a pipe, so echo 'git push origin "
+                "main' | bash is read and refused (F32)"),
+    "source of standard input read as a file's": Mutant(
+        guard, "STANDARD_INPUT", frozenset(),
+        "G11a", "source /dev/stdin runs the text on its standard input, so source /dev/stdin <<<'git push origin "
+                "main' is read and refused (F32)"),
     "dealing without its taken set": Mutant(
         team, "deal", deal_without_the_taken_set,
         "G14", "the workers of one run are dealt distinct issues"),
@@ -1383,6 +2020,16 @@ MUTANTS = {
     "a todo written and lost stays on": Mutant(
         github, "put_labels_on", put_labels_on_then(lambda taken_off, put_on: (taken_off, ())),
         "G3L", "a todo GitHub wrote and lost its answer to is taken off again with the labels put back (F15's review)"),
+    "a label taken off and lost stays off": Mutant(
+        github, "take_labels_off", take_labels_off_putting_back(lambda problem: False),
+        "G3L", "a release whose label GitHub took off and answered with a server error or no answer puts it back (F27)"),
+    "a 404 after a rate limit read as never on": Mutant(
+        github, "take_label_off", take_label_off_trusting_a_retried_404,
+        "G3L", "a label whose removal answered 404 after a rate limit's refusal may have come off on the refused try "
+               "and is put back with the others when a later label fails (F27's review)"),
+    "a label refused its removal put back": Mutant(
+        github, "take_labels_off", take_labels_off_putting_back(lambda problem: True),
+        "G3L", "a release puts back no label GitHub refused to take off, which is still on (F27)"),
     "an epic gets todo": Mutant(
         coordinator, "NEEDS_NO_TODO", frozenset({labels.TODO, labels.BLOCKER}),
         "G3", "a release puts no todo on an epic, which the Queue never lists (F15's review)"),
@@ -1734,6 +2381,74 @@ MUTANTS = {
         "G10", "a rename a rate limit refused on every try is refused for the moment and owes no word on the "
                "issue, which would name a rule or a right that is not missing (the first review of the "
                "client's waits)"),
+    "a reopened issue left as it is": Mutant(
+        coordinator, "reopened_due", lambda snapshot: [],
+        "G8", "a reopened issue whose claim ended with its close loses claimed, in-review and the worker's labels, "
+              "and todo goes on, so the Queue lists it again (F22)"),
+    "a claim branch not read for a reopened issue": Mutant(
+        coordinator, "claim_stands",
+        lambda snap, key: any(name.startswith(claims.released_branch(key, "")) for name in snap.kept_names),
+        "G8", "a claim branch is a claim whatever the labels say, so a reopened issue whose claim branch stands "
+              "loses in-review alone (F22)"),
+    "a released branch not read for a reopened issue": Mutant(
+        github, "kept_names", lambda listed: [],
+        "G8", "a released branch beside the label claimed is a release being undone, so a reopened issue that "
+              "carries both loses no label (F22)"),
+    "in-review left on where a branch stands": Mutant(
+        coordinator, "freeing", in_review_left_where_a_branch_stands,
+        "G8", "a reopened issue whose claim branch stands loses in-review, so its claim is released once idle "
+              "(F22)"),
+    "a ready pull request's in-review taken off": Mutant(
+        coordinator, "freeing", ready_pull_request_unread,
+        "G8", "a claim's own pull request marked ready finishes it, so its reopened issue loses no label (F22)"),
+    "todo put on last": Mutant(
+        github, "free_reopened", todo_put_on_last,
+        "G8", "a freeing puts todo on first and takes claimed off last, so a run that fails partway leaves the issue "
+              "for the next run to free (F22)"),
+    "a release before the last close read as an undo": Mutant(
+        github, "ended_releases", lambda api, issues, branches, kept, asked: [],
+        "G8", "a released branch an earlier claim's release left before the issue's last close undoes nothing, so "
+              "a reopened issue whose later claim ended with the close is freed wholly (F22's review)"),
+    "claimed put back after the close read as the ended claim's": Mutant(
+        github, "claimed_since_close", lambda events: False,
+        "G8", "the label claimed put on after a reopened issue's last close is a person undoing a release an "
+              "earlier claim's release left before it, so the freeing leaves claimed on (F22's second review)"),
+    "a claim made since the close read as an undo": Mutant(
+        github, "claimed_by_a_claim", lambda api, key, closed, claimed_at: False,
+        "G8", "the label claimed a claim made since a reopened issue's last close put on is that claim's, so once "
+              "its branch is deleted with no release the freeing takes it off with the claim's other labels (F22's "
+              "third review)"),
+    "an undo after an ended claim read as the claim's": Mutant(
+        github, "claimed_by_a_claim", entry_since_the_close_alone,
+        "G8", "the label claimed a person puts back after a claim made since a reopened issue's last close has "
+              "ended, later than its branch's delete, is a person's undo, so the freeing leaves claimed on (the "
+              "review of F22's third review)"),
+    "a ready pull request's claim file let through": Mutant(
+        protocol_check, "problems_for", lambda pull, claim_file_exists, changed_claims=():
+        [p for p in ORIGINAL_PROBLEMS_FOR(pull, claim_file_exists, changed_claims) if "is still here" not in p],
+        "G12", "the protocol check fails a claim's pull request marked ready that still carries its claim file, "
+               "which is why GitHub refuses the owner's merge of one and no claim file reaches main by a merge "
+               "(F30)"),
+    "a claim file of another issue let through": Mutant(
+        protocol_check, "problems_for", lambda pull, claim_file_exists, changed_claims=():
+        ORIGINAL_PROBLEMS_FOR(pull, claim_file_exists, ()),
+        "G12", "the protocol check fails a pull request that adds or changes against main a claim file other than "
+               "its own issue's on its own claim branch, so no merge puts another issue's claim on the default "
+               "branch (F31)"),
+    "a claim branch's every claim file its own": Mutant(
+        protocol_check, "stray_claim_files", lambda pull, changed_claims:
+        [] if protocol_check.claim_number(pull) is not None else ORIGINAL_STRAY_CLAIM_FILES(pull, changed_claims),
+        "G12", "a claim stacked on another claim's branch carries that claim's file, which the check fails, since "
+               "a claim branch's own claim file is its own issue's alone (F31)"),
+    "a pull request that is no claim's let carry a claim file": Mutant(
+        protocol_check, "stray_claim_files", lambda pull, changed_claims:
+        [] if protocol_check.claim_number(pull) is None else ORIGINAL_STRAY_CLAIM_FILES(pull, changed_claims),
+        "G12", "a pull request from a branch that is no claim's, which adds an issue's claim file, fails the "
+               "check, since the protocol check judges every pull request's change, not only a claim's (F31)"),
+    "the releases due read before the freeing": Mutant(
+        github, "coordinate", releases_read_before_the_freeing,
+        "G3", "a claim whose in-review a freeing takes off is released in the same run where its branch has gone a "
+              "day without a commit (F22)"),
 }
 
 
@@ -1746,6 +2461,32 @@ WORKER = Verb("label-on", "a", (1, "worker:a"))
 # clock runs 25 hours.
 DUE = (CLAIM, CLAIMED, WORKER, Verb("wait", "clock", (25,)))
 SHARED = ("src/shared.py",)
+# a's idle claim released, then b's claim on #1, announced, finished as
+# Finish says, its claim file deleted, its pull request marked ready and
+# in-review on, for the owner to merge (F22).
+REOPENS = DUE + (Verb("board", verbs.BOARD, (cycle.SCHEDULE, "")), Verb("claim", "b", (1,)),
+                 Verb("label-on", "b", (1, "claimed")), Verb("label-on", "b", (1, "worker:b")),
+                 Verb("label-off", "b", (1, "todo")), Verb("open-draft", "b", (1,)), Verb("drop-claim-file", "b", (1,)),
+                 Verb("mark-ready", "b", (100,)), Verb("label-on", "b", (1, "in-review")))
+# a's idle claim on #1 released, then #1 closed by hand and reopened with
+# no claim between, so the release came before the issue's last close and
+# the owner, following the release's note, may still undo it by putting
+# claimed back after the close (F22's second review).
+UNDOABLE = DUE + (Verb("board", verbs.BOARD, (cycle.SCHEDULE, "")), Verb("close-issue", M.OWNER, (1,)),
+                  Verb("reopen-issue", M.OWNER, (1,)))
+# b's claim on #1 after that close and reopen, announced and ready for
+# review, which the owner may close unmerged and delete the branch of
+# while #1 stays open, so the claim ends with no release comment and its
+# claimed, put on after the close, is the claim's own (F22's third review).
+LATER_CLAIM = UNDOABLE + (Verb("claim", "b", (1,)), Verb("label-on", "b", (1, "claimed")),
+                          Verb("label-on", "b", (1, "worker:b")), Verb("label-off", "b", (1, "todo")),
+                          Verb("open-draft", "b", (1,)), Verb("mark-ready", "b", (100,)),
+                          Verb("label-on", "b", (1, "in-review")))
+# That claim ended with its branch deleted and #1 freed, so the owner may
+# still undo a's release an hour later by putting claimed back, later than
+# the branch's delete (the review of F22's third review).
+ENDED_LATER_CLAIM = LATER_CLAIM + (Verb("delete-claim-branch", M.OWNER, (1,)),
+                                   Verb("board", verbs.BOARD, (cycle.SCHEDULE, "")))
 
 # Cheapest first, since a mutant is judged by the first search that
 # catches it. The traces met F4, dealing from differing looks, on the
@@ -1867,6 +2608,28 @@ SEARCHES = (
     Search("a stranger's marker on overlapping claims", (CLAIM, Verb("claim", "b", (2,))),
            Scope(workers=("a", "b"), issues=(1, 2), people=(SAM,), waits=(25,),
                  files=((1, SHARED), (2, SHARED))), 2, issues=(1, 2)),
+    # a's claim released, b's claim on #1 ready for review: the owner may
+    # merge it, keeping its branch or not, and close and reopen #1, so each
+    # rule of the freeing is searched and not only traced; and a release
+    # before #1 was closed and reopened, which the owner may still undo;
+    # a claim made after that reopen whose branch the owner deletes while
+    # #1 stays open; and the owner's undo once that claim has ended (F22's
+    # reviews).
+    Search("a reopened issue after a release and a later claim", REOPENS, Scope(workers=("a", "b"),
+           people=(M.OWNER,), waits=(25,), reopens=True), 4),
+    Search("a release undone on a reopened issue", UNDOABLE, Scope(workers=("a", "b"), people=(M.OWNER,),
+           waits=(25,), reopens=True), 2),
+    Search("a claim since a reopen ended by deleting its branch", LATER_CLAIM, Scope(workers=("a", "b"),
+           people=(M.OWNER,), waits=(25,), reopens=True, deletes=True), 2),
+    Search("an undo after a claim since a reopen ended", ENDED_LATER_CLAIM, Scope(workers=("a", "b"),
+           people=(M.OWNER,), waits=(1,), reopens=True, deletes=True), 3),
+    # a's claim on #1 held: carol may open a pull request that is no
+    # claim's carrying #1's claim file, b may claim #2 from claude/1, and
+    # the owner merges what the check passes, so each rule of the change a
+    # pull request makes is searched and not only traced (F31).
+    Search("claim files that stray", (CLAIM, Verb("open-draft", "a", (1,))),
+           Scope(workers=("a", "b"), issues=(1, 2), people=(M.OWNER, CAROL), waits=(25,), strays=True), 3,
+           issues=(1, 2)),
 )
 CATCHERS = LANES + SEARCHES + (PICKING, LABEL_MIXES)
 
@@ -1902,7 +2665,9 @@ def violations(search):
 
 @contextlib.contextmanager
 def switched_on(mutant):
-    with mock.patch.object(mutant.module, mutant.name, mutant.replacement):
+    with contextlib.ExitStack() as patches:
+        for module, name, replacement in ((mutant.module, mutant.name, mutant.replacement), *mutant.also):
+            patches.enter_context(mock.patch.object(module, name, replacement))
         yield
 
 

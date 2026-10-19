@@ -82,6 +82,7 @@ def seeded(scenario):
     model = M.seeded(tuple(scenario.issues), writers=writers)
     model.opaque_pulls = scenario.opaque_pulls
     model.lenient_rules = scenario.lenient_rules
+    model.checked_merges = scenario.checked_merges
     for number, labels in scenario.issues.items():
         model.issues[number].labels = frozenset(labels)
     return model

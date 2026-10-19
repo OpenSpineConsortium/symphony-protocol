@@ -101,6 +101,11 @@ class Scenario(NamedTuple):
     # under a rule that does not require an up-to-date branch or under none
     # (model.RepoModel.lenient_rules, F16).
     lenient_rules: bool = False
+    # Whether GitHub refuses the merge of a pull request the required check
+    # fails (model.RepoModel.checked_merges, F30), as it does: off only for
+    # the soak's two G1 leads of 2026-10-14, which the soak met under the
+    # model before F30 (tests/test_validation_soak.py).
+    checked_merges: bool = True
 
 
 def board(at, event=cycle.SCHEDULE, ref_name="", **expect):
