@@ -7,7 +7,13 @@ wording, so a heading reworded on purpose changes nothing here; a cell is
 read by its column.
 """
 
+import re
+
 from sdlc_protocol import board
+
+NODE = re.compile(r'^  i(\d+)\["')
+EDGE = re.compile(r"^  i(\d+) (-->|-\.->|==>) i(\d+)$")
+EPIC_HEADING = re.compile(r"^### Epic #(\d+)")
 
 
 def rows(page, heading):
@@ -36,6 +42,37 @@ def columns_of(heading):
         board.BLOCKER_HEADING: board.ISSUE_COLUMNS,
         board.MERGED_HEADING: board.MERGED_COLUMNS,
     }[heading]
+
+
+def titles(page, heading):
+    """A section of issues as a map from issue number to its Title cell."""
+    return {number(r[0]): r[1] for r in rows(page, heading)}
+
+
+def dependency_blocks(page):
+    """The Dependencies section's flowcharts, by what each is headed, "goals"
+    or the epic's number: the numbers of the nodes, sorted, and the edges
+    as (from, to, arrow), where the arrow is --> for an open blocker, -.->
+    for a closed one and ==> from a goal to its epic. {} where the page
+    has no section."""
+    found, key, inside = {}, None, False
+    for line in page.splitlines():
+        if line.startswith("## "):
+            inside = line == board.DEPENDENCIES_HEADING
+            key = None
+        elif inside and line.startswith("### "):
+            key = "goals" if line == board.GOALS_HEADING else int(EPIC_HEADING.match(line).group(1))
+            found[key] = ([], set())
+        elif key is not None and (found_node := NODE.match(line)):
+            found[key][0].append(int(found_node.group(1)))
+        elif key is not None and (found_edge := EDGE.match(line)):
+            found[key][1].add((int(found_edge.group(1)), int(found_edge.group(3)), found_edge.group(2)))
+    return {key: (sorted(nodes), edges) for key, (nodes, edges) in found.items()}
+
+
+def not_drawn(page):
+    """The sentence the section carries in place of its charts, or ""."""
+    return next((line for line in page.splitlines() if line in board.NOT_DRAWN.values()), "")
 
 
 def number(cell):

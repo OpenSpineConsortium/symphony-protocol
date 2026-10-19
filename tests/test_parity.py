@@ -235,7 +235,7 @@ class FakeRepo:
         self.issues, self.pulls, self.files, self.contents = {}, {}, {}, {}
         self.checks, self.comments, self.compares = {}, {}, {}
         self.branches = set()
-        self.labels, self.sub_issues = {"todo", "epic"}, []
+        self.labels, self.sub_issues, self.blocked_by = {"todo", "epic"}, [], []
         self.refuse_sub_issues = False
         self.next_number = 100
         self.writes = []
@@ -287,6 +287,9 @@ class FakeRepo:
         if rest[1:] == ["comments"]:
             self.comments.setdefault(number, []).append(body["body"])
             return {"body": body["body"]}
+        if rest[1:] == ["dependencies", "blocked_by"]:
+            self.blocked_by.append([number, body["issue_id"]])
+            return {}
         assert rest[1:] == ["sub_issues"], rest
         if self.refuse_sub_issues:
             raise Refused(422)
@@ -501,6 +504,9 @@ OLD_IDLE_TEXT = ("idle: no change for more than a day; if this work is parked, s
 # What the board's page added or renamed since the template's tools, and the
 # template's own words for what it renamed (DeclaredDifferences pins both).
 NEW_SECTIONS = (board.OVERLAP_HEADING, board.GIVEN_HEADING)
+# Drawn only where an open epic or goal has sub-issues, which no fixture
+# here has; left out of the comparison as the two above are.
+LATER_SECTIONS = NEW_SECTIONS + (board.DEPENDENCIES_HEADING,)
 TEMPLATE_QUEUE_HEADING = "## Queue (open issues labelled todo, unclaimed)"
 WORKER_COLUMNS = "| Issue | Branch | Worker | PR | Files it touches |"
 ACCOUNT_COLUMNS = "| Issue | Branch | Account | PR | Files it touches |"
@@ -524,7 +530,7 @@ def as_the_templates(page, queue=True):
     queue the template drew by its old rule."""
     kept = []
     for part in page_parts(page):
-        if part.startswith(NEW_SECTIONS) or (part.startswith(board.QUEUE_HEADING) and not queue):
+        if part.startswith(LATER_SECTIONS) or (part.startswith(board.QUEUE_HEADING) and not queue):
             continue
         part = NOT_A_CLAIM_ROW.sub(r"| \1 | claude/\1 |", part)
         kept.append(part.replace(board.QUEUE_HEADING, TEMPLATE_QUEUE_HEADING, 1).replace(WORKER_COLUMNS,

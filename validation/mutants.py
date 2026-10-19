@@ -1408,6 +1408,33 @@ def free_though_blocked(snap, issue):
     return issue["number"] not in snap.claimed and labels.CLAIMED not in labels.label_names(issue)
 
 
+def free_though_blocked_by_open(snap, issue):
+    """team.Snapshot.free leaving GitHub's dependencies out, so the clerk
+    deals an issue an open issue blocks, which Pick has wait until every
+    open issue blocking it is closed."""
+    names = labels.label_names(issue)
+    return issue["number"] not in snap.claimed and labels.BLOCKED not in names and labels.CLAIMED not in names
+
+
+def blocked_note_silent(snap, issue):
+    """board.blocked_note saying nothing, so the row of an issue an open
+    issue blocks reads as free to take, which a worker reading the page
+    would then claim."""
+    return ""
+
+
+def dependencies_lines_empty(snap):
+    """board.dependencies_lines drawing nothing, so the page carries no
+    Dependencies section however many open epics have sub-issues."""
+    return []
+
+
+def planned_without_goals(names):
+    """labels.planned reading an epic alone, so the board's Queue lists a
+    goal, which nobody takes whole."""
+    return labels.EPIC in names
+
+
 def in_review_left_where_a_branch_stands(snapshot, number, names):
     """coordinator.freeing taking nothing off a reopened issue whose claim
     branch, or a released branch, stands, so in-review stays and the
@@ -2204,6 +2231,23 @@ MUTANTS = {
         team.Snapshot, "free", free_though_blocked,
         "G14", "Pick never has anyone take an issue labelled blocked, so the clerk deals none (F15's fifth "
                "review)"),
+    "the clerk dealing an issue blocked by an open issue": Mutant(
+        team.Snapshot, "free", free_though_blocked_by_open,
+        "G14", "an issue GitHub's dependencies say an open issue blocks waits until every open issue blocking it "
+               "is closed, so the clerk deals none (the dependencies)"),
+    "the board listing a goal in the Queue": Mutant(
+        labels, "planned", planned_without_goals,
+        "G5", "the board's Queue leaves a goal out as it leaves an epic out, since nobody takes one whole (the "
+              "dependencies)"),
+    "the rows saying nothing of an issue an open issue blocks": Mutant(
+        board, "blocked_note", blocked_note_silent,
+        "G9", "each row of the Queue, Given to workers and the Blockers says beside its title when GitHub's "
+              "dependencies say an open issue blocks the issue, so a worker reading the page does not take it (the "
+              "dependencies' review)"),
+    "the Dependencies section never drawn": Mutant(
+        board, "dependencies_lines", dependencies_lines_empty,
+        "G9", "the board draws each open epic's sub-issues and their blocked-by relations (the dependencies' "
+              "review)"),
     "the Overlaps landing a blocker after other work": Mutant(
         board, "landing_key", lambda work: (not work.ready, board.began_at(work.began), work.number),
         "G7", "a blocker lands first, since it stops everyone (F15's fifth review)"),
@@ -2557,9 +2601,42 @@ def labels_lane():
     return found
 
 
+def dependencies_lane():
+    """One board run on each shape the dependencies take on a page, checked
+    as a search checks one, since no search or trace draws a blocked-by
+    relation or labels an issue goal: #1 blocked by the open #2, labelled
+    todo, blocker or given to a, so a row of each section says so
+    (invariants.rows_say_blocked), both under epic #3, so the section draws
+    them (invariants.dependencies_drawn); and, in a fourth run, that epic
+    under goal #4 labelled todo, so the section draws the goal above its
+    epic and the Queue leaves the goal out (SPEC["goal"]), the one rule of
+    the dependencies the lane's searches, which seed no goal, never reach
+    (the dependencies' CI run)."""
+    found = {}
+    now = Verb("board", verbs.BOARD, (cycle.SCHEDULE, ""))
+    shapes = [(names, False) for names in (("todo",), ("blocker",), ("todo", "worker:a"))] + [(("todo",), True)]
+    for names, goal in shapes:
+        model = M.seeded((1, 2, 3, 4) if goal else (1, 2, 3), writers=("a", "b"))
+        model.issues[1].labels = frozenset(names)
+        model.issues[1].blocked_by = (2,)
+        model.issues[3].labels = frozenset({"epic"})
+        model.issues[3].sub_issues = (1, 2)
+        shape = f"#1 labelled {', '.join(names)}, blocked by #2, under epic #3"
+        if goal:
+            model.issues[4].labels = frozenset({labels.GOAL, "todo"})
+            model.issues[4].sub_issues = (3,)
+            shape += " under goal #4 labelled todo"
+        before = model.clone()
+        outcome = verbs.apply(model, now)
+        for v in invariants.step_checks(before, model, now, outcome):
+            found.setdefault((v.guarantee, v.detail), (shape, now))
+    return found
+
+
 LANES = (Lane("the regression traces", traces_lane),
          Lane("the guard grammar against git's answers", guard_lane),
-         Lane("dealing at every look", dealing_lane))
+         Lane("dealing at every look", dealing_lane),
+         Lane("the dependencies on the page", dependencies_lane))
 # Two lanes come after the searches, each wider and slower than any of
 # them, so a mutant reaches them only past every search: the clerk's deal
 # against Pick, from one look at every state a person can label an issue

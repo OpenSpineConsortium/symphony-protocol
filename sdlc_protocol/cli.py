@@ -114,7 +114,8 @@ def plan_board(api, sha, default_branch, now, render_only=False, say=print, star
     dated at the run's start (adapters.github.head_since)."""
     github = github_adapter()
     snap = github.snapshot(api, sha, default_branch, now, started_by)
-    for line in github.unread_claim_lines(snap) + github.pushed_refused_lines(snap) + github.began_refused_lines(snap):
+    for line in (github.unread_claim_lines(snap) + github.pushed_refused_lines(snap)
+                 + github.began_refused_lines(snap) + github.dependencies_skipped_lines(snap)):
         say(line)
     if not render_only:
         for line in github.coordinate(api, snap, now):
@@ -124,13 +125,16 @@ def plan_board(api, sha, default_branch, now, render_only=False, say=print, star
 
 def act_on_board(api, snap, event_name, ref_name, now, say=print):
     """The second half, once the page is written: rename the released
-    claims' branches, then post the comments the pull requests are owed,
-    both from the snapshot the first half read; the event and the ref are
-    passed on, though since F12's fix no comment depends on them."""
+    claims' branches, post the comments the pull requests are owed, and
+    write each open epic's flowchart into its body, all from the snapshot
+    the first half read; the event and the ref are passed on, though
+    since F12's fix no comment depends on them."""
     github = github_adapter()
     for line in github.release_claims(api, snap):
         say(line)
     for line in github.post_comments(api, board.comments_due(snap, event_name, ref_name, now)):
+        say(line)
+    for line in github.write_graphs(api, snap, board.epic_blocks(snap)):
         say(line)
 
 

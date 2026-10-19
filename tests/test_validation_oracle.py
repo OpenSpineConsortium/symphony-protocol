@@ -176,6 +176,19 @@ class Terms(unittest.TestCase):
                 self.assertEqual(oracle.given(model), {2: ["c"]})
 
 
+class TheJudgeOfADeal(unittest.TestCase):
+    def test_a_deal_of_a_blocked_issue_is_named_though_a_relation_names_an_issue_the_model_lacks(self):
+        """A model whose blocked_by names an issue it has none of, ahead of
+        an open one, is read by the open one alone, as blocked_by_open
+        reads it, so the judge reports the deal and raises nothing."""
+        model = M.seeded((1, 2))
+        model.issues[1].blocked_by = (9, 2)
+        self.assertTrue(oracle.blocked_by_open(model, 1))
+        self.assertEqual(oracle.deal_problems(model, ("a",), {"a": "take 1"}),
+                         ["dealt #1 to a though #2, open, blocks it"])
+        self.assertEqual(oracle.deal_problems(model, ("a",), {"a": "take 2"}), [])
+
+
 class WhatARunOwes(unittest.TestCase):
     def test_a_due_release_in_the_spec_s_order(self):
         model = claimed(Verb("wait", "clock", (25,)))

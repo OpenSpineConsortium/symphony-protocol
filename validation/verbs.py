@@ -361,6 +361,9 @@ FAULTS = {
     # may answer later: the run reads it once more, which is answered, and
     # dates the claim by its push.
     "pushes-500": Fault("GET", "/activity", 500, query=PUSHES),
+    # A read of an epic's sub-issues GitHub fails, which leaves the
+    # board's Dependencies section out for the run and fails nothing else.
+    "sub-issues-500": Fault("GET", "/issues/*/sub_issues", 500),
     # Every read of a claim's head's push refused for good, as for a token
     # that may not read the activity: each claim's read once and dated by
     # its committer date, which the run's log says.

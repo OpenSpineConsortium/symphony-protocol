@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from sdlc_protocol import gate, protocol_check, team  # noqa: E402
 from sdlc_protocol.adapters.memory import MemoryWorld  # noqa: E402
+from sdlc_protocol import board  # noqa: E402
 from validation import cycle, model as M, page  # noqa: E402
 from validation.clerk import ModelClient  # noqa: E402
 
@@ -162,6 +163,45 @@ class S10TheClerksPlanning(unittest.TestCase):
                 self.assertEqual(page.given(record.page), given)
                 self.assertEqual(page.queue(record.page), queued)
                 self.assertNotIn(1, page.queue(record.page))
+
+    def test_a_plan_s_dependencies_become_blocked_by_relations_the_board_draws_and_the_clerk_waits_on(self):
+        """A plan with depends_on: the clerk writes GitHub's relation, the
+        epic's plan section says which task blocks which, the board's
+        Dependencies section draws the epic and says the blocked task is
+        blocked in Given to workers, the clerk deals the blocked task to
+        nobody until its blocker closes, and the epic's body carries the
+        chart between the markers."""
+        plan = {"plan": "in order", "tasks": [
+            {"title": "first", "owner": "a", "files": [], "body": "one"},
+            {"title": "second", "owner": "b", "files": [], "body": "two", "depends_on": [1]}]}
+        model = epic_model()
+        client = ModelClient(model)
+        self.assertEqual(team.seed(client, 1, plan, ["a", "b"]), "seeded 2 3")
+        self.assertEqual((model.issues[1].sub_issues, model.issues[3].blocked_by), ((2, 3), (2,)))
+        self.assertIn("- [ ] #3 second (worker:b), blocked by #2\n", model.issues[1].body)
+        self.assertEqual(team.deals(ModelClient(model), ["a", "b"]), {"a": "take 2", "b": "none"})
+        record = cycle.board_run(model)
+        self.assertEqual(page.given(record.page), {2: ["a"], 3: ["b"]})
+        self.assertEqual(page.titles(record.page, board.GIVEN_HEADING)[3], "second (blocked by #2)")
+        self.assertEqual(page.dependency_blocks(record.page), {1: ([2, 3], {(2, 3, "-->")})})
+        self.assertIn(board.GRAPH_MARKER, model.issues[1].body)
+        self.assertIn("<!-- team:plan -->", model.issues[1].body)
+        self.assertEqual(record.exit_code, 0)
+        self.assertEqual([line for line in record.lines if "graph" in line], ["epic #1: graph written"])
+        again = cycle.board_run(model)
+        self.assertEqual([c.method for c in again.calls if c.method != "GET"], [], "nothing moved, nothing written")
+        model.issues[2].state = "closed"
+        self.assertEqual(team.deals(ModelClient(model), ["a", "b"]), {"a": "none", "b": "take 3"})
+        record = cycle.board_run(model)
+        self.assertEqual(page.dependency_blocks(record.page), {1: ([2, 3], {(2, 3, "-.->")})})
+        self.assertEqual(page.titles(record.page, board.GIVEN_HEADING)[3], "second")
+
+    def test_a_plan_whose_dependencies_do_not_hold_opens_nothing(self):
+        model = epic_model()
+        plan = {"plan": "p", "tasks": [{"title": "t", "owner": "a", "files": [], "body": "b", "depends_on": [1]}]}
+        with self.assertRaises(ValueError):
+            team.seed(ModelClient(model), 1, plan, ["a"])
+        self.assertEqual(list(model.issues), [1])
 
     def test_the_tasks_fit_their_workers_areas_when_dealt(self):
         model = epic_model()

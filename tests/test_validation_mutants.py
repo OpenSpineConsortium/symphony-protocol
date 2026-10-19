@@ -336,6 +336,18 @@ TRACES = {
     # team's deal gives a.
     "the clerk dealing blockers in number order": dealing.Case({1: ("todo",), 2: ("blocker",)}, 2, "none", ("a",)),
     "the clerk dealing an issue labelled blocked": dealing.Case({1: ("blocked", "todo")}, 1, "none", ("a", "b")),
+    "the clerk dealing an issue blocked by an open issue": dealing.Case({1: ("todo",), 2: ("todo",)}, 2, "none",
+                                                                       ("a", "b"), blocked_by=((1, 2),)),
+    # The Queue leaving a goal out is caught by the lane below, on its
+    # fourth run, since no search seeds a goal: the trace that labels the
+    # seeded issue goal and runs the board catches the mutant here, but
+    # the lane plays only the regression traces, so its first CI run on
+    # the dependencies let this mutant slip (197 of 198).
+    "the board listing a goal in the Queue": "the dependencies on the page",
+    # The dependencies' review: two rules of the page no search or trace
+    # draws a relation for, caught by the lane that does.
+    "the rows saying nothing of an issue an open issue blocks": "the dependencies on the page",
+    "the Dependencies section never drawn": "the dependencies on the page",
     "the Overlaps landing a blocker after other work": (LATER_BLOCKER + [BOARD], SHARED),
     "a released claim carried by its holder": dealing.Case({1: ("todo",)}, 1, "released", ("a", "b")),
     "a Worker line naming nobody taken for a name": dealing.Case({1: ("worker:b",)}, 1, "blank", ("a", "b")),
@@ -516,13 +528,16 @@ class TheLane(unittest.TestCase):
         as a script's name, eval's words left unread, trap's action left
         unread, a shell's standard input left unread, a here-string left
         off standard input, what a pipe carries left unread and source of
-        standard input read as a file's, 233. 206
-        passed 200, so the bound was widened to 250 with F29's fix, as
+        standard input read as a file's, 233; and the dependencies two,
+        the clerk dealing an issue an open issue blocks and the board
+        listing a goal in the Queue, 235; and their review's two, the rows
+        saying nothing of an issue an open issue blocks and the
+        Dependencies section never drawn, 237. 206 passed 200, so the bound was widened to 250 with F29's fix, as
         F23's fix widened it from 150: the lane grows by a mutant for each
         rule a fix adds, and the guard's reading of bash is the part of the
         library that grows most."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
-        self.assertEqual(len(mutants.MUTANTS), 233)
+        self.assertEqual(len(mutants.MUTANTS), 237)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

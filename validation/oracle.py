@@ -57,6 +57,11 @@ SPEC = {
              "shown under Given to workers until the worker claims it.",
     "todo": "An issue labelled todo and shown unclaimed on the board is free to take as Pick says.",
     "epic": "The board's Queue leaves an epic out, since nobody takes one whole.",
+    "goal": "the board's Queue leaves a goal out as it leaves an epic out",
+    "blocked by": "An issue GitHub's dependencies say is blocked by an open issue, the blocked-by relation the issue's "
+                  "page shows under Relationships and the issue's dependency summary counts, is not free wherever it "
+                  "is listed and whatever its labels say: it waits until every open issue blocking it is closed, and "
+                  "the board says so beside its title.",
     "blockers": "The board lists every open issue labelled blocker under Blockers, claimed or not",
     "idle": "A claim whose branch has had no commit for more than 24 hours is released by the coordinator, unless "
             "it is finished",
@@ -230,6 +235,7 @@ FILES_HEADING = "## Files to touch"
 # owner's merge (verbs.passes_check) read it alike.
 CLOSES = r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#%d\b"
 TODO, CLAIMED, IN_REVIEW, BLOCKER, EPIC, BLOCKED = "todo", "claimed", "in-review", "blocker", "epic", "blocked"
+GOAL = "goal"
 WORKER_SPELLINGS = ("worker:", "account:", "agent:")
 # The lines of a claim file that name its worker (SPEC["worker line"]),
 # and a note in parentheses after the name, which names nobody
@@ -579,15 +585,32 @@ def held_numbers(model):
     return {n for ref in model.refs if (n := claim_number(ref)) is not None and not released(model, n)}
 
 
+def planned(labels):
+    """Whether the labels mark an issue the coordinator plans and nobody
+    takes whole: an epic (SPEC["epic"]) or a goal (SPEC["goal"])."""
+    return EPIC in labels or GOAL in labels
+
+
+def blocked_by_open(model, number):
+    """Whether GitHub's dependencies say an open issue blocks the issue
+    (SPEC["blocked by"]): one of the issues its blocked-by relation names
+    is open. An issue blocked by closed issues alone is blocked by
+    nothing."""
+    issue = model.issues.get(number)
+    return issue is not None and any(n in model.issues and model.issues[n].state == "open" for n in issue.blocked_by)
+
+
 def queue(model):
     """The Queue: open issues labelled todo, unclaimed, given to no worker
-    and no epic (SPEC["todo"], SPEC["given"], SPEC["epic"]). Until F15's
-    fourth review the oracle listed an epic labelled todo, which no search
-    seeded, and the library has always left out; the labels lane met it
-    (mutants.labels_lane), and the spec's epic line now says so."""
+    and neither epic nor goal (SPEC["todo"], SPEC["given"], SPEC["epic"],
+    SPEC["goal"]); an issue an open issue blocks stays listed, the row
+    saying so (SPEC["blocked by"]). Until F15's fourth review the oracle
+    listed an epic labelled todo, which no search seeded, and the library
+    has always left out; the labels lane met it (mutants.labels_lane),
+    and the spec's epic line now says so."""
     held = held_numbers(model)
     return sorted(n for n, i in model.issues.items() if i.state == "open" and TODO in i.labels
-                  and EPIC not in i.labels and CLAIMED not in i.labels and n not in held
+                  and not planned(i.labels) and CLAIMED not in i.labels and n not in held
                   and not workers_named(i.labels))
 
 
@@ -1107,18 +1130,20 @@ def carries(model, worker):
 
 
 def takeable(model, number):
-    """Whether Pick lets anyone take the issue: open, no epic and not
-    labelled blocked (SPEC["never"]), and nobody's claim, by neither a claim
-    branch, a claim file on the default branch (SPEC["another's"]) nor the
-    label claimed, which the board's Queue and Given to workers leave out.
-    A released claim's branch counts until the board renames it, though
-    the board lists its issue again: Pick reads the branch on origin as
-    another worker's, whatever the labels say, and the claim it would push
-    is refused until the rename (SPEC["rename first"]). Until F18's review
-    the oracle let anyone take such an issue, which no lane reached."""
+    """Whether Pick lets anyone take the issue: open, neither epic nor goal
+    and not labelled blocked (SPEC["never"], SPEC["goal"]), not blocked by
+    an open issue through GitHub's dependencies (SPEC["blocked by"]), and
+    nobody's claim, by neither a claim branch, a claim file on the default
+    branch (SPEC["another's"]) nor the label claimed, which the board's
+    Queue and Given to workers leave out. A released claim's branch counts
+    until the board renames it, though the board lists its issue again:
+    Pick reads the branch on origin as another worker's, whatever the
+    labels say, and the claim it would push is refused until the rename
+    (SPEC["rename first"]). Until F18's review the oracle let anyone take
+    such an issue, which no lane reached."""
     issue = model.issues.get(number)
-    return (issue is not None and issue.state == "open" and EPIC not in issue.labels
-            and BLOCKED not in issue.labels and CLAIMED not in issue.labels
+    return (issue is not None and issue.state == "open" and not planned(issue.labels)
+            and BLOCKED not in issue.labels and CLAIMED not in issue.labels and not blocked_by_open(model, number)
             and branch_of(number) not in model.refs and claim_file_text(model, MAIN, number) is None)
 
 
@@ -1206,7 +1231,11 @@ def deal_problems(model, team, moves):
             continue
         place, numbers = pick(model, member, {n for m, n in takes.items() if m != member})
         alone = given_alone(model, member)
-        if member in takes and takes[member] not in numbers:
+        if member in takes and blocked_by_open(model, takes[member]):
+            blocker = next(n for n in model.issues[takes[member]].blocked_by
+                           if n in model.issues and model.issues[n].state == "open")
+            problems.append(f"dealt #{takes[member]} to {member} though #{blocker}, open, blocks it")
+        elif member in takes and takes[member] not in numbers:
             problems.append(f"{member} takes #{takes[member]}, where Pick has it take from "
                             f"{place or 'nothing'} {list(numbers)}")
         elif member in takes and alone and takes[member] not in alone:
