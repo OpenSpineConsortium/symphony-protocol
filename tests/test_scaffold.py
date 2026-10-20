@@ -12,9 +12,10 @@ a push to main that changes the version or what tags it, never from
 another branch and never two at once; its plan must list what is due, each
 release with its commit, tell the owner, and stop at a tag made by hand
 anywhere but where the workflow would have made it, and its job release
-must run in the environment release only when something is due, must ask
-GitHub for the run's approvals as its first step and tag nothing without
-one for release, must run nothing from the repository with a token that
+must run only when something is due, in the environment release in
+Developer mode and in one with no rule otherwise, must in Developer mode
+ask GitHub for the run's approvals as its first step and tag nothing
+without one for release, must run nothing from the repository with a token that
 writes contents and reads actions and nothing else, must push nothing,
 must make a tag only where the script found one missing, so none is moved,
 and must read each tag on GitHub before it releases it, stopping at one
@@ -587,11 +588,20 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertIn("          fetch-depth: 0\n          persist-credentials: false\n", self.plan)
 
     def test_the_job_that_tags_runs_in_the_environment_release_and_only_when_something_is_due(self):
-        """The environment's required reviewer is the owner, so GitHub starts
-        the job only on the owner's approval; with nothing due, nobody is
-        asked."""
+        """In Developer mode the environment's required reviewer is the
+        owner, so GitHub starts the job only on the owner's approval; with
+        the mode off the job runs in an environment GitHub makes with no
+        rule, and releases at once (the owner's word of 2026-10-20). The
+        mode is a repository variable the expressions read, so no shell
+        step sees or sets it; with nothing due, nobody is asked."""
         self.assertIn("    needs: plan\n    if: needs.plan.outputs.due != ''\n", self.release)
-        self.assertIn("    environment: release\n", self.release)
+        self.assertIn("    environment: ${{ vars.SYMPHONY_DEVELOPER_MODE == 'on' && 'release' || "
+                      "'release-unattended' }}\n", self.release)
+        reads = [line for line in self.text.splitlines() if "SYMPHONY_DEVELOPER_MODE" in line and not
+                 line.lstrip().startswith("#")]
+        self.assertEqual([line.split(":")[0].strip() for line in reads], ["DEVELOPER_MODE", "environment", "if"])
+        self.assertIn('          DEVELOPER_MODE: ${{ vars.SYMPHONY_DEVELOPER_MODE }}\n', self.plan)
+        self.assertIn('if [ "${DEVELOPER_MODE:-}" = on ]; then mode=developer; else mode=unattended; fi\n', self.plan)
 
     def test_its_first_step_tags_nothing_unless_this_run_was_approved_in_release(self):
         """GitHub creates an environment a job names that does not exist,
@@ -601,6 +611,7 @@ class ReleaseWorkflow(unittest.TestCase):
         fails the run with the one line that says what to set up."""
         first = steps_of(self.release)[0]
         self.assertIn("- name: Go on only if the owner approved this run in the environment release", first)
+        self.assertIn("        if: ${{ vars.SYMPHONY_DEVELOPER_MODE == 'on' }}\n", first)
         self.assertIn("RUN_ID: ${{ github.run_id }}", first)
         self.assertIn("set -eu", first)
         self.assertIn('approvers="$(gh api "repos/$REPO/actions/runs/$RUN_ID/approvals" --jq \'', first)
@@ -617,8 +628,10 @@ class ReleaseWorkflow(unittest.TestCase):
         told to run anyway or to let a failure pass: continue-on-error on
         the approval step, or an if such as always() on the tagging step,
         would tag with no approval. The job's one if is the one that runs
-        it only when something is due."""
-        self.assertEqual(keys_that_skip_or_forgive(self.release), [])
+        it only when something is due, and the one step if is the approval
+        step's, which Developer mode alone switches on."""
+        self.assertEqual(keys_that_skip_or_forgive(self.release),
+                         ["        if: ${{ vars.SYMPHONY_DEVELOPER_MODE == 'on' }}"])
         self.assertEqual(re.findall(r"(?m)^    if: .*$", self.release), ["    if: needs.plan.outputs.due != ''"])
         self.assertNotIn("continue-on-error", self.text)
 
@@ -642,7 +655,7 @@ class ReleaseWorkflow(unittest.TestCase):
                                     r'\s+elif \[ -n "\$tagged" \] && [^\n]*\n[^\n]*\n\s+exit 1\n'
                                     r'\s+else\n'
                                     r'\s+echo "\$tag \$commit\$\{tagged:\+ \$tagged\}" >> "\$due"\n')
-        self.assertIn('python3 scripts/release.py summary < "$due" >> "$GITHUB_STEP_SUMMARY"', self.plan)
+        self.assertIn('python3 scripts/release.py summary "$mode" < "$due" >> "$GITHUB_STEP_SUMMARY"', self.plan)
         self.assertIn('echo "due<<END_OF_DUE"\n            cat "$due"\n            echo "END_OF_DUE"\n', self.plan)
         self.assertIn("DUE: ${{ needs.plan.outputs.due }}", self.release)
         self.assertIn('printf \'%s\\n\' "$DUE" > "$list"', self.release)
