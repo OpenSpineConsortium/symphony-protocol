@@ -90,8 +90,10 @@ class ThePage(unittest.TestCase):
     def test_says_a_change_reaches_the_consumers_only_by_a_release_the_owner_approves(self):
         """The sync no longer carries main's head: the map draws the release
         between the merge and the consumers' pull requests, and says so."""
-        self.assertIn("  merge --> release[\"a release, once the owner approves it\"]", self.text)
-        self.assertIn("once the owner approves the run in the environment `release`, and not before", self.text)
+        self.assertIn("  merge --> release[\"a release, on the merge, or once the owner approves it in Developer "
+                      "mode\"]", self.text)
+        self.assertIn("or, in Developer mode (the repository variable `SYMPHONY_DEVELOPER_MODE` set to `on`), once "
+                      "the owner approves the run in the environment `release`, and not before", self.text)
         self.assertIn("carries the newest published release, never main's head", self.text)
         self.assertNotIn("vendors the new main", self.text)
 
@@ -101,7 +103,7 @@ class ThePage(unittest.TestCase):
         the start; and the consumer's copy has the change before the
         release, which the page says rather than promising otherwise."""
         self.assertIn("this pull request raises the version from the start", self.text)
-        self.assertIn("the one way a change reaches a consumer before the owner's approval", self.text)
+        self.assertIn("the one way a change reaches a consumer before its release", self.text)
         self.assertNotIn("this pull request merges, raising the version", self.text)
 
 

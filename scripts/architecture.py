@@ -153,7 +153,7 @@ def travel_chart(eco):
         "flowchart LR",
         "  pr[\"pull request on symphony-protocol\"] --> checks[\"check, and downstream for each consumer\"]",
         "  checks --> merge[\"merge to main\"]",
-        "  merge --> release[\"a release, once the owner approves it\"]",
+        "  merge --> release[\"a release, on the merge, or once the owner approves it in Developer mode\"]",
         f"  release --> pulls[\"sync: the pull request {sync.BRANCH} in each consumer\"]",
         "  pulls --> theirs[\"the consumer's own check\"]",
         "  theirs --> lands[\"auto-merge, or the owner where there is none\"]",
@@ -188,7 +188,8 @@ def travel(eco):
         "consumer and the consumer's own check run on it, so a change that would break one is red "
         "before it merges.",
         "2. The owner merges it to main. Where it raises the version, its merge is a release: "
-        "`.github/workflows/release.yml` tags it and publishes it once the owner approves the run in the "
+        "`.github/workflows/release.yml` tags it and publishes it on the merge, or, in Developer mode (the "
+        "repository variable `SYMPHONY_DEVELOPER_MODE` set to `on`), once the owner approves the run in the "
         "environment `release`, and not before.",
         "3. The sync workflow (`.github/workflows/sync.yml`) follows each Release run that succeeds, and runs "
         "weekly and by hand; every run carries the newest published release, never main's head, into each "
@@ -211,8 +212,8 @@ def travel(eco):
         f"it: it rebuilds `{sync.BRANCH}` from the consumer's main on every run, so a fix pushed there is "
         "lost. The consumer goes first: this pull request raises the version from the start, a pull request "
         "of the consumer's own vendors its branch and answers the change, and merges, ahead of the release, "
-        "which is the one way a change reaches a consumer before the owner's approval; the downstream job "
-        "here then turns green, this pull request merges, and once the owner approves its release the sync "
+        "which is the one way a change reaches a consumer before its release; the downstream job "
+        "here then turns green, this pull request merges, and once its release is made the sync "
         "finds that consumer up to date. README.md, \"How a change reaches the other repositories\", has "
         "the steps.",
     ]

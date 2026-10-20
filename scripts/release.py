@@ -154,15 +154,25 @@ def made(commit, tagged):
     return f"tags {commit} and publishes its release"
 
 
-def summary(due):
-    """What the run's summary tells the owner before the approval: the
-    releases the run makes once approved, oldest first, or that there are
-    none, when the job that waits for the approval does not run."""
+MODES = ("developer", "unattended")
+
+
+def summary(due, mode="developer"):
+    """What the run's summary tells the owner: the releases the run makes,
+    oldest first, once approved in Developer mode or at once without it,
+    or that there are none, when the job release does not run."""
+    if mode not in MODES:
+        raise ValueError(f"the mode is one of {', '.join(MODES)}, not {mode!r}")
     if not due:
         return ("## Nothing to release\n\n"
                 "Every version main carries, back to the newest tag, has its release, so this run asks for "
                 "no approval and tags nothing.\n")
     lines = [f"- {tag}: {made(commit, tagged)}" for tag, commit, tagged in due]
+    if mode == "unattended":
+        return ("## Releasing\n\n"
+                "Developer mode is off (the repository variable SYMPHONY_DEVELOPER_MODE is not on; README.md, "
+                "Releases), so the job release makes these releases now, oldest first, with no approval, and "
+                "the sync then carries the newest release into every consumer:\n\n" + "\n".join(lines) + "\n")
     return ("## Waiting for the owner's approval\n\n"
             "Once the owner approves this run in the environment release, with Review deployments at the top "
             "of its page, the job release makes these releases, oldest first, and the sync then carries the "
@@ -177,14 +187,16 @@ def arguments(argv):
     checking = sub.add_parser("check-tag", help="nothing when the commit is where the tag stands; else why not")
     checking.add_argument("tag")
     checking.add_argument("commit", help="the commit the tag names, or an empty word when it names none")
-    sub.add_parser("summary", help="the summary's words for the plan's lines on stdin")
+    summarising = sub.add_parser("summary", help="the summary's words for the plan's lines on stdin")
+    summarising.add_argument("mode", nargs="?", choices=MODES, default="developer",
+                             help="developer, the owner approves the run; unattended, the job releases at once")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = arguments(argv)
     if args.command == "summary":
-        sys.stdout.write(summary(due_from(sys.stdin.read())))
+        sys.stdout.write(summary(due_from(sys.stdin.read()), args.mode))
         return 0
     if args.command == "check-tag":
         why = misplaced(args.tag, args.commit, ROOT)
