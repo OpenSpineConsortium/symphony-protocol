@@ -360,6 +360,61 @@ class Overlapping(Remote):
         self.assertEqual(code, 0, out.getvalue() + err.getvalue())
         self.assertIn("need not bring it in", out.getvalue())
 
+    def checkout_as_actions_does(self, sha):
+        """A clone as actions/checkout makes one on a pull_request event:
+        the test merge alone, one commit deep, and no branch at all."""
+        shallow = str(Path(self.tmp.name) / f"actions-{sha[:7]}")
+        git(self.tmp.name, "init", "--quiet", shallow)
+        quiet(shallow)
+        git(shallow, "remote", "add", "origin", self.bare)
+        git(shallow, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", f"+{sha}:refs/remotes/pull/1/merge")
+        git(shallow, "checkout", "--quiet", "--detach", sha)
+        self.assertEqual(git(shallow, "rev-parse", "--is-shallow-repository"), "true")
+        self.assertEqual(git(shallow, "rev-parse", "--verify", "--quiet", "origin/main", check=False), "")
+        return shallow
+
+    def pull_merge(self, branch="work"):
+        """GitHub's refs/pull/N/merge for the branch, against main as the
+        remote has it now, made and pushed from the seed."""
+        git(self.seed, "fetch", "--quiet", "origin")
+        git(self.seed, "checkout", "--quiet", "--detach", "origin/main")
+        git(self.seed, "merge", "--quiet", "--no-edit", f"origin/{branch}")
+        sha = git(self.seed, "rev-parse", "HEAD")
+        git(self.seed, "push", "--quiet", "origin", f"{sha}:refs/pull/1/merge")
+        git(self.seed, "checkout", "--quiet", "main")
+        return sha
+
+    def run_in(self, repo, *args, mode="enforce"):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.run_locks(["--repo", repo, *args], environ={"SYMPHONY_LOCKS": mode})
+        return code, out.getvalue() + err.getvalue()
+
+    def test_the_checkout_actions_makes_judges_the_branch_against_main_as_it_now_stands(self):
+        self.branch(lambda text: text.replace("* 2", "* 3"))  # g, which reads f
+        git(self.a, "push", "--quiet", "origin", "work")
+        merge = self.pull_merge()
+        self.main_moves(lambda text: text.replace("x + 1", "x + 2"))  # f, after the merge was made
+        code, said = self.run_in(self.checkout_as_actions_does(merge), "overlap", "--base", "origin/main")
+        self.assertEqual(code, 1, said)
+        self.assertIn("edited m.py#f since this change's base, which this change builds on", said)
+
+    def test_the_checkout_actions_makes_needs_nothing_while_main_stands_where_the_merge_was_made(self):
+        self.branch(lambda text: text.replace("* 2", "* 3"))
+        git(self.a, "push", "--quiet", "origin", "work")
+        merge = self.pull_merge()
+        code, said = self.run_in(self.checkout_as_actions_does(merge), "overlap", "--base", "origin/main")
+        self.assertEqual(code, 0, said)
+        self.assertIn("need not bring it in", said)
+
+    def test_the_checkout_actions_makes_needs_nothing_where_main_moved_elsewhere(self):
+        self.branch(lambda text: text.replace("return 0", "return 1"))  # h, which reads nothing
+        git(self.a, "push", "--quiet", "origin", "work")
+        merge = self.pull_merge()
+        self.main_moves(lambda text: text.replace("x + 1", "x + 2"))  # f, which h neither edits nor calls
+        code, said = self.run_in(self.checkout_as_actions_does(merge), "overlap", "--base", "origin/main")
+        self.assertEqual(code, 0, said)
+
     def test_a_file_read_whole_meets_on_any_edit(self):
         self.main_moves(lambda text: "one\n", path="notes.txt")
         git(self.a, "checkout", "--quiet", "-B", "work", "origin/main")

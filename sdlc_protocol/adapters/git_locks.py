@@ -284,10 +284,10 @@ def fork_points(repo, base, head):
     finds one."""
     for deepening in (0,) + DEEPENINGS:
         if deepening:
-            shallow = git(repo, "rev-parse", "--is-shallow-repository")
-            if shallow.stdout.strip() != "true":
+            shallow = git(repo, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+            if not shallow and resolvable(repo, base) and resolvable(repo, head):
                 break
-            deepen(repo, base, deepening)
+            deepen(repo, deepening, base, head)
         found = git(repo, "merge-base", "--all", base, head)
         if found.returncode == 0 and found.stdout.split():
             return found.stdout.split()
@@ -296,19 +296,31 @@ def fork_points(repo, base, head):
     raise LocksFailed(f"{base} and {head} share no history here: {why}")
 
 
-def deepen(repo, base, depth):
-    """Deepen the clone's own refs by `depth`, and the base's branch too
-    where `base` names one on a remote (origin/main), since a clone made
-    for one branch, as actions/checkout's is, fetches no other by itself."""
-    remote, _, branch = base.partition("/")
-    git(repo, "fetch", "--quiet", "--no-tags", f"--deepen={depth}", "origin")
-    if branch and git(repo, "remote", "get-url", remote).returncode == 0:
-        git(repo, "fetch", "--quiet", "--no-tags", f"--deepen={depth}", remote,
-            f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}")
+def deepen(repo, depth, *revs):
+    """Deepen each of `revs` by `depth`: a branch on a remote (origin/main)
+    by its name, which also brings it where the clone has it not at all,
+    since actions/checkout on a pull_request event fetches the test merge
+    alone, one commit deep, and no branch; anything else by the commit it
+    names, so the test merge's own parent is fetched as the protocol check
+    fetches the pull request's own commits. Nothing else is fetched: a
+    repository with hundreds of branches would otherwise be brought whole."""
+    for rev in revs:
+        remote, _, branch = rev.partition("/")
+        if branch and git(repo, "remote", "get-url", remote).returncode == 0:
+            git(repo, "fetch", "--quiet", "--no-tags", f"--deepen={depth}", remote,
+                f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}")
+            continue
+        sha = git(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}").stdout.strip()
+        if sha:
+            git(repo, "fetch", "--quiet", "--no-tags", f"--deepen={depth}", "origin", sha)
 
 
 def fork_point(repo, base, head):
     return fork_points(repo, base, head)[0]
+
+
+def resolvable(repo, rev):
+    return bool(git(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}").stdout.strip())
 
 
 def added(repo, base, head):
@@ -374,8 +386,16 @@ def overlap(repo, base, head):
     the default branch has not moved past the fork at all. The reads of a
     Python file written whole come from the whole file, since such an
     edit builds on whatever the file does."""
-    head, tip = own_change(repo, base, head)
-    if tip in fork_points(repo, base, head):
+    # The base is read first, since the checkout may not have it at all
+    # until fork_points has fetched it, and own_change tells the test
+    # merge by the base's tip; a merge made against a tip the base has
+    # since moved past is judged as itself, which gives what the base
+    # did since the merge was made against the merge's own change.
+    forks = fork_points(repo, base, head)
+    own, tip = own_change(repo, base, head)
+    if own != head:
+        head, forks = own, fork_points(repo, base, own)
+    if tip in forks:
         return []
     moved = plan_at(repo, base, touched(repo, head, base))
     change = plan_at(repo, head, touched(repo, base, head))
