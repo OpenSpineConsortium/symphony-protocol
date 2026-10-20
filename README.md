@@ -22,6 +22,8 @@ The claim protocol for pull-request-gated Claude agents, as one Python package w
 
 The rules are plain functions and dataclasses over what they are handed, and the clock is an argument. Only `adapters/` calls GitHub or changes a git repository, and `cli.py` reads the environment and the event; the other places that look outside are small and named: `guard.branches` asks git which branch is checked out in the clone a push runs in, `guard.claim_file_reader` asks it there, before a lease push, whose claim the branch on origin and the branch pushed carry, `guard.placed_commands` asks the file system whether the directory a cd names is there, `guard.joined` reads where a `~` leads, from HOME or the password database (os.path.expanduser), and `board.write_if_changed` writes STATE.md. That is what lets the same rules run in a GitHub workflow, in a benchmark's hub and in a test.
 
+To learn the protocol by running it, open a notebook in [notebooks/](notebooks/README.md): each opens in Google Colab with one click and needs no sign-in or key. [Open the demo in Colab](https://colab.research.google.com/github/OpenSpineConsortium/symphony-protocol/blob/main/notebooks/demo.ipynb).
+
 Beside the package, [validation/](validation/README.md) holds the design of a harness that validates these rules against the spec, with the findings it turned up, and the prototype that design measured; nothing there is part of the package or vendored into a consumer; its tests, tests/test_validation_*.py, run in the required check, .github/workflows/validate.yml runs its mutation lane and, weekly, its deep lane, and .github/workflows/canary.yml runs its live canary (scripts/canary.py) on OpenSpineConsortium/symphony-protocol-canary monthly.
 
 ## The four consumers

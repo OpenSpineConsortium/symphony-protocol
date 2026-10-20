@@ -1,0 +1,46 @@
+# The Colab notebooks under notebooks/ run end to end, as a reader's Colab
+# would run them (scripts/run_notebook.py): every code cell in order, each
+# against the released library it clones. It runs on a pull request or push
+# that changes a notebook or the runner, by hand, and weekly, since the
+# lessons clone the newest release and a new release could break one with
+# no change here. It needs no secret and is not a required check, so a
+# GitHub outage while cloning never blocks a merge.
+name: Notebooks
+
+on:
+  pull_request:
+    paths:
+      - "notebooks/**"
+      - "scripts/run_notebook.py"
+      - ".github/workflows/notebooks.yml"
+  push:
+    paths:
+      - "notebooks/**"
+      - "scripts/run_notebook.py"
+      - ".github/workflows/notebooks.yml"
+  schedule:
+    - cron: "37 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notebooks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run every notebook's cells, as Colab would
+        run: python3 scripts/run_notebook.py notebooks/*.ipynb
