@@ -13,6 +13,7 @@ Each release waits for the owner's approval, given in the browser in the environ
 - spec/PROTOCOL.md: the protocol in prose, with no placeholders; it ships in the wheel as sdlc_protocol/spec/PROTOCOL.md.
 - sdlc_protocol/vendoring.py: the record a copy carries and its check; it imports nothing from the package and nothing outside the standard library, since a consumer runs it as a script inside a copy that may hold only a few modules.
 - ecosystem.json: the consumers, their copies and their checks; ECOSYSTEM.md: the map drawn from it and from the package's imports, which `python3 scripts/architecture.py` rewrites after a change to either.
+- notebooks/: the Colab notebooks, generated in symphony-template from its lessons (`python3 tools/living_docs.py publish`) and run here by scripts/run_notebook.py in .github/workflows/notebooks.yml; edit the lesson there, never a notebook here.
 - tests/: one test module per module, test_<module>.py, the scripts' included, with fixtures under tests/fixtures/.
 - scripts/check.sh: the checks; scripts/vendor.py (and its wrapper vendor.sh): the copy into a consumer and its record; scripts/sync.py: the logic the sync and downstream jobs call; scripts/release.py: which versions the release workflow tags, where a tag stands, which both workflows check, and what its summary tells the owner before the approval; scripts/ecosystem.py: reading ecosystem.json and the imports, shared by the others.
 
