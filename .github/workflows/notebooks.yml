@@ -11,11 +11,13 @@ on:
   pull_request:
     paths:
       - "notebooks/**"
+      - "lessons/**"
       - "scripts/run_notebook.py"
       - ".github/workflows/notebooks.yml"
   push:
     paths:
       - "notebooks/**"
+      - "lessons/**"
       - "scripts/run_notebook.py"
       - ".github/workflows/notebooks.yml"
   schedule:

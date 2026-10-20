@@ -5,7 +5,8 @@
 # take only ASCII with LF endings, so a stray byte here breaks every
 # consumer's next sync. Then ECOSYSTEM.md, the map of the library and its
 # consumers, which must be what scripts/architecture.py draws from
-# ecosystem.json and the package today. Then the whole test suite, which
+# ecosystem.json and the package today. Then the lessons' shape and
+# notebooks. Then the whole test suite, which
 # the consumers trust in place of their own tests of these rules.
 set -eu
 cd "$(dirname "$0")/.."
@@ -35,6 +36,10 @@ sys.exit(1 if problems else 0)
 EOF
 
 python3 scripts/architecture.py --check
+
+# The lessons are listed and well formed and their notebooks are what
+# scripts/lessons.py makes of them; the suite below runs their commands.
+python3 scripts/lessons.py check
 
 python3 -m unittest discover -s tests -v
 
