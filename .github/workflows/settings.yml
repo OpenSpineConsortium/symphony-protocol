@@ -3,9 +3,11 @@
 # GITHUB_TOKEN cannot administer rulesets. With the rule on, every merge
 # made each other ready pull request behind and its check ran again on a
 # branch that changed nothing it touched; the owner asked on 2026-10-20 for
-# it off everywhere. Every other rule is kept as it is. It runs when this
-# file changes on main and by hand, and changes nothing where the rule is
-# already off.
+# it off everywhere. Every other rule is kept as it is. It also turns on
+# "Allow auto-merge" and "Automatically delete head branches", so a pull
+# request merges itself once its check is green and its branch goes away,
+# with no step by hand (the owner's rule of 2026-10-20). It runs when this
+# file changes on main and by hand, and changes nothing that is set already.
 name: Settings
 
 on:
@@ -59,3 +61,16 @@ jobs:
               echo "ruleset $id: up-to-date rule off already" | tee -a "$GITHUB_STEP_SUMMARY"
             fi
           done
+      - name: Turn auto-merge and branch deletion on
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$REPO" --jq '"\(.allow_auto_merge) \(.delete_branch_on_merge)"')
+          if [ "$current" = "true true" ]; then
+            echo "auto-merge and branch deletion: on already" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh api --method PATCH "repos/$REPO" -F allow_auto_merge=true -F delete_branch_on_merge=true --silent
+            echo "auto-merge and branch deletion: turned on (were $current)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
