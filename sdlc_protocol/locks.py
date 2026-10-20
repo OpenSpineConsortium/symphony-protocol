@@ -164,6 +164,18 @@ def conflicts(entries, wanted):
     return [(want, held) for want in wanted for held in entries if conflict(held, want)]
 
 
+def overlap(moved, change):
+    """Where what the default branch did since a change's base meets what
+    the change does: each pair of an entry of `moved`, the plan of the
+    default branch's own edits since the base, and an entry of `change`,
+    the change's plan, whose keys meet with a write on either side. Two
+    reads never meet, so a change that only builds on what main also
+    builds on needs nothing from main; any other meeting is one the
+    change's own check never saw, and is why the change brings main in."""
+    return [(ours, theirs) for theirs in moved for ours in change
+            if WRITE in (ours.mode, theirs.mode) and keys_meet(ours.key, theirs.key)]
+
+
 def acquire(entries, wanted, live=None):
     """The table once `wanted` is granted, with the entries `live` says
     are dead dropped first; Held when any wanted entry is in the way of a
@@ -408,6 +420,34 @@ def python_reads(path, text, written, repository_files=()):
     return sorted(key for key in reads if not keys_meet(key, mine))
 
 
+def python_file_reads(path, text, repository_files=()):
+    """The keys a whole Python file depends on: what every symbol of it
+    reads (python_reads), and what its module-level code names from the
+    repository's own modules, for a file written whole or at `<top>`,
+    where no one symbol says what the edit builds on. A file that does not
+    parse reads nothing that can be seen."""
+    try:
+        tree = ast.parse(git_lines(text))
+    except (SyntaxError, ValueError):
+        return []
+    reads = set()
+    for symbol in python_symbols(text):
+        reads.update(python_reads(path, text, symbol.name, repository_files))
+    imported = imported_names(tree, path, set(repository_files))
+    own = {symbol.name for symbol in python_symbols(text)}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Name):
+                continue
+            if inner.id in own:
+                reads.add(f"{path}#{inner.id}")
+            elif inner.id in imported:
+                reads.add(imported[inner.id])
+    return sorted(reads)
+
+
 def find_node(tree, name):
     head, _, tail = name.partition(".")
     for node in tree.body:
@@ -451,19 +491,28 @@ def imported_names(tree, path, repository_files):
     return names
 
 
-def plan(targets, read_file, repository_files=(), claim=0, worker=""):
+def plan(targets, read_file, repository_files=(), claim=0, worker="", whole_files=False):
     """The entries a claim asks for to change `targets`: a write on each,
     and for each Python symbol a read on what its code depends on that the
     claim does not write itself. `read_file(path)` gives a file's text, or
-    None when it is not there."""
+    None when it is not there. With `whole_files`, a Python file written
+    whole or at `<top>` reads what the whole file depends on too, which an
+    overlap reading needs, since an edit there builds on whatever the file
+    does, while a claim taking a whole file asks for no more than it
+    names."""
     writes = sorted(set(targets))
     reads = set()
     for key in writes:
         resource, symbol = split_key(key)
-        if symbol and symbol != TOP and resource.endswith(PYTHON):
-            text = read_file(resource)
-            if text is not None:
-                reads.update(python_reads(resource, text, symbol, repository_files))
+        if not resource.endswith(PYTHON):
+            continue
+        text = read_file(resource)
+        if text is None:
+            continue
+        if symbol and symbol != TOP:
+            reads.update(python_reads(resource, text, symbol, repository_files))
+        elif whole_files:
+            reads.update(python_file_reads(resource, text, repository_files))
     reads = {key for key in reads if not any(covers(write, key) for write in writes)}
     return ([Entry(key, claim, WRITE, worker) for key in writes]
             + [Entry(key, claim, READ, worker) for key in sorted(reads)])

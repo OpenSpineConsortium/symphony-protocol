@@ -19,7 +19,7 @@ sdlc_protocol board ...":
          workers, .github/symphony/workers/<name>.json, read offline
   guard  the PreToolUse hook: the tool call's JSON on stdin, and exit 2
          with the reason on stderr to refuse a push
-  locks  status, plan, acquire, release, sweep or verify: the locks on
+  locks  status, plan, acquire, release, sweep, verify or overlap: the locks on
          files, symbols and named resources in LOCKS.json on the branch
          locks; verify obeys the switch SYMPHONY_LOCKS, off by default
   verify-vendored VENDOR_DIR
@@ -721,6 +721,11 @@ def locks_arguments(argv):
     verifying.add_argument("--base", required=True)
     verifying.add_argument("--head", default="HEAD")
     verifying.add_argument("--claim", type=int, default=0, help="the claim's issue, 0 for a pull request of none")
+    overlapping = sub.add_parser("overlap", help="whether what the default branch --base changed since the "
+                                                 "change's fork meets what --head changes or builds on, so the "
+                                                 "change must bring main in; no lock table is read")
+    overlapping.add_argument("--base", required=True)
+    overlapping.add_argument("--head", default="HEAD")
     return parser.parse_args(argv)
 
 
@@ -806,6 +811,32 @@ def locks_verify(args, environ):
     return 1 if problems and mode == locks.ENFORCE else 0
 
 
+def locks_overlap(args, environ):
+    mode = locks.mode_of(environ, switch_text(args.repo))
+    if mode == locks.OFF:
+        print("locks are off")
+        return 0
+    try:
+        met = git_locks.overlap(args.repo, args.base, args.head)
+    except git_locks.LocksFailed as problem:
+        print(f"locks: {problem}")
+        return 1 if mode == locks.ENFORCE else 0
+    for ours, theirs in met:
+        print(f"locks: {meeting_line(args.base, ours, theirs)}: bring {args.base} in")
+    if not met:
+        print(f"locks: nothing {args.base} changed since the base meets this change; it need not bring it in")
+    return 1 if met and mode == locks.ENFORCE else 0
+
+
+def meeting_line(base, ours, theirs):
+    """Why a change must bring the default branch in: what each side did
+    to the key, edited it or built on it, since a read on either side
+    means that side changed something that depends on the key."""
+    did = "edited" if theirs.mode == locks.WRITE else "built on"
+    does = "edits" if ours.mode == locks.WRITE else "builds on"
+    return f"{base} {did} {theirs.key} since this change's base, which this change {does}"
+
+
 def verify_problems(args):
     _, entries = git_locks.fetch_table(args.repo, args.remote)
     numbers = {entry.claim for entry in entries} - {args.claim}
@@ -833,7 +864,8 @@ def run_locks(argv, environ=None):
     args = locks_arguments(argv)
     environ = os.environ if environ is None else environ
     commands = {"status": locks_status, "plan": locks_plan, "acquire": locks_acquire, "release": locks_release,
-                "sweep": locks_sweep, "verify": lambda given: locks_verify(given, environ)}
+                "sweep": locks_sweep, "verify": lambda given: locks_verify(given, environ),
+                "overlap": lambda given: locks_overlap(given, environ)}
     try:
         return commands[args.command](args)
     except locks.Held as problem:

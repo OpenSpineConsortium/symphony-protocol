@@ -272,11 +272,43 @@ def blob_text(repo, spec):
     return done.stdout.decode("utf-8", errors="replace") if done.returncode == 0 else None
 
 
+# How far a shallow clone is deepened, step by step, to find where a
+# branch left the default branch; actions/checkout's default depth is 1.
+DEEPENINGS = (50, 500, 5000)
+
+
+def fork_points(repo, base, head):
+    """Every commit where `head` left `base`, git's merge bases
+    (`merge-base --all`, so criss-cross history hides nothing behind the
+    one git would pick), deepening a shallow clone step by step until git
+    finds one."""
+    for deepening in (0,) + DEEPENINGS:
+        if deepening:
+            shallow = git(repo, "rev-parse", "--is-shallow-repository")
+            if shallow.stdout.strip() != "true":
+                break
+            deepen(repo, base, deepening)
+        found = git(repo, "merge-base", "--all", base, head)
+        if found.returncode == 0 and found.stdout.split():
+            return found.stdout.split()
+    shallow = git(repo, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+    why = "the clone is shallow; check out with fetch-depth: 0" if shallow else last_line(found)
+    raise LocksFailed(f"{base} and {head} share no history here: {why}")
+
+
+def deepen(repo, base, depth):
+    """Deepen the clone's own refs by `depth`, and the base's branch too
+    where `base` names one on a remote (origin/main), since a clone made
+    for one branch, as actions/checkout's is, fetches no other by itself."""
+    remote, _, branch = base.partition("/")
+    git(repo, "fetch", "--quiet", "--no-tags", f"--deepen={depth}", "origin")
+    if branch and git(repo, "remote", "get-url", remote).returncode == 0:
+        git(repo, "fetch", "--quiet", "--no-tags", f"--deepen={depth}", remote,
+            f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}")
+
+
 def fork_point(repo, base, head):
-    found = git(repo, "merge-base", base, head)
-    if found.returncode != 0:
-        raise LocksFailed(f"{base} and {head} share no history here: {last_line(found)}")
-    return found.stdout.strip()
+    return fork_points(repo, base, head)[0]
 
 
 def added(repo, base, head):
@@ -289,8 +321,14 @@ def added(repo, base, head):
 
 def touched(repo, base, head):
     """The keys the change from the merge base of `base` and `head` to
-    `head` touches, file by file."""
-    fork = fork_point(repo, base, head)
+    `head` touches, file by file; with several merge bases, from each."""
+    keys = set()
+    for fork in fork_points(repo, base, head):
+        keys.update(touched_from(repo, fork, head))
+    return sorted(keys)
+
+
+def touched_from(repo, fork, head):
     names = git(repo, "diff", "--no-color", "--no-textconv", "--no-renames", "--name-only", "-z", fork, head)
     keys = set()
     for path in filter(None, names.stdout.split("\0")):
@@ -300,3 +338,45 @@ def touched(repo, base, head):
         diff = git(repo, "diff", "--no-color", "--no-textconv", "--no-renames", "--no-ext-diff", "-U0", fork, head, "--", path).stdout
         keys.update(locks.touched_keys(path, base_text, locks.hunks_of(diff)))
     return sorted(keys)
+
+
+def tree_files(repo, rev):
+    """The files `rev` holds, for the reads a plan takes from imports."""
+    names = git(repo, "ls-tree", "-r", "--name-only", "-z", rev)
+    if names.returncode != 0:
+        raise LocksFailed(f"cannot list {rev}: {last_line(names)}")
+    return [name for name in names.stdout.split("\0") if name]
+
+
+def plan_at(repo, rev, keys):
+    """The plan for `keys` as the files stand at `rev`, not in the work
+    tree, since the default branch's side is read where it is."""
+    return locks.plan(keys, lambda path: blob_text(repo, f"{rev}:{path}"), tree_files(repo, rev),
+                      whole_files=True)
+
+
+def own_change(repo, base, head):
+    """The commit whose change is the branch's own: `head`, or, where
+    `head` is a merge whose first parent is `base`'s tip, as GitHub's
+    test merge (refs/pull/N/merge, actions/checkout's default on a
+    pull_request event) is, its second parent, since judged at the test
+    merge the branch has never left the base and nothing ever meets."""
+    tip = git(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").stdout.strip()
+    parents = git(repo, "rev-list", "--parents", "-n", "1", head).stdout.split()[1:]
+    if len(parents) == 2 and parents[0] == tip:
+        return parents[1], tip
+    return git(repo, "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}").stdout.strip(), tip
+
+
+def overlap(repo, base, head):
+    """What the default branch `base` changed since `head`'s fork from it
+    that meets what `head` changes or builds on (locks.overlap), or [] when
+    the default branch has not moved past the fork at all. The reads of a
+    Python file written whole come from the whole file, since such an
+    edit builds on whatever the file does."""
+    head, tip = own_change(repo, base, head)
+    if tip in fork_points(repo, base, head):
+        return []
+    moved = plan_at(repo, base, touched(repo, head, base))
+    change = plan_at(repo, head, touched(repo, base, head))
+    return locks.overlap(moved, change)
