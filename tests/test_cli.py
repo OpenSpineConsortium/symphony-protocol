@@ -1166,10 +1166,11 @@ class CheckReadsTheChange(unittest.TestCase):
                 self.assertIn("the checkout is neither the head the event names", out)
 
     def test_a_branch_main_has_moved_past_is_judged_in_the_test_merge_from_where_it_left_main(self):
-        """GitHub's event names as the base the commit the branch left main
-        at, not main's tip, and makes the test merge on main as it stands
-        (symphony-template#315, 2026-10-20, the first pull request judged
-        behind main once the rule that a branch be up to date was off), so
+        """GitHub's event names as the base a commit it set when the pull
+        request was opened, which main may have moved past, and makes the
+        test merge on main as it stands (symphony-template#315, 2026-10-20,
+        the first pull request judged behind main once the rule that a
+        branch be up to date was off), so
         the test merge is known by its second parent alone and the merge's
         change is read against its first: what main did since the branch
         left it, a claim file among it, is not the pull request's change,

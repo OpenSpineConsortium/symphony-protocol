@@ -366,12 +366,15 @@ def checkout_of(git, pull, base):
     merge, and whether HEAD is the pull request at all. HEAD is the test
     merge where it is a merge whose second parent is the head the event
     names, whatever its first: GitHub makes the merge on the base branch
-    as it stands when the event fires, while the event's base names where
-    the branch left that branch, so the two agree only for a branch that
-    is up to date, and a branch the base has moved past, which GitHub's
-    rule that a branch be up to date no longer sends back, is the test
-    merge by its second parent alone; its first parent is what the merge
-    was made on, the merge's own change being read against it. Where the
+    as it stands when the event fires, while the event's base is a commit
+    it set when the pull request was opened and leaves while the base
+    branch alone moves (symphony-template#315's pushes while behind main
+    carried the base it was opened on), so the two agree only while the
+    base has not moved past the pull request, which GitHub's rule that a
+    branch be up to date no longer prevents; such a pull request is the
+    test merge by its second parent alone, and its first parent is what
+    the merge was made on, the merge's own change being read against it.
+    Where the
     event names no head, HEAD is the test merge where it is a merge whose
     first parent is the base. The tip is the event's head wherever it
     names one, so a checkout of something else, the base as
@@ -403,8 +406,11 @@ def change_of(git, pull):
     branch added it; and, in GitHub's test merge, the merge's change
     against the commit it was made on, its first parent, as well, which
     is the base branch's tip when the event fired and not the event's
-    base, where the branch left it, so that what the base branch did
-    since is never read as the pull request's. A checkout that is neither
+    base, a commit the base branch may have moved past, so that what the
+    base branch did since is never read as the pull request's; the diffs
+    from every merge base already hold whatever the merge brings, so that
+    second reading is a second reading of the same change, never the only
+    one. A checkout that is neither
     the test merge nor the event's head is no reading of the pull
     request's claim file, so it is a reason too, beside the change
     judged."""
