@@ -1,7 +1,7 @@
 # The Colab notebooks under notebooks/ run end to end, as a reader's Colab
 # would run them (scripts/run_notebook.py): every code cell in order, each
 # against the released library it clones. It runs on a pull request or push
-# that changes a notebook or the runner, by hand, and weekly, since the
+# that changes a notebook, a lesson or the runner, by hand, and weekly, since the
 # lessons clone the newest release and a new release could break one with
 # no change here. It needs no secret and is not a required check, so a
 # GitHub outage while cloning never blocks a merge.

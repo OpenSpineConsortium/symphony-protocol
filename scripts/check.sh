@@ -5,9 +5,9 @@
 # take only ASCII with LF endings, so a stray byte here breaks every
 # consumer's next sync. Then ECOSYSTEM.md, the map of the library and its
 # consumers, which must be what scripts/architecture.py draws from
-# ecosystem.json and the package today. Then the lessons' shape and
-# notebooks. Then the whole test suite, which
-# the consumers trust in place of their own tests of these rules.
+# ecosystem.json and the package today. Then the lessons' shape and their
+# notebooks. Then the whole test suite, which the consumers trust in place
+# of their own tests of these rules, and which runs the lessons' commands.
 set -eu
 cd "$(dirname "$0")/.."
 

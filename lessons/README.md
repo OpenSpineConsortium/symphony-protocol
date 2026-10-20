@@ -2,7 +2,7 @@
 
 Four short lessons that teach Symphony's claim protocol by running it. Each one takes about ten minutes, needs no Claude account, no key and no GitHub sign-in, and works on your own machine or in Google Colab. They are written for students and new users who have never used git's branches or GitHub's pull requests in a team: every step says what to type, what you should see, and why it matters.
 
-Every command on these pages is run by this repository's required check on every pull request (`python3 scripts/lessons.py test`), and its output is compared with the output printed under it. A lesson that no longer matches the code fails the check, so what you read here is what the code on main does.
+Every command on these pages is run by this repository's required check on every pull request (the test suite's tests/test_lessons.py, the same as `python3 scripts/lessons.py test`), and its output is compared with the output printed under it. A lesson that no longer matches the code fails the check, so what you read here is what the code on main does.
 
 | Lesson | You learn | Features it uses | Colab |
 | --- | --- | --- | --- |
@@ -14,7 +14,7 @@ Every command on these pages is run by this repository's required check on every
 ## How to run a lesson
 
 - **On your machine.** You need git and Python 3.12. From the top of a clone of this repository, copy each grey block into one terminal, in order. Step 0 of every lesson makes a practice folder, `$LAB`, and points Python at this checkout's package; every later block starts with `cd "$LAB"`, so nothing touches your real projects.
-- **In Colab.** Each lesson is also a notebook under [notebooks/](../notebooks/), made from the lesson itself so the two never differ. Open one from the table above and choose Runtime, then Run all. Its first cell makes the practice folder and fetches the newest release of this library, so a notebook describes released code.
+- **In Colab.** Each lesson is also a notebook under [notebooks/](../notebooks/), made from the lesson itself so the two never differ. Open one from the table above and choose Runtime, then Run all. Its first cell makes the practice folder and fetches the newest release of this library, so a notebook runs released code. A lesson is checked against main, so one that shows a change not yet released prints that change at a terminal but not in Colab until the next release; write a lesson for released behaviour, or land it with the release that carries the change.
 
 ## The rules of the practice folder
 
@@ -24,6 +24,6 @@ Every block starts with `cd "$LAB"`, so a block never depends on where the one b
 
 All of it is enforced by the required check, `bash scripts/check.sh`, so a pull request that breaks a lesson cannot merge:
 
-- **The lessons run.** `python3 scripts/lessons.py test` runs every block marked `bash run` in a fresh practice folder and fails when an output block is no longer printed. Write a lesson with that in mind: quote the lines that matter, never a hash or a date.
+- **The lessons run.** tests/test_lessons.py, like `python3 scripts/lessons.py test`, runs every block marked `bash run` in a fresh practice folder and fails when an output block is no longer printed. Write a lesson with that in mind: quote the lines that matter, never a hash or a date.
 - **The notebooks follow the lessons.** `python3 scripts/lessons.py notebooks` writes notebooks/ from the lessons, and `check` fails while one is out of date, so edit the lesson and regenerate, never the notebook.
 - **The notebooks run as Colab runs them.** [scripts/run_notebook.py](../scripts/run_notebook.py) runs every code cell in order, as Colab's Run all does, and [.github/workflows/notebooks.yml](../.github/workflows/notebooks.yml) runs it on each change to a notebook, by hand and weekly, so a new release that would break one is found before a reader finds it.
