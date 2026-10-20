@@ -131,6 +131,17 @@ class Table(unittest.TestCase):
         self.assertEqual(locks.uncovered(["a.py#f", "a.py#g", "b.py"], held, 1), ["a.py#g", "b.py"])
 
 
+class Overlap(unittest.TestCase):
+    """What main did meets a change only with a write on one side."""
+
+    def test_two_reads_never_meet_and_a_write_on_either_side_does(self):
+        moved = [Entry("m.py#f", 0, READ)]
+        self.assertEqual(locks.overlap(moved, [Entry("m.py#f", 0, READ)]), [])
+        self.assertEqual(len(locks.overlap(moved, [Entry("m.py#f", 0, WRITE)])), 1)
+        self.assertEqual(len(locks.overlap([Entry("m.py", 0, WRITE)], [Entry("m.py#g", 0, READ)])), 1)
+        self.assertEqual(locks.overlap([Entry("m.py#f", 0, WRITE)], [Entry("m.py#g", 0, WRITE)]), [])
+
+
 class Switch(unittest.TestCase):
     def test_off_unless_a_word_it_knows_says_otherwise(self):
         self.assertEqual(locks.mode_of({}, None), locks.OFF)
