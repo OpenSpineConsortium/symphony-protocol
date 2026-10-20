@@ -1,7 +1,17 @@
 name: Release
 
-# Tags each release of the library and publishes it, once the owner has
-# approved it in the browser. A release is the version in
+# Tags each release of the library and publishes it, on the merge that
+# raised the version, or, in Developer mode, once the owner has approved
+# it in the browser. Developer mode is the repository variable
+# SYMPHONY_DEVELOPER_MODE set to on (README.md, "The owner's one-time
+# setup for releases"): with it on, the job release runs in the
+# environment release, whose required reviewer is the owner, and its
+# first step tags nothing without that approval; with it off or unset,
+# the default since 2026-10-20 (the owner's word that no release waits on
+# a hand step), the job runs in the environment release-unattended, which
+# GitHub makes with no rule, and the approval step is skipped. The
+# variable is read by the expressions below, never by a shell step, so
+# the mode cannot be set from inside a run. A release is the version in
 # sdlc_protocol/__init__.py, raised by the pull request that changes it.
 # Once that version reaches main, the job plan lists what this run would
 # release: scripts/release.py names every version back to the newest one
@@ -17,14 +27,14 @@ name: Release
 # hands it to the job release; when nothing is due, the job release does
 # not run and nobody is asked.
 #
-# The job release runs in the environment release, whose required reviewer
-# is the owner and whose one deployment branch is main (README.md, "The
-# owner's one-time setup for releases"), so GitHub starts it only once the
-# owner approves this run. It fails closed: GitHub creates an environment a
-# job names that does not exist yet, with no protection rule, and runs the
-# job at once, so the job's first step asks GitHub for this run's review
-# history and, unless the environment release was approved in it, tags
-# nothing, fails the run and says in the run's summary what to set up.
+# In Developer mode the job release runs in the environment release,
+# whose required reviewer is the owner and whose one deployment branch is
+# main, so GitHub starts it only once the owner approves this run. It
+# fails closed: GitHub creates an environment a job names that does not
+# exist yet, with no protection rule, and runs the job at once, so the
+# job's first step asks GitHub for this run's review history and, unless
+# the environment release was approved in it, tags nothing, fails the run
+# and says in the run's summary what to set up.
 # Then GitHub makes each tag with its release, at the commit the plan
 # named, with GitHub's own notes on what merged since the last one, so
 # nothing is pushed; GitHub makes no tag where one exists already, so the
@@ -86,6 +96,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           REF: ${{ github.ref }}
+          DEVELOPER_MODE: ${{ vars.SYMPHONY_DEVELOPER_MODE }}
         run: |
           set -eu
           if [ "$REF" != "refs/heads/main" ]; then
@@ -112,7 +123,8 @@ jobs:
               echo "$tag $commit${tagged:+ $tagged}" >> "$due"
             fi
           done 3< "$list"
-          python3 scripts/release.py summary < "$due" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${DEVELOPER_MODE:-}" = on ]; then mode=developer; else mode=unattended; fi
+          python3 scripts/release.py summary "$mode" < "$due" >> "$GITHUB_STEP_SUMMARY"
           {
             echo "due<<END_OF_DUE"
             cat "$due"
@@ -123,15 +135,17 @@ jobs:
     needs: plan
     if: needs.plan.outputs.due != ''
     runs-on: ubuntu-latest
-    environment: release
+    environment: ${{ vars.SYMPHONY_DEVELOPER_MODE == 'on' && 'release' || 'release-unattended' }}
     permissions:
       contents: write
       actions: read
     steps:
       # GitHub matches an environment's name whatever its case, and so does
       # this step. Anything it cannot read, a failed call or an answer of
-      # another shape, stops the job before a tag is made.
+      # another shape, stops the job before a tag is made. The step runs in
+      # Developer mode only, the one mode that asks for an approval.
       - name: Go on only if the owner approved this run in the environment release
+        if: ${{ vars.SYMPHONY_DEVELOPER_MODE == 'on' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

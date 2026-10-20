@@ -258,6 +258,19 @@ class WhatTheOwnerApproves(unittest.TestCase):
         self.assertIn(f"- v0.4.1: tags {self.COMMIT} and publishes its release\n"
                       f"- v0.4.2: its tag was made before, at {self.MADE}; it gets its release\n", text)
 
+    def test_unattended_it_says_the_releases_are_made_now_and_why(self):
+        """With Developer mode off (the owner's word of 2026-10-20) the job
+        waits for nobody, and the summary says so and names the switch."""
+        text = release.summary([("v0.4.1", self.COMMIT, False)], "unattended")
+        self.assertTrue(text.startswith("## Releasing\n"))
+        self.assertIn("Developer mode is off (the repository variable SYMPHONY_DEVELOPER_MODE is not on", text)
+        self.assertIn("with no approval", text)
+        self.assertIn(f"- v0.4.1: tags {self.COMMIT} and publishes its release\n", text)
+        self.assertNotIn("approves", text)
+        with self.assertRaises(ValueError):
+            release.summary([], "owner")
+        self.assertEqual(release.main(["summary"]), 0)
+
     def test_with_nothing_due_it_says_nobody_is_asked(self):
         text = release.summary([])
         self.assertTrue(text.startswith("## Nothing to release\n"))
