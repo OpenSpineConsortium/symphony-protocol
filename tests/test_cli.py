@@ -1165,6 +1165,33 @@ class CheckReadsTheChange(unittest.TestCase):
                 self.assertIn(STRAY, out)
                 self.assertIn("the checkout is neither the head the event names", out)
 
+    def test_a_branch_main_has_moved_past_is_judged_in_the_test_merge_from_where_it_left_main(self):
+        """GitHub's event names as the base a commit it set when the pull
+        request was opened, which main may have moved past, and makes the
+        test merge on main as it stands (symphony-template#315, 2026-10-20,
+        the first pull request judged behind main once the rule that a
+        branch be up to date was off), so
+        the test merge is known by its second parent alone and the merge's
+        change is read against its first: what main did since the branch
+        left it, a claim file among it, is not the pull request's change,
+        while the pull request's own stray still is."""
+        left = self.origin.sha("main")
+        head = self.origin.commit("notes", {"src/x.py": "x\n"})
+        self.origin.commit("main", {"docs/agents/claims/9.md": "- Worker: other\n"})
+        self.origin.test_merge("notes")
+        clone = self.origin.checkout("refs/pull/1/merge")
+        self.assertEqual(check_in(clone, "notes", left, head)[:2], (0, "protocol ok\n"))
+        left = self.origin.sha("main")
+        stray = self.origin.commit("stray", {"docs/agents/claims/1.md": "- Worker: c\n"})
+        self.origin.commit("main", {"c.txt": "main moved again\n"})
+        self.origin.test_merge("stray")
+        clone = self.origin.checkout("refs/pull/1/merge", name="stray-clone")
+        code, out, _ = check_in(clone, "stray", left, stray)
+        self.assertEqual(code, 1, out)
+        self.assertIn("docs/agents/claims/1.md is added or changed here", out)
+        self.assertNotIn("claims/9.md", out)
+        self.assertNotIn("the checkout is neither the head the event names", out)
+
     def test_a_shallow_head_far_from_its_base_is_deepened_by_its_own_commits(self):
         """F31's second review, s4.sh: a clone one commit deep at the head,
         a hundred commits past where it left main, which moved a hundred
