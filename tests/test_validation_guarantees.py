@@ -103,7 +103,8 @@ class TheOracleSpeaksTheSpec(unittest.TestCase):
 
     def test_every_word_it_spells_is_in_the_spec(self):
         words = [oracle.CLAIM_PREFIX, oracle.CLAIM_DIR, oracle.FILES_HEADING, oracle.TODO, oracle.CLAIMED,
-                 oracle.IN_REVIEW, oracle.BLOCKER, oracle.EPIC, oracle.BLOCKED, oracle.GOAL, *oracle.WORKER_SPELLINGS,
+                 oracle.IN_REVIEW, oracle.BLOCKER, oracle.EPIC, oracle.BLOCKED, oracle.GOAL, *oracle.PRIORITIES,
+                 *oracle.WORKER_SPELLINGS,
                  *oracle.WORKER_LINES, oracle.FINISHED, oracle.RELEASE_MARKER, oracle.RELEASED_PREFIX, oracle.BOT,
                  "<!-- sdlc-coordinator: overlap <numbers> -->", "24 hours"]
         for word in words:

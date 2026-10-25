@@ -140,5 +140,21 @@ class BlockedByCountsTest(unittest.TestCase):
             self.assertEqual(labels.blocked_by_counts(issue), (0, 0), value)
 
 
+class PriorityTest(unittest.TestCase):
+    def test_p1_p2_and_p3_rank_before_an_issue_with_none(self):
+        self.assertEqual([labels.priority(names) for names in (["p1"], ["p2"], ["p3"], ["todo"], [])], [0, 1, 2, 3, 3])
+
+    def test_the_highest_of_several_counts_and_the_case_does_not_matter(self):
+        self.assertEqual(labels.priority(["p3", "todo", "P1"]), 0)
+        self.assertEqual(labels.priority(["P2"]), 1)
+
+    def test_a_name_that_only_looks_like_one_is_no_priority(self):
+        self.assertEqual(labels.priority(["p4", "p1x", "priority:1", " p1", None]), 3)
+
+    def test_no_priority_is_made_up_front(self):
+        self.assertFalse(set(labels.PRIORITIES) & {name for name, _, _ in labels.LABELS})
+
+
 if __name__ == "__main__":
     unittest.main()
+

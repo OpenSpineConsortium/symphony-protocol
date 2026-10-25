@@ -411,6 +411,32 @@ class NextTest(unittest.TestCase):
         self.api.add_issue(9, ["blocker"])
         self.assertEqual(team.next_for(self.api, "main"), "take 9")
 
+    def test_the_queue_is_taken_p1_first_then_p2_and_p3_then_the_rest(self):
+        """The priorities: within a place, p1, p2 and p3 come first in that
+        order, the lower number first among equals, whatever the case of
+        the label; blockers still come before the queued issues."""
+        self.api.add_issue(3, ["todo"])
+        self.api.add_issue(4, ["todo", "p3"])
+        self.api.add_issue(5, ["todo", "P2"])
+        self.api.add_issue(6, ["todo", "p1"])
+        self.api.add_issue(7, ["todo", "p1"])
+        members = ["w1", "w2", "w3", "w4", "w5", "w6"]
+        self.assertEqual(team.deals(self.api, members),
+                         {"w1": "take 6", "w2": "take 7", "w3": "take 5", "w4": "take 4", "w5": "take 3", "w6": "none"})
+        self.api.add_issue(9, ["blocker"])
+        self.assertEqual(team.next_for(self.api, "w1"), "take 9")
+
+    def test_a_worker_s_own_tasks_and_claims_follow_the_priorities_too(self):
+        self.api.add_issue(3, ["todo", "worker:w1"])
+        self.api.add_issue(4, ["todo", "worker:w1", "p2"])
+        self.api.add_issue(5, ["todo", "p1"])
+        self.assertEqual(team.next_for(self.api, "w1"), "take 4", "its own p2 before its other task and the queue")
+        self.api.add_issue(6, ["claimed", "worker:w1"])
+        self.api.add_claim(6, "w1")
+        self.api.add_issue(8, ["claimed", "worker:w1", "p1"])
+        self.api.add_claim(8, "w1")
+        self.assertEqual(team.next_for(self.api, "w1"), "carry 8", "its p1 claim before its other claim")
+
     def test_members_with_nothing_of_their_own_divide_the_shared_work(self):
         self.api.add_issue(4, ["todo"])
         self.api.add_issue(5, ["todo"])

@@ -164,6 +164,26 @@ class TheClerkAgainstPick(unittest.TestCase):
         self.assertIn("#1 blocked by #2", queued.describe())
         self.assertIn("#2 labelled todo and closed", closed.describe())
 
+    def test_each_place_is_dealt_p1_first_then_p2_and_p3_then_the_rest(self):
+        """SPEC["priority"] and SPEC["priority alike"]: the twelve cases the
+        lane runs after the dependencies, each dealt by Pick on the library,
+        and the mutant that deals in number order alone caught on them."""
+        cases = list(dealing.priority_cases())
+        self.assertEqual(len(cases), 12)
+        for case in cases:
+            with self.subTest(case=case.describe()):
+                self.assertEqual(dealing.judge_case(case, runs=True)[1], [])
+        queue, blockers, alone, shared = cases[1], cases[4], cases[7], cases[10]
+        self.assertEqual(dealing.judge_case(queue)[0], {"a": "take 3", "b": "take 4"}, "p1, then P2 read as p2")
+        self.assertEqual(dealing.judge_case(blockers)[0], {"a": "take 2", "b": "take 1"},
+                         "the blockers before a queued p1, the p1 blocker first")
+        self.assertEqual(dealing.judge_case(alone)[0], {"a": "take 2", "b": "take 3"},
+                         "a's own p2 before its other task and before the queued p1")
+        self.assertEqual(dealing.judge_case(shared)[0], {"a": "take 2", "b": "take 1"})
+        with mutants.switched_on(mutants.MUTANTS["the clerk dealing in number order alone"]):
+            self.assertEqual(dealing.judge_case(cases[0])[1], ["a takes #1 though #3 comes first by priority"])
+            self.assertIn("a takes #1 though #2 comes first by priority", dealing.judge_case(alone)[1])
+
     def test_a_released_claim_is_nobody_s_and_its_issue_nobody_s_to_take_until_the_rename(self):
         """F18's review: the claim file still names a, but the release made
         the claim nobody's, as the board shows; and the branch, until the

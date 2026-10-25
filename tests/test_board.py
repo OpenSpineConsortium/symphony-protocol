@@ -195,6 +195,27 @@ class Rendering(unittest.TestCase):
     def test_a_non_ascii_title_is_folded(self):
         self.assertEqual(board.cell("caf\u00e9 \u2014 \u201cquoted\u201d"), "cafe  quoted")
 
+    def test_each_place_lists_p1_first_then_p2_and_p3_then_the_rest(self):
+        """The priorities: the Queue, Given to workers and Blockers list
+        their issues in the order Pick takes them, so the first row a
+        worker may take is the one to take; without a priority label the
+        order is the number's, as it always was."""
+        snap = snapshot()
+        snap["issues"].append({"number": 30, "title": "Low", "labels": ["todo", "p3"]})
+        snap["issues"].append({"number": 31, "title": "Top", "labels": ["todo", "P1"]})
+        snap["issues"].append({"number": 32, "title": "Next", "labels": ["todo", "p2", "p3"]})
+        snap["issues"].append({"number": 33, "title": "Given low", "labels": ["todo", "worker:w1"]})
+        snap["issues"].append({"number": 34, "title": "Given high", "labels": ["todo", "worker:w1", "p1"]})
+        snap["issues"].append({"number": 35, "title": "Blocker high", "labels": ["blocker", "p1"]})
+        text = board.render(snap)
+        queue = text.split(board.QUEUE_HEADING)[1].split(board.GIVEN_HEADING)[0]
+        order = [queue.index(f"| #{n} |") for n in (31, 32, 30, 14)]
+        self.assertEqual(order, sorted(order))
+        given = text.split(board.GIVEN_HEADING)[1].split(board.BLOCKER_HEADING)[0]
+        self.assertLess(given.index("| #34 |"), given.index("| #33 |"))
+        blockers = text.split(board.BLOCKER_HEADING)[1].split(board.MERGED_HEADING)[0]
+        self.assertLess(blockers.index("| #35 |"), blockers.index("| #15 |"))
+
     def test_a_claimed_todo_leaves_the_queue(self):
         snap = snapshot()
         snap["issues"].append({"number": 12, "title": "Claimed by branch", "labels": [{"name": "todo"}]})
