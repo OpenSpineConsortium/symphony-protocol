@@ -35,7 +35,9 @@ the labels alone, and the lane found fifteen problems in 7,256 of the
 30,720 deals it then had (twelve in 4,888 of 20,480 before F18's review
 added the nameless and the released claim; DESIGN.md's F18 entry has the
 figures); F8's review added a claim committed ahead of its push and a
-kept head pushed again, 40,960 deals.
+kept head pushed again, 40,960 deals. The priorities added twelve cases
+after the dependencies (priority_cases), each place dealt p1 first, then
+p2, p3 and the rest, which the oracle holds each take to.
 """
 
 import itertools
@@ -319,6 +321,24 @@ def dependency_cases():
                closed=(2,))
 
 
+def priority_cases():
+    """The cases that hold the clerk to SPEC["priority"] and SPEC["priority
+    alike"], each dealt to a alone and to a and b in either order: a queue
+    of four, the first with no priority, then p3, p1 and P2, which GitHub
+    reads as p2, so the first worker takes the p1 and the second the P2;
+    two blockers, the later labelled p1, beside a queued p1, which the
+    blockers still come before; two tasks given to a alone, the later
+    labelled p2, beside a queued p1, which a's own tasks come before; and
+    two tasks given to a and b, the later labelled p1."""
+    settings = ({1: ("todo",), 2: ("todo", "p3"), 3: ("todo", "p1"), 4: ("todo", "P2")},
+                {1: ("blocker",), 2: ("blocker", "p1"), 3: ("todo", "p1")},
+                {1: ("todo", "worker:a"), 2: ("todo", "worker:a", "p2"), 3: ("todo", "p1")},
+                {1: ("todo", "worker:a", "worker:b"), 2: ("todo", "worker:a", "worker:b", "p1")})
+    for labels in settings:
+        for order in (("a",),) + TEAMS:
+            yield Case(labels, 1, "none", order)
+
+
 def case_model(case):
     model = M.seeded(tuple(sorted(case.labels)), writers=("a", "b"))
     for number, names in case.labels.items():
@@ -363,7 +383,8 @@ def picking_lane():
     """Every case's problems, as the mutation lane reads a lane: by
     (guarantee, problem), the first case that showed it."""
     found = {}
-    for case, runs in list(picking_cases()) + [(case, True) for case in dependency_cases()]:
+    extra = list(dependency_cases()) + list(priority_cases())
+    for case, runs in list(picking_cases()) + [(case, True) for case in extra]:
         moves, problems = judge_case(case, runs)
         for problem in problems:
             found.setdefault(("G14", problem), (case.describe(), str(moves)))

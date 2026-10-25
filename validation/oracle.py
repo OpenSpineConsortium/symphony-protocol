@@ -178,6 +178,12 @@ SPEC = {
             "that the Blockers section lists, that nobody has claimed and that no worker's label gives to another, "
             "since a blocker comes before the Queue. Else take an open issue labelled todo that the Queue section "
             "shows as unclaimed and that no open blocker stands in the way of.",
+    "priority": "Within each of these places take the issues in priority order: one labelled p1 first, then p2, "
+                "then p3, then one with none of them, the lower number first among equals",
+    "priority label": "where an issue carries several, the highest counts, and GitHub reads a label's name "
+                      "whatever its case, so P1 is p1",
+    "priority alike": "Each of these is taken in Pick's priority order, a worker's own claims, its given tasks and "
+                      "the shared work alike, blockers still before the queued issues",
     "never": "Wherever an issue is listed, never take an epic, which the coordinator plans (Planning), nor an issue "
              "labelled blocked, which waits on a peer or the coordinator.",
     "another's": "An issue with a branch `claude/<issue>` on origin, or a file `docs/agents/claims/<issue>.md` on the "
@@ -236,6 +242,8 @@ FILES_HEADING = "## Files to touch"
 CLOSES = r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#%d\b"
 TODO, CLAIMED, IN_REVIEW, BLOCKER, EPIC, BLOCKED = "todo", "claimed", "in-review", "blocker", "epic", "blocked"
 GOAL = "goal"
+# The priorities, first to last (SPEC["priority"]).
+PRIORITIES = ("p1", "p2", "p3")
 WORKER_SPELLINGS = ("worker:", "account:", "agent:")
 # The lines of a claim file that name its worker (SPEC["worker line"]),
 # and a note in parentheses after the name, which names nobody
@@ -1159,17 +1167,33 @@ def given_to_worker(model, number, worker):
     return issue is not None and worker in workers_named(issue.labels)
 
 
+def rank(model, number):
+    """Where Pick's priority order puts the issue within its place
+    (SPEC["priority"]): 0 for p1, 1 for p2, 2 for p3 and 3 for an issue
+    with none of them, the highest of several counting and a label read
+    whatever its case (SPEC["priority label"])."""
+    names = [name.lower() for name in model.issues[number].labels]
+    return min((PRIORITIES.index(name) for name in names if name in PRIORITIES), default=len(PRIORITIES))
+
+
+def in_priority_order(model, numbers):
+    """The issues in the order Pick takes them within a place: by rank,
+    the lower number first among equals (SPEC["priority"])."""
+    return sorted(numbers, key=lambda n: (rank(model, n), n))
+
+
 def pick(model, worker, taken=()):
     """What Pick lets the worker take (SPEC["pick"]), leaving out what
     another worker of its run was dealt (taken), as (place, numbers): the
     first of Pick's places that holds anything for it, "given", the tasks
     the labels give it, alone or beside others (SPEC["several"]),
     "blocker", the unclaimed blockers no worker's label gives to another,
-    or "queue", the Queue's issues; ("", ()) when none does. No place has
-    an order of its own: the clerk takes the lowest number, which Pick
-    allows."""
+    or "queue", the Queue's issues; ("", ()) when none does. Each place's
+    issues come in Pick's priority order (in_priority_order), the first
+    the one to take (SPEC["priority"]); until the priorities, no place had
+    an order of its own, and the clerk took the lowest number."""
     def open_to(numbers):
-        return tuple(n for n in sorted(numbers) if n not in taken and takeable(model, n))
+        return tuple(n for n in in_priority_order(model, numbers) if n not in taken and takeable(model, n))
     places = (("given", [n for n, names in given(model).items() if worker in names]),
               ("blocker", [n for n in blockers(model) if not workers_named(model.issues[n].labels)]),
               ("queue", queue(model)))
@@ -1227,10 +1251,15 @@ def deal_problems(model, team, moves):
             problems.append(carry_problem(model, member, carried[member]))
         elif own and member not in carried:
             problems.append(f"{member} carries nothing though its claim on #{own[0]} is its own")
+        if member in carried and carried[member] in own:
+            first = in_priority_order(model, own)[0]
+            if rank(model, carried[member]) > rank(model, first):
+                problems.append(f"{member} carries #{carried[member]} though its claim on #{first} comes first "
+                                f"by priority")
         if own or member in carried:
             continue
         place, numbers = pick(model, member, {n for m, n in takes.items() if m != member})
-        alone = given_alone(model, member)
+        alone = in_priority_order(model, given_alone(model, member))
         if member in takes and blocked_by_open(model, takes[member]):
             blocker = next(n for n in model.issues[takes[member]].blocked_by
                            if n in model.issues and model.issues[n].state == "open")
@@ -1240,6 +1269,9 @@ def deal_problems(model, team, moves):
                             f"{place or 'nothing'} {list(numbers)}")
         elif member in takes and alone and takes[member] not in alone:
             problems.append(f"{member} takes #{takes[member]} though #{alone[0]} is given to it alone")
+        elif member in takes and rank(model, takes[member]) > rank(model, (alone or numbers)[0]):
+            problems.append(f"{member} takes #{takes[member]} though #{(alone or numbers)[0]} comes first "
+                            f"by priority")
         elif member not in takes and numbers and not may_wait(model, place):
             problems.append(f"{member} takes nothing though Pick has it take from {place} {list(numbers)}")
     def free_for_it(member):

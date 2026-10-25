@@ -336,6 +336,7 @@ TRACES = {
     # team's deal gives a.
     "the clerk dealing blockers in number order": dealing.Case({1: ("todo",), 2: ("blocker",)}, 2, "none", ("a",)),
     "the clerk dealing an issue labelled blocked": dealing.Case({1: ("blocked", "todo")}, 1, "none", ("a", "b")),
+    "the clerk dealing in number order alone": dealing.Case({1: ("todo",), 2: ("todo", "p1")}, 1, "none", ("a",)),
     "the clerk dealing an issue blocked by an open issue": dealing.Case({1: ("todo",), 2: ("todo",)}, 2, "none",
                                                                        ("a", "b"), blocked_by=((1, 2),)),
     # The Queue leaving a goal out is caught by the lane below, on its
@@ -532,12 +533,13 @@ class TheLane(unittest.TestCase):
         the clerk dealing an issue an open issue blocks and the board
         listing a goal in the Queue, 235; and their review's two, the rows
         saying nothing of an issue an open issue blocks and the
-        Dependencies section never drawn, 237. 206 passed 200, so the bound was widened to 250 with F29's fix, as
+        Dependencies section never drawn, 237; and the priorities one, the
+        clerk dealing each place in number order alone, 238. 206 passed 200, so the bound was widened to 250 with F29's fix, as
         F23's fix widened it from 150: the lane grows by a mutant for each
         rule a fix adds, and the guard's reading of bash is the part of the
         library that grows most."""
         self.assertTrue(10 <= len(mutants.MUTANTS) <= 250)
-        self.assertEqual(len(mutants.MUTANTS), 237)
+        self.assertEqual(len(mutants.MUTANTS), 238)
         self.assertEqual(sorted(TRACES), sorted(mutants.MUTANTS))
 
     def test_every_mutant_names_a_rule_the_library_still_has(self):

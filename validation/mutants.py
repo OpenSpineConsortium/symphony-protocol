@@ -1401,6 +1401,13 @@ def pool_by_number(snap):
     return sorted(ORIGINAL_POOL(snap), key=lambda issue: issue["number"])
 
 
+def number_alone(issue):
+    """team.in_pick_order without the priorities, so the clerk takes each
+    of Pick's places in number order, where Pick takes an issue labelled
+    p1 first, then p2 and p3 (the priorities)."""
+    return issue["number"]
+
+
 def free_though_blocked(snap, issue):
     """team.Snapshot.free leaving the label blocked out, so the clerk deals
     an issue that waits on a peer or the coordinator, which Pick never has
@@ -2227,6 +2234,10 @@ MUTANTS = {
         team.Snapshot, "pool", pool_by_number,
         "G14", "the clerk deals the unclaimed blockers before the Queue, as Pick has a worker take them (F15's "
                "fifth review)"),
+    "the clerk dealing in number order alone": Mutant(
+        team, "in_pick_order", number_alone,
+        "G14", "within each of Pick's places a worker takes an issue labelled p1 first, then p2, then p3, then "
+               "one with none of them (the priorities)"),
     "the clerk dealing an issue labelled blocked": Mutant(
         team.Snapshot, "free", free_though_blocked,
         "G14", "Pick never has anyone take an issue labelled blocked, so the clerk deals none (F15's fifth "
